@@ -1,5 +1,5 @@
 (() => {
-  const standalone = new URLSearchParams(location.search).has("standalone") || location.hostname === "appassets.androidplatform.net";
+  const standalone = new URLSearchParams(location.search).has("standalone") || location.hostname === "appassets.androidplatform.net" || location.hostname.endsWith("github.io");
   if (!standalone) return;
   const originalFetch = window.fetch.bind(window);
   const read = (key, fallback) => { try { return JSON.parse(localStorage.getItem(`atherloom:${key}`)) ?? fallback; } catch { return fallback; } };

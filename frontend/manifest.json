@@ -1,10 +1,10 @@
 {
-  "id": "/",
+  "id": "./",
   "name": "Atherloom · 心织域",
   "short_name": "Atherloom",
   "description": "本地优先、支持人格与记忆的私人 AI 客户端",
-  "start_url": "/",
-  "scope": "/",
+  "start_url": "./",
+  "scope": "./",
   "display": "standalone",
   "display_override": ["window-controls-overlay", "standalone"],
   "orientation": "any",
@@ -12,12 +12,12 @@
   "theme_color": "#f7f6f2",
   "categories": ["productivity", "utilities", "entertainment"],
   "icons": [
-    {"src":"/assets/app-icon.svg","sizes":"any","type":"image/svg+xml","purpose":"any"},
-    {"src":"/assets/app-icon.svg","sizes":"any","type":"image/svg+xml","purpose":"maskable"},
-    {"src":"/assets/app-icon-monochrome.svg","sizes":"any","type":"image/svg+xml","purpose":"monochrome"}
+    {"src":"assets/app-icon.svg","sizes":"any","type":"image/svg+xml","purpose":"any"},
+    {"src":"assets/app-icon.svg","sizes":"any","type":"image/svg+xml","purpose":"maskable"},
+    {"src":"assets/app-icon-monochrome.svg","sizes":"any","type":"image/svg+xml","purpose":"monochrome"}
   ],
   "shortcuts": [
-    {"name":"新对话","short_name":"对话","url":"/?action=new-chat","icons":[{"src":"/assets/app-icon.svg","sizes":"any","type":"image/svg+xml"}]},
-    {"name":"游戏库","short_name":"游戏","url":"/?section=games","icons":[{"src":"/assets/app-icon.svg","sizes":"any","type":"image/svg+xml"}]}
+    {"name":"新对话","short_name":"对话","url":"./?action=new-chat","icons":[{"src":"assets/app-icon.svg","sizes":"any","type":"image/svg+xml"}]},
+    {"name":"游戏库","short_name":"游戏","url":"./?section=games","icons":[{"src":"assets/app-icon.svg","sizes":"any","type":"image/svg+xml"}]}
   ]
 }
