@@ -13,7 +13,7 @@
   <title>Atherloom</title>
   <link rel="manifest" href="manifest.json">
   <link rel="icon" href="assets/app-icon.svg" type="image/svg+xml">
-  <link rel="stylesheet" href="assets/app.css?v=0312">
+  <link rel="stylesheet" href="assets/app.css?v=0400">
 </head>
 <body>
   <div id="app" class="app-shell">
@@ -94,7 +94,6 @@
           <div class="game-actions"><button class="primary" data-game-action="cast" data-amount="1">抛一竿</button><button class="ghost" data-game-action="cast" data-amount="5">连钓五竿</button><button class="ghost" data-game-action="buy_bait" data-amount="5">买五份鱼饵</button><button class="ghost" data-game-action="sell_all">出售全部渔获</button></div>
           <div class="water-tabs" id="waterTabs"></div>
           <div class="game-columns"><div><h4>鱼篓</h4><div id="fishCatch" class="catch-list"></div></div><div><h4>最近发生</h4><div id="fishJournal" class="game-journal"></div></div></div>
-          <div class="ai-playbar"><div><strong>AI 游玩</strong><small>下一步接入工具循环与回合预算；当前所有操作由你点击。</small></div><button class="ghost" disabled>交给当前人格</button></div>
         </section>
         <section id="clawStage" class="mini-game-stage" hidden>
           <div class="claw-cabinet"><div class="claw-rail"><span id="clawHead">▼</span></div><div class="prize-row" id="clawPrizes"></div></div>
@@ -108,6 +107,7 @@
           <div class="game-actions"><button class="primary" data-slot-amount="1">转一次 · 5 云贝</button><button class="ghost" data-slot-amount="5">连续五次</button></div>
           <div class="game-columns"><div><h4>规则</h4><p class="muted">三个相同得 40 云贝，两个相同得 10 云贝。仅使用本地游戏云贝。</p></div><div><h4>最近结果</h4><div id="slotJournal" class="game-journal"></div></div></div>
         </section>
+        <div class="ai-playbar" id="aiGameControls" hidden><div><strong>交给当前人格</strong><small id="aiGameStatus">AI 会读取局面，只能执行白名单动作；单次预算最多 30 云贝。</small></div><div class="game-actions"><button class="ghost" id="aiPlayOne">玩一步</button><button class="primary" id="aiPlayThree">连续玩 3 回合</button></div></div>
       </main>
     </div>
   </section>
@@ -246,8 +246,8 @@
 
   <div class="popover" id="modelPopover" hidden></div>
   <div class="popover" id="personaPopover" hidden></div>
-  <script src="assets/standalone.js?v=0312"></script>
-  <script src="assets/app.js?v=0312" defer></script>
+  <script src="assets/standalone.js?v=0400"></script>
+  <script src="assets/app.js?v=0400" defer></script>
   <script>if('serviceWorker' in navigator)navigator.serviceWorker.register('service-worker.js');</script>
 </body>
 </html>

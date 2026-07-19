@@ -73,6 +73,7 @@ function renderSlots(){const current=gameState.slots;if(!current)return;[$("#slo
 async function openGame(gameId) {
   gameState.current = gameId; renderGameCards();
   $("#gameEmpty").hidden=true;$("#fishingStage").hidden=gameId!=="quiet_fishing";$("#clawStage").hidden=gameId!=="claw_machine";$("#slotsStage").hidden=gameId!=="cloud_slots";
+  $("#aiGameControls").hidden=!["quiet_fishing","claw_machine","cloud_slots"].includes(gameId);
   if(!["quiet_fishing","claw_machine","cloud_slots"].includes(gameId)){$("#gameEmpty").hidden=false;const game=gameState.catalog.find(item=>item.id===gameId);$("#gameEmpty").innerHTML=`<span>${game.icon}</span><h3>${escapeHtml(game.name)}</h3><p>${escapeHtml(game.description)}</p>`;return;}
   const payload = await api(`/api/games/${gameId}/state${personaQuery()}`); gameState.fishing = payload.state; gameState.waters = payload.waters;
   if(gameId==="quiet_fishing"){gameState.fishing=payload.state;gameState.waters=payload.waters;renderFishing();}else if(gameId==="claw_machine"){gameState.claw=payload.state;renderClaw();}else{gameState.slots=payload.state;renderSlots();}
@@ -85,6 +86,7 @@ async function playGame(action, amount = 1, target = "") {
   } catch (error) { alert(error.message); }
 }
 async function playMiniGame(gameId,action,amount=1){try{const payload=await api(`/api/games/${gameId}/action${personaQuery()}`,{method:"POST",body:JSON.stringify({action,amount})});if(gameId==="claw_machine"){gameState.claw=payload.state;renderClaw();}else{gameState.slots=payload.state;renderSlots();}}catch(error){alert(error.message);}}
+async function aiPlayGame(turns){const provider=activeProvider();if(!provider){$("#gameLibrary").hidden=true;return openSettings("providers");}const buttons=[$("#aiPlayOne"),$("#aiPlayThree")];buttons.forEach(button=>button.disabled=true);$("#aiGameStatus").textContent="当前人格正在观察局面并决定…";try{const payload=await api(`/api/games/${gameState.current}/ai-turn`,{method:"POST",body:JSON.stringify({provider_id:provider.id,persona_id:state.persona,turns,max_spend:30})});if(gameState.current==="quiet_fishing"){gameState.fishing=payload.state;renderFishing();}else if(gameState.current==="claw_machine"){gameState.claw=payload.state;renderClaw();}else{gameState.slots=payload.state;renderSlots();}$("#aiGameStatus").textContent=payload.decisions.length?`AI 完成 ${payload.decisions.length} 步，花费 ${payload.spent} 云贝。最近想法：${payload.decisions.at(-1).comment||"专心操作中"}`:"AI 因预算或局面限制没有执行动作。";}catch(error){$("#aiGameStatus").textContent=`AI 游玩失败：${error.message}`;}finally{buttons.forEach(button=>button.disabled=false);}}
 
 async function openGameLibrary() {
   $("#gameLibrary").hidden = false;
@@ -322,6 +324,7 @@ let movieUrl;$("#chooseMovie").onclick=()=>$("#movieInput").click();$("#movieInp
 let favoriteSearchTimer;$("#favoriteSearch").oninput=event=>{clearTimeout(favoriteSearchTimer);favoriteSearchTimer=setTimeout(async()=>{state.favorites=await api(`/api/favorites?q=${encodeURIComponent(event.target.value.trim())}`);renderFavorites();},220);};
 document.querySelectorAll("[data-game-action]").forEach(button => button.onclick = () => playGame(button.dataset.gameAction, Number(button.dataset.amount || 1)));
 document.querySelectorAll("[data-claw-action]").forEach(button=>button.onclick=()=>playMiniGame("claw_machine",button.dataset.clawAction));document.querySelectorAll("[data-slot-amount]").forEach(button=>button.onclick=()=>playMiniGame("cloud_slots","spin",Number(button.dataset.slotAmount)));
+$("#aiPlayOne").onclick=()=>aiPlayGame(1);$("#aiPlayThree").onclick=()=>aiPlayGame(3);
 $("#backdrop").onclick = closeSettings; document.querySelectorAll("[data-close]").forEach(b => b.onclick = closeSettings);
 document.querySelectorAll(".settings-nav button").forEach(b => b.onclick = () => switchTab(b.dataset.tab));
 $("#addProvider").onclick = () => { $("#providerForm").hidden = false; $("#connectionState").textContent = ""; renderSettings(); updateProviderCacheUI(); }; $("#cancelProvider").onclick = () => { $("#providerForm").hidden = true; renderSettings(); };

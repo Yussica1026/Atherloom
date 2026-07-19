@@ -28,6 +28,7 @@ await evaluate(`document.querySelector('[data-game-id="claw_machine"]').click()`
 await check("claw machine opens", `document.querySelector('#clawStage').hidden === false`);
 await evaluate(`document.querySelector('[data-game-id="cloud_slots"]').click()`); await wait(300);
 await check("slots open", `document.querySelector('#slotsStage').hidden === false`);
+await check("AI game controls enabled", `!document.querySelector('#aiGameControls').hidden && !document.querySelector('#aiPlayOne').disabled && !document.querySelector('#aiPlayThree').disabled`);
 await evaluate(`document.querySelector('#closeGames').click(); document.querySelector('#openReading').click()`); await wait(100);
 await check("reading room opens", `!document.querySelector('#mediaSpace').hidden && !document.querySelector('#readingRoom').hidden`);
 await evaluate(`document.querySelector('#closeMedia').click(); document.querySelector('#openCinema').click()`); await wait(100);

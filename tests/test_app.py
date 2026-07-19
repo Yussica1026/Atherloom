@@ -152,6 +152,14 @@ class LocalClientTests(unittest.TestCase):
         self.assertEqual(slots["state"]["turn"], 1)
         self.assertEqual(len(slots["state"]["reels"]), 3)
 
+    def test_ai_game_choices_are_whitelisted_and_budgeted(self):
+        choice, comment = app_module.parse_ai_game_choice('{"action":"grab","amount":9,"comment":"试试中间"}', "claw_machine")
+        self.assertEqual(choice, {"action": "grab", "amount": 1, "target": ""})
+        self.assertEqual(comment, "试试中间")
+        self.assertEqual(app_module.game_action_cost("claw_machine", choice, {}), 10)
+        with self.assertRaises(Exception):
+            app_module.parse_ai_game_choice('{"action":"delete_save"}', "claw_machine")
+
 
 if __name__ == "__main__":
     unittest.main()
