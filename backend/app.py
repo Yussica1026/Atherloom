@@ -130,6 +130,13 @@ class ProviderIn(BaseModel):
     thinking_enabled: bool = True
 
 
+class ProviderProbe(BaseModel):
+    protocol: str = Field(pattern="^(openai|anthropic|deepseek|glm)$")
+    base_url: str
+    api_key: str = ""
+    custom_headers: str = "{}"
+
+
 class PersonaIn(BaseModel):
     name: str = Field(min_length=1, max_length=80)
     prompt: str = ""
@@ -858,6 +865,33 @@ def provider_headers(protocol: str, api_key: str, custom_headers_raw: str = "{}"
         raise HTTPException(422, "自定义请求头不是有效 JSON") from exc
     headers.update({str(key): str(value) for key, value in custom_headers.items()})
     return headers
+
+
+def extract_model_ids(payload: Any) -> list[str]:
+    rows = payload.get("data", []) if isinstance(payload, dict) else []
+    models: list[str] = []
+    for row in rows:
+        model = row.get("id") if isinstance(row, dict) else row if isinstance(row, str) else None
+        if model and str(model) not in models:
+            models.append(str(model))
+    return sorted(models, key=str.lower)
+
+
+@app.post("/api/providers/models")
+async def list_provider_models(body: ProviderProbe) -> dict[str, Any]:
+    headers = provider_headers(body.protocol, body.api_key, body.custom_headers)
+    try:
+        async with httpx.AsyncClient(timeout=20) as client:
+            response = await client.get(provider_models_endpoint(body.base_url, body.protocol), headers=headers)
+    except httpx.RequestError as exc:
+        raise HTTPException(502, f"无法连接：{exc}") from exc
+    if response.status_code >= 400:
+        raise HTTPException(response.status_code, f"拉取失败：HTTP {response.status_code} · {response.text[:240]}")
+    try:
+        models = extract_model_ids(response.json())
+    except json.JSONDecodeError as exc:
+        raise HTTPException(502, "模型列表不是有效 JSON") from exc
+    return {"models": models, "count": len(models)}
 
 
 @app.post("/api/providers/test")

@@ -15,6 +15,12 @@
     return result;
   };
   const publicProvider = item => { const copy={...item,has_api_key:!!item.api_key||!!item.has_api_key}; delete copy.api_key; return copy; };
+  const webModels = async provider => {
+    const base=provider.base_url.replace(/\/+$/,""),anthropic=provider.protocol==="anthropic",endpoint=`${base}/models`;
+    const headers={...(JSON.parse(provider.custom_headers||"{}"))};if(anthropic){headers["x-api-key"]=provider.api_key||"";headers["anthropic-version"]="2023-06-01";}else headers.Authorization=`Bearer ${provider.api_key||""}`;
+    const response=await originalFetch(endpoint,{headers}),payload=await response.json().catch(()=>({}));if(!response.ok)throw new Error(`HTTP ${response.status} · ${payload.error?.message||payload.message||"网关拒绝请求"}`);
+    return [...new Set((payload.data||[]).map(item=>typeof item==="string"?item:item?.id).filter(Boolean))].sort();
+  };
   const providers = () => native ? nativeResult("listProviders") : read("providers", []).map(publicProvider);
   const webChat = async request => {
     const provider=read("providers",[]).find(item=>item.id===request.provider_id);
@@ -73,6 +79,7 @@
       if (native) return json(nativeResult("saveProvider", body));
       const item={...body,id:uid(),has_api_key:!!body.api_key}; write("providers",[...read("providers",[]),item]); return json(publicProvider(item));
     }
+    if (url.pathname === "/api/providers/models" && method === "POST") return json({models:native?nativeResult("listModels",body):await webModels(body)});
     if (/^\/api\/providers\/[^/]+$/.test(url.pathname) && method === "DELETE") {
       const id=decodeURIComponent(url.pathname.split("/").pop());
       if(native) nativeResult("deleteProvider",id); else write("providers",read("providers",[]).filter(item=>item.id!==id));
