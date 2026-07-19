@@ -198,6 +198,30 @@ function shareConversation() {
   const link = document.createElement("a"); link.href = URL.createObjectURL(blob); link.download = `${title.replace(/[\\/:*?\"<>|]/g, "-")}.md`; link.click(); URL.revokeObjectURL(link.href);
 }
 
+function exportLocalBackup() {
+  const data = {};
+  for (let index = 0; index < localStorage.length; index++) {
+    const key = localStorage.key(index);
+    if (!key?.startsWith("atherloom:")) continue;
+    if (key === "atherloom:providers") {
+      try { data[key] = JSON.stringify(JSON.parse(localStorage.getItem(key)).map(({ api_key, ...provider }) => provider)); } catch { /* skip malformed provider data */ }
+    } else data[key] = localStorage.getItem(key);
+  }
+  const bundle = { format: "atherloom-backup", version: 1, exported_at: new Date().toISOString(), data };
+  const blob = new Blob([JSON.stringify(bundle, null, 2)], { type: "application/json;charset=utf-8" });
+  const link = document.createElement("a"); link.href = URL.createObjectURL(blob); link.download = `atherloom-backup-${new Date().toISOString().slice(0, 10)}.json`; link.click(); URL.revokeObjectURL(link.href);
+  $("#backupState").textContent = "备份已导出；API Key 未包含。";
+}
+
+async function restoreLocalBackup(file) {
+  const bundle = JSON.parse(await file.text());
+  if (bundle?.format !== "atherloom-backup" || bundle.version !== 1 || !bundle.data) throw new Error("不是有效的 Atherloom 备份文件");
+  if (!confirm("恢复会替换当前本机的 Atherloom 数据，确定继续吗？")) return;
+  [...Array(localStorage.length)].map((_, index) => localStorage.key(index)).filter(key => key?.startsWith("atherloom:")).forEach(key => localStorage.removeItem(key));
+  for (const [key, value] of Object.entries(bundle.data)) if (key.startsWith("atherloom:") && typeof value === "string") localStorage.setItem(key, value);
+  $("#backupState").textContent = "恢复完成，正在重新载入…"; setTimeout(() => location.reload(), 500);
+}
+
 let settingsSaveTimer;
 function saveAppSettings() {
   clearTimeout(settingsSaveTimer);
@@ -268,6 +292,9 @@ $("#modelPicker").onclick = e => showPopover(e.currentTarget, $("#modelPopover")
 $("#personaPicker").onclick = e => showPopover(e.currentTarget, $("#personaPopover"), `<button data-value="">默认人格</button>` + state.personas.map(p => `<button data-value="${p.id}">${escapeHtml(p.name)}</button>`).join(""), id => { state.persona = id || null; renderPickers(); });
 $("#mobileMenu").onclick = () => $("#sidebar").classList.toggle("open");
 $("#themeSelect").onchange = e => { document.documentElement.dataset.theme = e.target.value === "system" ? "" : e.target.value; localStorage.setItem("theme", e.target.value); };
+$("#exportBackup").onclick = exportLocalBackup;
+$("#chooseBackup").onclick = () => $("#backupFile").click();
+$("#backupFile").onchange = async event => { const file = event.target.files?.[0]; if (!file) return; try { await restoreLocalBackup(file); } catch (error) { $("#backupState").textContent = `恢复失败：${error.message}`; } finally { event.target.value = ""; } };
 const theme = localStorage.getItem("theme") || "system"; $("#themeSelect").value = theme; if (theme !== "system") document.documentElement.dataset.theme = theme;
 bootstrap().catch(error => { console.error(error); openSettings("providers"); });
 updateProviderCacheUI();
