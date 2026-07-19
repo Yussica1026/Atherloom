@@ -13,7 +13,7 @@
   <title>Atherloom</title>
   <link rel="manifest" href="manifest.json">
   <link rel="icon" href="assets/app-icon.svg" type="image/svg+xml">
-  <link rel="stylesheet" href="assets/app.css?v=0402">
+  <link rel="stylesheet" href="assets/app.css?v=0403">
 </head>
 <body>
   <div id="app" class="app-shell">
@@ -46,7 +46,7 @@
         <button class="mobile-menu" id="mobileMenu" aria-label="打开菜单">☰</button>
         <button class="conversation-title" id="titleButton">新对话⌄</button>
         <div class="top-actions">
-          <button class="icon-button" title="语音通话" id="openCall">☎</button>
+          <button class="icon-button" title="语音通话" aria-label="语音通话" id="openCall"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7.2 3.8 9.6 7c.4.5.3 1.2-.2 1.6L8 9.8a14.8 14.8 0 0 0 6.2 6.2l1.2-1.4c.4-.5 1.1-.6 1.6-.2l3.2 2.4c.5.4.7 1 .4 1.6-.7 1.4-2.2 2.3-3.8 2.1C10 19.7 4.3 14 3.5 7.2 3.3 5.6 4.2 4.1 5.6 3.4c.6-.3 1.2-.1 1.6.4Z"></path></svg></button>
         </div>
       </header>
 
@@ -243,14 +243,15 @@
 
   <div class="popover" id="modelPopover" hidden></div>
   <div class="popover" id="personaPopover" hidden></div>
-  <script src="assets/standalone.js?v=0402"></script>
-  <script src="assets/app.js?v=0402" defer></script>
+  <div class="popover conversation-popover" id="conversationPopover" hidden></div>
+  <script src="assets/standalone.js?v=0403"></script>
+  <script src="assets/app.js?v=0403" defer></script>
   <script>
     if ('serviceWorker' in navigator) {
-      navigator.serviceWorker.register('service-worker.js?v=15', { updateViaCache: 'none' }).then(registration => registration.update());
+      navigator.serviceWorker.register('service-worker.js?v=16', { updateViaCache: 'none' }).then(registration => registration.update());
       navigator.serviceWorker.addEventListener('controllerchange', () => {
-        if (!sessionStorage.getItem('atherloom:sw-reloaded-v15')) {
-          sessionStorage.setItem('atherloom:sw-reloaded-v15', '1');
+        if (!sessionStorage.getItem('atherloom:sw-reloaded-v16')) {
+          sessionStorage.setItem('atherloom:sw-reloaded-v16', '1');
           location.reload();
         }
       });

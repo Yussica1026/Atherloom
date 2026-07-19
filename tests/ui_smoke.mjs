@@ -17,10 +17,15 @@ const check = async (name, expression) => { const ok = await evaluate(expression
 await command("Runtime.enable");
 await command("Emulation.setDeviceMetricsOverride", { width: viewportWidth, height: viewportHeight, deviceScaleFactor: 3, mobile: true });
 await check("top bar keeps only call action", `!!document.querySelector('#openCall') && !document.querySelector('#shareChat') && !document.querySelector('#openMemory') && !document.querySelector('#topSettings')`);
-await check("call action remains visible on compact phone", `getComputedStyle(document.querySelector('#openCall')).display !== 'none'`);
+await check("call action uses a visible non-emoji icon", `getComputedStyle(document.querySelector('#openCall')).display !== 'none' && !!document.querySelector('#openCall svg')`);
+await check("persona picker remains visible on compact phone", `getComputedStyle(document.querySelector('#personaPicker')).display !== 'none'`);
 await check("welcome mark uses themeable SVG", `!!document.querySelector('.sun-mark svg') && getComputedStyle(document.querySelector('.sun-mark')).color === 'rgb(201, 100, 66)'`);
-await check("versioned service worker updater is present", `document.documentElement.innerHTML.includes('service-worker.js?v=15') && document.documentElement.innerHTML.includes("updateViaCache: 'none'")`);
+await check("versioned service worker updater is present", `document.documentElement.innerHTML.includes('service-worker.js?v=16') && document.documentElement.innerHTML.includes("updateViaCache: 'none'")`);
 await check("call overlay starts hidden", `document.querySelector('#callSpace').hidden === true`);
+await evaluate(`document.querySelector('#titleButton').click()`); await wait(100);
+await check("conversation switcher opens from title", `!document.querySelector('#conversationPopover').hidden && !!document.querySelector('#conversationPopover [data-value="__new__"]')`);
+await evaluate(`document.body.click()`); await wait(100);
+await check("conversation switcher closes outside", `document.querySelector('#conversationPopover').hidden`);
 const hasProviders = await evaluate(`state.providers.length > 0`);
 await evaluate(`document.querySelector('#modelPicker').click()`); await wait(100);
 if (hasProviders) {
