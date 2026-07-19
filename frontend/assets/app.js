@@ -226,9 +226,31 @@ function closePopovers() { document.querySelectorAll(".popover").forEach(popover
 function showPopover(target, popover, items, select) {
   const wasOpen = !popover.hidden; closePopovers(); if (wasOpen) return;
   const rect = target.getBoundingClientRect(); popover.innerHTML = items || `<button type="button" data-close-popover>暂无可选项 · 点击关闭</button>`; popover.hidden = false;
-  popover.style.left = `${Math.max(8, Math.min(rect.left, innerWidth - 270))}px`; popover.style.bottom = `${innerHeight - rect.top + 8}px`;
+  popover.style.left = `${Math.max(8, Math.min(rect.left, innerWidth - 270))}px`;
+  if (rect.top < innerHeight / 2) { popover.style.top = `${rect.bottom + 8}px`; popover.style.bottom = "auto"; }
+  else { popover.style.top = "auto"; popover.style.bottom = `${innerHeight - rect.top + 8}px`; }
   popover.querySelectorAll("button[data-value]").forEach(b => b.onclick = () => { select(b.dataset.value); closePopovers(); });
   popover.querySelector("[data-close-popover]")?.addEventListener("click", closePopovers);
+}
+
+async function renameCurrentConversation() {
+  if (!state.current) return;
+  const current = state.conversations.find(c => c.id === state.current);
+  const title = window.prompt("重命名对话", current?.title || "新对话");
+  if (!title?.trim()) return;
+  const saved = await api(`/api/conversations/${state.current}`, { method: "PATCH", body: JSON.stringify({ title: title.trim() }) });
+  current.title = saved.title; $("#titleButton").textContent = `${saved.title}⌄`; renderHistory();
+}
+
+function openConversationSwitcher(event) {
+  event.stopPropagation();
+  const recent = state.conversations.filter(item => !item.archived).slice(0, 30);
+  const items = `<button data-value="__new__"><strong>＋ 新对话</strong></button>${recent.map(item => `<button data-value="${item.id}" class="${item.id === state.current ? "active" : ""}"><strong>${escapeHtml(item.title)}</strong><small>${item.id === state.current ? "当前对话" : new Date(item.updated_at || item.created_at).toLocaleString("zh-CN")}</small></button>`).join("")}<button data-value="__rename__" ${state.current ? "" : "disabled"}>重命名当前对话</button>`;
+  showPopover(event.currentTarget, $("#conversationPopover"), items, async value => {
+    if (value === "__new__") await newConversation();
+    else if (value === "__rename__") await renameCurrentConversation();
+    else await openConversation(value);
+  });
 }
 
 function shareConversation() {
@@ -292,7 +314,7 @@ $("#prompt").addEventListener("input", e => { e.target.style.height = "auto"; e.
 $("#attachmentButton").onclick=event=>{event.stopPropagation();$("#attachmentMenu").hidden=!$("#attachmentMenu").hidden;};document.querySelectorAll("[data-attachment-source]").forEach(button=>button.onclick=()=>{const inputs={camera:$("#cameraInput"),images:$("#imageInput"),files:$("#fileInput")};$("#attachmentMenu").hidden=true;inputs[button.dataset.attachmentSource].click();});[$("#cameraInput"),$("#imageInput"),$("#fileInput")].forEach(input=>input.onchange=async event=>{await addAttachments(event.target.files);event.target.value="";$("#send").disabled=false;});
 $("#prompt").addEventListener("keydown", e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendMessage(); } });
 $("#send").onclick = sendMessage; $("#newChat").onclick = newConversation;
-$("#titleButton").onclick = async () => { if (!state.current) return; const current = state.conversations.find(c => c.id === state.current); const title = window.prompt("重命名对话", current?.title || "新对话"); if (!title?.trim()) return; const saved = await api(`/api/conversations/${state.current}`, { method: "PATCH", body: JSON.stringify({ title: title.trim() }) }); current.title = saved.title; $("#titleButton").textContent = `${saved.title}⌄`; renderHistory(); };
+$("#titleButton").onclick = openConversationSwitcher;
 let searchTimer;
 $("#conversationSearch").oninput = event => { clearTimeout(searchTimer); searchTimer = setTimeout(async () => { const query = event.target.value.trim(); if (!query) { const fresh = await api("/api/bootstrap"); state.conversations = fresh.conversations; } else { state.conversations = await api(`/api/search?q=${encodeURIComponent(query)}`); } renderHistory(); }, 180); };
 $("#autoTitleMode").onchange = saveAppSettings;
