@@ -247,10 +247,10 @@
   <script src="assets/app.js?v=0402" defer></script>
   <script>
     if ('serviceWorker' in navigator) {
-      navigator.serviceWorker.register('service-worker.js?v=14', { updateViaCache: 'none' }).then(registration => registration.update());
+      navigator.serviceWorker.register('service-worker.js?v=15', { updateViaCache: 'none' }).then(registration => registration.update());
       navigator.serviceWorker.addEventListener('controllerchange', () => {
-        if (!sessionStorage.getItem('atherloom:sw-reloaded-v14')) {
-          sessionStorage.setItem('atherloom:sw-reloaded-v14', '1');
+        if (!sessionStorage.getItem('atherloom:sw-reloaded-v15')) {
+          sessionStorage.setItem('atherloom:sw-reloaded-v15', '1');
           location.reload();
         }
       });
