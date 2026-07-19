@@ -102,6 +102,7 @@
         <button data-tab="memory">记忆库与 MCP</button>
         <button data-tab="tools">工具与权限</button>
         <button data-tab="appearance">外观</button>
+        <button data-tab="backup">备份与恢复</button>
       </nav>
       <div class="settings-content">
         <section class="tab active" id="tab-providers">
@@ -190,6 +191,17 @@
           <div class="setting-row"><div><strong>字体大小</strong><small id="fontScaleValue">100%</small></div><input id="fontScale" type="range" min="85" max="130" step="5" value="100"></div>
           <div class="setting-row"><div><strong>消息密度</strong><small>调整消息之间的留白</small></div><select id="messageDensity"><option value="compact">紧凑</option><option value="comfortable">舒适</option><option value="relaxed">宽松</option></select></div>
           <div class="setting-row"><div><strong>代码高亮主题</strong><small>为代码块单独选择显示方案</small></div><select id="codeTheme"><option value="auto">跟随主题</option><option value="light">浅色</option><option value="dark">深色</option><option value="contrast">高对比度</option></select></div>
+        </section>
+
+        <section class="tab" id="tab-backup">
+          <h3>备份与恢复</h3><p class="muted">把本机对话、记忆、人格、设置和游戏存档打包保存。</p>
+          <div class="edit-card visible">
+            <div class="setting-row"><div><strong>一键本地备份</strong><small>API Key 不写入明文备份；恢复后需重新添加线路</small></div><button class="primary" id="exportBackup" type="button">导出备份</button></div>
+            <div class="setting-row"><div><strong>从备份恢复</strong><small>导入前会确认；同名本机数据将被备份内容替换</small></div><button class="ghost" id="chooseBackup" type="button">选择文件</button></div>
+            <input id="backupFile" type="file" accept="application/json,.json" hidden>
+            <p class="save-state" id="backupState"></p>
+          </div>
+          <p class="privacy-note">安卓 API Key 留在系统加密存储中；网页版 Key 留在当前浏览器且不会随 JSON 导出。云端加密定时备份会作为独立连接启用，不会默认上传。</p>
         </section>
       </div>
     </div>
