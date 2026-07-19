@@ -61,6 +61,14 @@ def init_db() -> None:
               content TEXT NOT NULL, provider_id TEXT, model TEXT, created_at TEXT NOT NULL,
               reasoning TEXT NOT NULL DEFAULT '', parent_message_id TEXT
             );
+            CREATE TABLE IF NOT EXISTS message_trash (
+              message_id TEXT PRIMARY KEY, deleted_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS message_selections (
+              conversation_id TEXT NOT NULL, parent_message_id TEXT NOT NULL,
+              assistant_message_id TEXT NOT NULL,
+              PRIMARY KEY(conversation_id, parent_message_id)
+            );
             CREATE TABLE IF NOT EXISTS app_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS memories (
               id TEXT PRIMARY KEY, title TEXT NOT NULL, content TEXT NOT NULL,
@@ -135,6 +143,12 @@ class ProviderProbe(BaseModel):
     base_url: str
     api_key: str = ""
     custom_headers: str = "{}"
+
+
+class MessageSelectionIn(BaseModel):
+    conversation_id: str
+    parent_message_id: str
+    assistant_message_id: str
 
 
 class PersonaIn(BaseModel):
@@ -461,7 +475,7 @@ def search_conversations(q: str = "") -> list[dict[str, Any]]:
 def branch_conversation(conversation_id: str, message_id: str) -> dict[str, Any]:
     with closing(db()) as connection:
         source = connection.execute("SELECT * FROM conversations WHERE id=?", (conversation_id,)).fetchone()
-        pivot = connection.execute("SELECT * FROM messages WHERE id=? AND conversation_id=?", (message_id, conversation_id)).fetchone()
+        pivot = connection.execute("SELECT * FROM messages WHERE id=? AND conversation_id=? AND NOT EXISTS (SELECT 1 FROM message_trash t WHERE t.message_id=messages.id)", (message_id, conversation_id)).fetchone()
         if not source or not pivot:
             raise HTTPException(404, "找不到要分支的消息")
         new_id = str(uuid.uuid4())
@@ -472,7 +486,7 @@ def branch_conversation(conversation_id: str, message_id: str) -> dict[str, Any]
             (new_id, title, source["provider_id"], source["persona_id"], source["summary"], created, created),
         )
         rows = connection.execute(
-            "SELECT * FROM messages WHERE conversation_id=? AND created_at<=? ORDER BY created_at", (conversation_id, pivot["created_at"])
+            "SELECT * FROM messages WHERE conversation_id=? AND created_at<=? AND NOT EXISTS (SELECT 1 FROM message_trash t WHERE t.message_id=messages.id) ORDER BY created_at", (conversation_id, pivot["created_at"])
         ).fetchall()
         for row in rows:
             connection.execute(
@@ -486,7 +500,37 @@ def branch_conversation(conversation_id: str, message_id: str) -> dict[str, Any]
 @app.get("/api/conversations/{conversation_id}/messages")
 def get_messages(conversation_id: str) -> list[dict[str, Any]]:
     with closing(db()) as connection:
-        return [dict(row) for row in connection.execute("SELECT * FROM messages WHERE conversation_id=? ORDER BY created_at", (conversation_id,))]
+        return [dict(row) for row in connection.execute("""SELECT messages.*,
+            CASE WHEN s.assistant_message_id=messages.id THEN 1 ELSE 0 END AS selected
+            FROM messages LEFT JOIN message_selections s ON s.conversation_id=messages.conversation_id AND s.parent_message_id=messages.parent_message_id
+            WHERE messages.conversation_id=? AND NOT EXISTS (SELECT 1 FROM message_trash t WHERE t.message_id=messages.id) ORDER BY messages.created_at""", (conversation_id,))]
+
+
+@app.patch("/api/messages/selection")
+def select_message_version(body: MessageSelectionIn) -> dict[str, Any]:
+    with closing(db()) as connection:
+        valid = connection.execute("SELECT 1 FROM messages WHERE id=? AND conversation_id=? AND parent_message_id=? AND role='assistant'", (body.assistant_message_id, body.conversation_id, body.parent_message_id)).fetchone()
+        if not valid:
+            raise HTTPException(404, "回答版本不存在")
+        connection.execute("INSERT OR REPLACE INTO message_selections VALUES (?,?,?)", (body.conversation_id, body.parent_message_id, body.assistant_message_id))
+        connection.commit()
+    return {"ok": True}
+
+
+@app.delete("/api/messages/{message_id}")
+def delete_message_version(message_id: str) -> dict[str, Any]:
+    with closing(db()) as connection:
+        message = connection.execute("SELECT * FROM messages WHERE id=?", (message_id,)).fetchone()
+        if not message:
+            raise HTTPException(404, "消息不存在")
+        targets = [message_id]
+        if message["role"] == "user":
+            targets.extend(row["id"] for row in connection.execute("SELECT id FROM messages WHERE parent_message_id=?", (message_id,)))
+        connection.executemany("INSERT OR REPLACE INTO message_trash(message_id,deleted_at) VALUES (?,?)", [(target, now_iso()) for target in targets])
+        placeholders = ",".join("?" for _ in targets)
+        connection.execute(f"DELETE FROM message_selections WHERE assistant_message_id IN ({placeholders})", targets)
+        connection.commit()
+    return {"ok": True, "deleted": targets}
 
 
 @app.get("/api/favorites")
@@ -797,7 +841,13 @@ def load_chat_context(connection: sqlite3.Connection, body: ChatIn, cutoff: str 
     conversation = connection.execute("SELECT * FROM conversations WHERE id=?", (body.conversation_id,)).fetchone()
     if not conversation:
         raise HTTPException(404, "会话不存在")
-    query = "SELECT role, content FROM messages WHERE conversation_id=?"
+    query = """SELECT messages.role, messages.content FROM messages
+      WHERE messages.conversation_id=?
+      AND NOT EXISTS (SELECT 1 FROM message_trash t WHERE t.message_id=messages.id)
+      AND (messages.role!='assistant' OR messages.parent_message_id IS NULL OR messages.id=COALESCE(
+        (SELECT s.assistant_message_id FROM message_selections s WHERE s.conversation_id=messages.conversation_id AND s.parent_message_id=messages.parent_message_id),
+        (SELECT m2.id FROM messages m2 WHERE m2.conversation_id=messages.conversation_id AND m2.parent_message_id=messages.parent_message_id AND NOT EXISTS (SELECT 1 FROM message_trash t2 WHERE t2.message_id=m2.id) ORDER BY m2.created_at DESC LIMIT 1)
+      ))"""
     params: list[Any] = [body.conversation_id]
     if cutoff:
         query += " AND created_at<=?"
@@ -1135,6 +1185,7 @@ async def chat(body: ChatIn) -> StreamingResponse:
                         "INSERT INTO messages VALUES (?, ?, 'assistant', ?, ?, ?, ?, ?, ?)",
                         (assistant_id, body.conversation_id, full, body.provider_id, provider["model"], now_iso(), reasoning, user_id),
                     )
+                    connection.execute("INSERT OR REPLACE INTO message_selections VALUES (?,?,?)", (body.conversation_id, user_id, assistant_id))
                     conversation = connection.execute("SELECT title FROM conversations WHERE id=?", (body.conversation_id,)).fetchone()
                     mode_row = connection.execute("SELECT value FROM app_settings WHERE key='auto_title_mode'").fetchone()
                     title_mode = mode_row["value"] if mode_row else "local"

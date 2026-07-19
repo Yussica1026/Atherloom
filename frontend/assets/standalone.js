@@ -38,6 +38,7 @@
   const formatMessages=(items,protocol)=>items.map(item=>{if(item.role!=="user"||!item.attachments?.length)return {role:item.role,content:item.content};const anthropic=protocol==="anthropic";if(anthropic){const blocks=[{type:"text",text:item.content}];for(const file of item.attachments){if(file.kind==="image")blocks.push({type:"image",source:{type:"base64",media_type:file.mime,data:file.data.split(",")[1]}});else if(file.kind==="pdf")blocks.push({type:"document",source:{type:"base64",media_type:"application/pdf",data:file.data.split(",")[1]}});else if(file.text)blocks.push({type:"text",text:`文件：${file.name}\n${file.text}`});}return {role:item.role,content:blocks};}const parts=[{type:"text",text:item.content}];for(const file of item.attachments){if(file.kind==="image")parts.push({type:"image_url",image_url:{url:file.data}});else if(file.text)parts.push({type:"text",text:`文件：${file.name}\n${file.text}`});else parts.push({type:"text",text:`[已选择文件 ${file.name}，当前兼容线路不支持直接传输此格式]`});}return {role:item.role,content:parts};});
   const messages = conversationId => read(`messages:${conversationId}`, []);
   const saveMessages = (conversationId, items) => write(`messages:${conversationId}`, items);
+  const effectiveMessages = (conversationId,all=messages(conversationId)) => {const chosen=read(`versions:${conversationId}`,{}),seen=new Set();return all.filter(item=>{if(item.role!=="assistant"||!item.parent_message_id)return true;if(seen.has(item.parent_message_id))return false;seen.add(item.parent_message_id);const versions=all.filter(row=>row.role==="assistant"&&row.parent_message_id===item.parent_message_id),selected=versions.find(row=>row.id===chosen[item.parent_message_id])||versions.at(-1);return item===selected;});};
   const updateConversation = (id, changes) => {
     const all = read("conversations", []), item = all.find(row => row.id === id);
     if (!item) return null;
@@ -80,6 +81,9 @@
       const item={...body,id:uid(),has_api_key:!!body.api_key}; write("providers",[...read("providers",[]),item]); return json(publicProvider(item));
     }
     if (url.pathname === "/api/providers/models" && method === "POST") return json({models:native?nativeResult("listModels",body):await webModels(body)});
+    if(url.pathname==="/api/messages/selection"&&method==="PATCH"){const selected=read(`versions:${body.conversation_id}`,{});selected[body.parent_message_id]=body.assistant_message_id;write(`versions:${body.conversation_id}`,selected);return json({ok:true});}
+    const deleteMessage=url.pathname.match(/^\/api\/messages\/([^/]+)$/);
+    if(deleteMessage&&method==="DELETE"){const id=decodeURIComponent(deleteMessage[1]);for(const conversation of read("conversations",[])){const all=messages(conversation.id),target=all.find(item=>item.id===id);if(!target)continue;saveMessages(conversation.id,all.filter(item=>item.id!==id&&(target.role!=="user"||item.parent_message_id!==id)));const selected=read(`versions:${conversation.id}`,{});if(target.parent_message_id)delete selected[target.parent_message_id];if(target.role==="user")delete selected[target.id];write(`versions:${conversation.id}`,selected);return json({ok:true});}return json({detail:"消息不存在"},404);}
     if (/^\/api\/providers\/[^/]+$/.test(url.pathname) && method === "DELETE") {
       const id=decodeURIComponent(url.pathname.split("/").pop());
       if(native) nativeResult("deleteProvider",id); else write("providers",read("providers",[]).filter(item=>item.id!==id));
@@ -89,7 +93,7 @@
     if (url.pathname === "/api/personas" && method === "POST") { const item={...body,id:uid(),created_at:new Date().toISOString()}; write("personas",[...read("personas",[]),item]); return json(item); }
     if (url.pathname === "/api/conversations" && method === "POST") { const item={...body,id:uid(),title:"新对话",summary:"",pinned:0,starred:0,archived:0,created_at:new Date().toISOString(),updated_at:new Date().toISOString()}; write("conversations",[item,...read("conversations",[])]); return json(item); }
     const conversationMessages=url.pathname.match(/^\/api\/conversations\/([^/]+)\/messages$/);
-    if(conversationMessages && method==="GET") return json(messages(decodeURIComponent(conversationMessages[1])));
+    if(conversationMessages && method==="GET"){const conversationId=decodeURIComponent(conversationMessages[1]),selected=read(`versions:${conversationId}`,{});return json(messages(conversationId).map(item=>({...item,selected:item.role==="assistant"&&selected[item.parent_message_id]===item.id})));}
     const conversationState=url.pathname.match(/^\/api\/conversations\/([^/]+)\/state$/);
     if(conversationState && method==="PATCH") return json(updateConversation(decodeURIComponent(conversationState[1]),body) || {detail:"对话不存在"}, updateConversation ? 200 : 404);
     const conversationItem=url.pathname.match(/^\/api\/conversations\/([^/]+)$/);
@@ -103,11 +107,12 @@
       const persona=read("personas",[]).find(item=>item.id===body.persona_id);
       const prompt=[persona?.prompt,`当前时间：${new Date().toLocaleString("zh-CN",{hour12:false})}`].filter(Boolean).join("\n\n");
       try {
-        const provider=providers().find(item=>item.id===body.provider_id);const rawMessages=history.filter(item=>item.role==="user"||item.role==="assistant").map(item=>({role:item.role,content:item.content,attachments:item.attachments||[]}));
+        const provider=providers().find(item=>item.id===body.provider_id);const rawMessages=effectiveMessages(body.conversation_id,history).filter(item=>item.role==="user"||item.role==="assistant").map(item=>({role:item.role,content:item.content,attachments:item.attachments||[]}));
         const request={provider_id:body.provider_id,system:prompt,messages:native?formatMessages(rawMessages,provider?.protocol||"openai"):rawMessages};
         const result=native?nativeResult("chat",request):await webChat(request);
         const assistant={id:uid(),role:"assistant",content:result.content||"",model:result.model||"",parent_message_id:user.id,created_at:new Date().toISOString()};
         history.push(assistant);saveMessages(body.conversation_id,history);
+        const selected=read(`versions:${body.conversation_id}`,{});selected[user.id]=assistant.id;write(`versions:${body.conversation_id}`,selected);
         const conversation=read("conversations",[]).find(item=>item.id===body.conversation_id);let title="";
         if(conversation?.title==="新对话"){title=(user.content||"新对话").replace(/\s+/g," ").slice(0,24);updateConversation(body.conversation_id,{title});}
         return ndjson([{reasoning_delta:result.reasoning||"",delta:assistant.content},{done:true,assistant_id:assistant.id,user_id:user.id,title}]);
