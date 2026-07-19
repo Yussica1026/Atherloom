@@ -24,6 +24,10 @@ class LocalClientTests(unittest.TestCase):
         payload = self.client.get("/api/bootstrap").json()
         self.assertEqual(payload["personas"], [])
 
+    def test_model_ids_are_normalized_and_deduplicated(self):
+        payload = {"data": [{"id": "glm-5"}, {"id": "deepseek-chat"}, {"id": "glm-5"}, "custom-model", {}]}
+        self.assertEqual(app_module.extract_model_ids(payload), ["custom-model", "deepseek-chat", "glm-5"])
+
     def test_provider_is_saved_but_key_is_masked(self):
         response = self.client.post("/api/providers", json={
             "name": "测试反代", "protocol": "openai",

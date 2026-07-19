@@ -15,12 +15,15 @@ const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
 const check = async (name, expression) => { const ok = await evaluate(expression); if (!ok) throw new Error(`UI smoke failed: ${name}`); console.log(`PASS ${name}`); };
 
 await command("Runtime.enable");
+await command("Page.enable");
+await command("Page.navigate", { url: `http://127.0.0.1:8876/?smoke=${Date.now()}` });
+await wait(900);
 await command("Emulation.setDeviceMetricsOverride", { width: viewportWidth, height: viewportHeight, deviceScaleFactor: 3, mobile: true });
 await check("top bar keeps only call action", `!!document.querySelector('#openCall') && !document.querySelector('#shareChat') && !document.querySelector('#openMemory') && !document.querySelector('#topSettings')`);
 await check("call action uses a visible non-emoji icon", `getComputedStyle(document.querySelector('#openCall')).display !== 'none' && !!document.querySelector('#openCall svg')`);
 await check("persona picker remains visible on compact phone", `getComputedStyle(document.querySelector('#personaPicker')).display !== 'none'`);
 await check("welcome mark uses themeable SVG", `!!document.querySelector('.sun-mark svg') && getComputedStyle(document.querySelector('.sun-mark')).color === 'rgb(201, 100, 66)'`);
-await check("versioned service worker updater is present", `document.documentElement.innerHTML.includes('service-worker.js?v=18') && document.documentElement.innerHTML.includes("updateViaCache: 'none'")`);
+await check("versioned service worker updater is present", `document.documentElement.innerHTML.includes('service-worker.js?v=19') && document.documentElement.innerHTML.includes("updateViaCache: 'none'")`);
 await check("welcome and composer helper copy stay minimal", `!document.querySelector('#welcome p') && !document.querySelector('#prompt').hasAttribute('placeholder') && !document.querySelector('.disclaimer')`);
 await check("morning greeting follows local time", `renderTimeGreeting(new Date(2026,6,19,8,0)) === '早上好，今天想聊些什么？'`);
 await check("afternoon greeting follows local time", `renderTimeGreeting(new Date(2026,6,19,16,0)) === '下午好，想聊些什么？'`);
@@ -41,6 +44,7 @@ if (hasProviders) {
   await check("model popover closes outside", `document.querySelector('#modelPopover').hidden === true`);
 } else {
   await check("empty model picker opens API settings", `document.querySelector('#settingsPanel').classList.contains('open') && document.querySelector('#tab-providers').classList.contains('active')`);
+  await check("provider form supports fetching models", `!!document.querySelector('#fetchModels') && document.querySelector('#providerForm [name=model]').getAttribute('list') === 'providerModelOptions'`);
   await evaluate(`document.querySelector('#settingsPanel [data-close]').click()`); await wait(100);
 }
 await evaluate(`document.querySelector('#mobileMenu').click()`); await wait(100);
@@ -56,6 +60,8 @@ await check("slots open", `document.querySelector('#slotsStage').hidden === fals
 await check("AI game controls enabled", `!document.querySelector('#aiGameControls').hidden && !document.querySelector('#aiPlayOne').disabled && !document.querySelector('#aiPlayThree').disabled`);
 await evaluate(`document.querySelector('#closeGames').click(); document.querySelector('#openReading').click()`); await wait(100);
 await check("reading room opens", `!document.querySelector('#mediaSpace').hidden && !document.querySelector('#readingRoom').hidden`);
+await check("small text book opens without blocking", `(async()=>{await openLocalBook(new File([['第一章','你好'].join(String.fromCharCode(10))], 'test.txt', {type:'text/plain'}));return document.querySelector('#bookReader pre')?.textContent.includes('第一章') && document.querySelector('#bookStatus').textContent.includes('本地文件')})()`);
+await check("Android PDF is safely blocked", `(async()=>{window.AtherloomNative={showNotice(){}};await openLocalBook(new File(['%PDF'], 'test.pdf', {type:'application/pdf'}));delete window.AtherloomNative;return document.querySelector('#bookStatus').textContent.includes('安全拦截') && document.querySelector('#bookReader').textContent.includes('安卓暂不在应用内打开 PDF')})()`);
 await evaluate(`document.querySelector('#closeMedia').click(); document.querySelector('#openCinema').click()`); await wait(100);
 await check("cinema room opens", `!document.querySelector('#mediaSpace').hidden && !document.querySelector('#cinemaRoom').hidden`);
 await evaluate(`document.querySelector('#closeMedia').click()`);

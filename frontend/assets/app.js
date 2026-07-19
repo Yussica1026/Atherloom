@@ -21,6 +21,44 @@ function renderTimeGreeting(now = new Date()) {
   return greeting;
 }
 
+let bookObjectUrl;
+async function openLocalBook(file) {
+  if (!file) return;
+  const reader = $("#bookReader");
+  const status = $("#bookStatus");
+  const key = `atherloom:book:${file.name}:${file.size}`;
+  const isPdf = file.type === "application/pdf" || /\.pdf$/i.test(file.name);
+  status.textContent = `${file.name} · 正在打开…`;
+  await new Promise(resolve => requestAnimationFrame(resolve));
+  try {
+    if (bookObjectUrl) { URL.revokeObjectURL(bookObjectUrl); bookObjectUrl = undefined; }
+    reader.onscroll = null;
+    if (isPdf && window.AtherloomNative) {
+      reader.innerHTML = `<div class="game-empty"><span>PDF</span><h3>安卓暂不在应用内打开 PDF</h3><p>部分 Android WebView 打开本地 PDF 会卡死。请先转成 TXT 或 Markdown；后续接入原生 PDF 阅读器。</p></div>`;
+      status.textContent = `${file.name} · 已安全拦截`;
+      window.AtherloomNative.showNotice?.("为避免卡死，安卓暂不在应用内打开 PDF");
+      return;
+    }
+    if (isPdf) {
+      bookObjectUrl = URL.createObjectURL(file);
+      reader.innerHTML = `<iframe title="${escapeHtml(file.name)}" src="${bookObjectUrl}#page=${Number(localStorage.getItem(key) || 1)}"></iframe>`;
+      status.textContent = `${file.name} · 本地 PDF`;
+      return;
+    }
+    const limit = 2 * 1024 * 1024;
+    const text = await file.slice(0, limit).text();
+    const pre = document.createElement("pre");
+    pre.textContent = text;
+    reader.replaceChildren(pre);
+    reader.scrollTop = Number(localStorage.getItem(key) || 0);
+    reader.onscroll = () => localStorage.setItem(key, String(reader.scrollTop));
+    status.textContent = file.size > limit ? `${file.name} · 已打开前 2 MB，避免设备卡顿` : `${file.name} · 本地文件`;
+  } catch (error) {
+    reader.innerHTML = `<div class="game-empty"><span>!</span><h3>这本书没有打开</h3><p>${escapeHtml(error.message || "无法读取本地文件")}</p></div>`;
+    status.textContent = `${file.name} · 打开失败`;
+  }
+}
+
 function renderHistory() {
   const group = (label, items) => items.length ? `<div class="history-group"><div class="history-label">${label}</div>${items.map(c => `<div class="history-row ${c.id === state.current ? "active" : ""}"><button class="history-item" data-id="${c.id}">${escapeHtml(c.title)}</button><div class="history-actions"><button data-history-action="star" data-id="${c.id}" title="星标">${c.starred ? "★" : "☆"}</button><button data-history-action="pin" data-id="${c.id}" title="置顶">${c.pinned ? "●" : "○"}</button><button data-history-action="archive" data-id="${c.id}" title="${c.archived ? "取消归档" : "归档"}">⌑</button></div></div>`).join("")}</div>` : "";
   const active = state.conversations.filter(c => !c.archived);
@@ -351,7 +389,7 @@ $("#openGames").onclick = openGameLibrary; $("#closeGames").onclick = () => $("#
 $("#openFavorites").onclick=openFavorites;$("#closeFavorites").onclick=()=>$("#favoritesSpace").hidden=true;
 $("#openReading").onclick=()=>openMedia("reading");$("#openCinema").onclick=()=>openMedia("cinema");$("#closeMedia").onclick=()=>{$("#mediaSpace").hidden=true;$("#moviePlayer").pause();};
 $("#openCall").onclick=openVoiceCall;$("#closeCall").onclick=()=>{endVoiceCall();$("#callSpace").hidden=true;};$("#startCall").onclick=()=>startVoiceCall().catch(error=>{$("#callStatus").textContent=`无法开始：${error.message}`;});$("#endCall").onclick=endVoiceCall;
-$("#chooseBook").onclick=()=>$("#bookInput").click();$("#bookInput").onchange=async event=>{const file=event.target.files?.[0];if(!file)return;const reader=$("#bookReader"),key=`atherloom:book:${file.name}:${file.size}`;$("#bookStatus").textContent=`${file.name} · 本地文件`;if(file.type==="application/pdf"||/\.pdf$/i.test(file.name)){const url=URL.createObjectURL(file);reader.innerHTML=`<iframe title="${escapeHtml(file.name)}" src="${url}#page=${Number(localStorage.getItem(key)||1)}"></iframe>`;}else{reader.innerHTML=`<pre>${escapeHtml(await file.text())}</pre>`;reader.scrollTop=Number(localStorage.getItem(key)||0);reader.onscroll=()=>localStorage.setItem(key,String(reader.scrollTop));}};
+$("#chooseBook").onclick=()=>$("#bookInput").click();$("#bookInput").onchange=async event=>{const file=event.target.files?.[0];event.target.value="";await openLocalBook(file);};
 let movieUrl;$("#chooseMovie").onclick=()=>$("#movieInput").click();$("#movieInput").onchange=event=>{const file=event.target.files?.[0];if(!file)return;if(movieUrl)URL.revokeObjectURL(movieUrl);movieUrl=URL.createObjectURL(file);const player=$("#moviePlayer"),key=`atherloom:movie:${file.name}:${file.size}`;player.src=movieUrl;$("#movieStatus").textContent=`${file.name} · 进度保存在本机`;player.onloadedmetadata=()=>{player.currentTime=Math.min(Number(localStorage.getItem(key)||0),Math.max(0,player.duration-1));};player.ontimeupdate=()=>{if(Math.floor(player.currentTime)%5===0)localStorage.setItem(key,String(player.currentTime));};};
 let favoriteSearchTimer;$("#favoriteSearch").oninput=event=>{clearTimeout(favoriteSearchTimer);favoriteSearchTimer=setTimeout(async()=>{state.favorites=await api(`/api/favorites?q=${encodeURIComponent(event.target.value.trim())}`);renderFavorites();},220);};
 document.querySelectorAll("[data-game-action]").forEach(button => button.onclick = () => playGame(button.dataset.gameAction, Number(button.dataset.amount || 1)));
@@ -364,6 +402,7 @@ $("#providerForm").onsubmit = async e => { e.preventDefault(); const data = Obje
 $("#providerProtocol").onchange = event => { const form = $("#providerForm"); const presets = { deepseek: { name: "DeepSeek", base_url: "https://api.deepseek.com", model: "deepseek-v4-flash" }, glm: { name: "智谱 GLM", base_url: "https://open.bigmodel.cn/api/paas/v4", model: "glm-5.2" } }; const preset = presets[event.target.value]; if (preset) for (const [key, value] of Object.entries(preset)) if (!form.elements[key].value) form.elements[key].value = value; updateProviderCacheUI(); };
 $("#toggleApiKey").onclick = () => { const input = $("#providerForm").elements.api_key; input.type = input.type === "password" ? "text" : "password"; };
 $("#pasteApiKey").onclick=async()=>{const input=$("#providerForm").elements.api_key;try{const value=window.AtherloomNative?.getClipboard?window.AtherloomNative.getClipboard():await navigator.clipboard.readText();if(!value)throw new Error("剪贴板为空");input.value=value.trim();$("#connectionState").className="connection-state success";$("#connectionState").textContent="已从剪贴板粘贴";}catch(error){$("#connectionState").className="connection-state error";$("#connectionState").textContent=`无法读取剪贴板：${error.message}`;}};
+$("#fetchModels").onclick=async()=>{const form=$("#providerForm"),status=$("#connectionState"),data=Object.fromEntries(new FormData(form));if(!data.base_url){form.elements.base_url.reportValidity();return;}status.className="connection-state";status.textContent="正在拉取模型…";try{const result=await api("/api/providers/models",{method:"POST",body:JSON.stringify(data)}),models=result.models||[];$("#providerModelOptions").innerHTML=models.map(model=>`<option value="${escapeHtml(model)}"></option>`).join("");if(models.length&&!form.elements.model.value)form.elements.model.value=models[0];status.classList.add("success");status.textContent=models.length?`已读取 ${models.length} 个模型，可点开模型输入框选择`:`线路已响应，但没有返回模型`; }catch(error){status.classList.add("error");status.textContent=`拉取失败：${error.message}；仍可手动填写模型 ID`;}};
 $("#testProvider").onclick = async () => { const form = $("#providerForm"); if (!form.reportValidity()) return; const data = Object.fromEntries(new FormData(form)); data.prompt_cache = form.elements.prompt_cache.checked; const status = $("#connectionState"); status.className = "connection-state"; status.textContent = "正在测试连接…"; try { const result = await api("/api/providers/test", { method: "POST", body: JSON.stringify(data) }); status.classList.add("success"); status.textContent = result.message; } catch (error) { status.classList.add("error"); status.textContent = error.message; } };
 $("#personaForm").onsubmit = async e => { e.preventDefault(); const data = Object.fromEntries(new FormData(e.target)); const saved = await api("/api/personas", { method: "POST", body: JSON.stringify(data) }); state.personas.push(saved); state.persona ||= saved.id; e.target.reset(); renderSettings(); renderPickers(); };
 $("#memoryForm").onsubmit = async e => { e.preventDefault(); const form = e.target; const data = Object.fromEntries(new FormData(form)); const editing = form.dataset.editing; const saved = await api(editing ? `/api/memories/${editing}` : "/api/memories", { method: editing ? "PUT" : "POST", body: JSON.stringify(data) }); if (editing) Object.assign(state.memories.find(item => item.id === editing), saved); else state.memories.unshift(saved); form.reset(); delete form.dataset.editing; $("#saveMemory").textContent = "添加记忆"; $("#cancelMemoryEdit").hidden = true; renderSettings(); };

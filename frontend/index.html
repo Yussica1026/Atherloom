@@ -13,7 +13,7 @@
   <title>Atherloom</title>
   <link rel="manifest" href="manifest.json">
   <link rel="icon" href="assets/app-icon.svg" type="image/svg+xml">
-  <link rel="stylesheet" href="assets/app.css?v=0405">
+  <link rel="stylesheet" href="assets/app.css?v=0406">
 </head>
 <body>
   <div id="app" class="app-shell">
@@ -144,7 +144,7 @@
             <label>供应商 / 协议<select name="protocol" id="providerProtocol"><option value="openai">OpenAI 兼容</option><option value="anthropic">Anthropic Messages</option><option value="deepseek">DeepSeek</option><option value="glm">智谱 GLM</option></select></label>
             <label>官方或反代 Base URL<input name="base_url" required placeholder="https://proxy.example.com/v1"></label>
             <label>API Key<span class="secret-field"><input name="api_key" type="password" autocomplete="new-password"><button type="button" id="pasteApiKey" aria-label="从剪贴板粘贴 API Key">粘贴</button><button type="button" id="toggleApiKey" aria-label="显示或隐藏 API Key">◉</button></span></label>
-            <label>模型 ID<input name="model" required placeholder="claude-sonnet-4-5"></label>
+            <label>模型 ID<span class="model-field"><input name="model" list="providerModelOptions" required placeholder="可手填，也可从线路拉取"><button type="button" id="fetchModels">拉取模型</button></span><datalist id="providerModelOptions"></datalist></label>
             <label>自定义请求头（JSON）<textarea name="custom_headers" rows="4" placeholder='{"X-Custom-Header":"value"}'>{}</textarea></label>
             <label class="check-label" id="promptCacheControl"><input name="prompt_cache" type="checkbox" checked> 启用 Anthropic 显式提示词缓存</label>
             <label class="check-label"><input name="thinking_enabled" type="checkbox" checked> 显示模型返回的思考过程（线路支持时）</label>
@@ -242,14 +242,14 @@
   <div class="popover" id="modelPopover" hidden></div>
   <div class="popover" id="personaPopover" hidden></div>
   <div class="popover conversation-popover" id="conversationPopover" hidden></div>
-  <script src="assets/standalone.js?v=0405"></script>
-  <script src="assets/app.js?v=0405" defer></script>
+  <script src="assets/standalone.js?v=0406"></script>
+  <script src="assets/app.js?v=0406" defer></script>
   <script>
     if ('serviceWorker' in navigator) {
-      navigator.serviceWorker.register('service-worker.js?v=18', { updateViaCache: 'none' }).then(registration => registration.update());
+      navigator.serviceWorker.register('service-worker.js?v=19', { updateViaCache: 'none' }).then(registration => registration.update());
       navigator.serviceWorker.addEventListener('controllerchange', () => {
-        if (!sessionStorage.getItem('atherloom:sw-reloaded-v18')) {
-          sessionStorage.setItem('atherloom:sw-reloaded-v18', '1');
+        if (!sessionStorage.getItem('atherloom:sw-reloaded-v19')) {
+          sessionStorage.setItem('atherloom:sw-reloaded-v19', '1');
           location.reload();
         }
       });

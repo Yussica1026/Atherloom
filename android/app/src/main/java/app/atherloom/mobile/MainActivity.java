@@ -124,6 +124,24 @@ public class MainActivity extends Activity {
             new Handler(Looper.getMainLooper()).post(() -> Toast.makeText(context, message, Toast.LENGTH_LONG).show());
         }
 
+        @JavascriptInterface public String listModels(String raw) {
+            HttpURLConnection connection = null;
+            try {
+                JSONObject provider = new JSONObject(raw); String protocol = provider.optString("protocol", "openai");
+                String base = provider.getString("base_url").replaceAll("/+$", "");
+                connection = (HttpURLConnection)new URL(base + "/models").openConnection(); connection.setRequestMethod("GET"); connection.setConnectTimeout(25000); connection.setReadTimeout(30000);
+                if (protocol.equals("anthropic")) { connection.setRequestProperty("x-api-key", provider.optString("api_key")); connection.setRequestProperty("anthropic-version", "2023-06-01"); }
+                else connection.setRequestProperty("Authorization", "Bearer " + provider.optString("api_key"));
+                JSONObject custom = new JSONObject(provider.optString("custom_headers", "{}"));
+                for (Iterator<String> keys = custom.keys(); keys.hasNext();) { String header = keys.next(); connection.setRequestProperty(header, custom.getString(header)); }
+                int status = connection.getResponseCode(); String response = read(status >= 400 ? connection.getErrorStream() : connection.getInputStream());
+                if (status >= 400) throw new Exception("HTTP " + status + " · " + response.substring(0, Math.min(240, response.length())));
+                JSONArray rows = new JSONObject(response).optJSONArray("data"), models = new JSONArray();
+                if (rows != null) for (int i = 0; i < rows.length(); i++) { Object row = rows.get(i); String id = row instanceof JSONObject ? ((JSONObject)row).optString("id") : row instanceof String ? (String)row : ""; if (!id.isEmpty()) models.put(id); }
+                return models.toString();
+            } catch (Exception error) { return failure(error); } finally { if (connection != null) connection.disconnect(); }
+        }
+
         @JavascriptInterface public String chat(String raw) {
             HttpURLConnection connection = null;
             try {
