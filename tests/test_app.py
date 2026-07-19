@@ -84,6 +84,19 @@ class LocalClientTests(unittest.TestCase):
         trashed = self.client.patch(f"/api/memories/{memory['id']}/state", json={"trash": True}).json()
         self.assertTrue(trashed["trashed"])
 
+    def test_high_frequency_entity_does_not_drown_the_topic(self):
+        topics = ["健身操", "戒指", "早餐", "旅行", "天气", "电影", "咖啡", "散步", "工作", "游戏"]
+        for index in range(30):
+            topic = topics[index % len(topics)]
+            self.client.post("/api/memories", json={"title": f"小A与{topic}{index}", "content": f"小A谈到了{topic}的一段普通记录", "kind": "event"})
+        relevant = self.client.post("/api/memories", json={"title": "小A写诗", "content": "小A担心写出来不够好，所以修改了三遍那首诗", "kind": "emotion"}).json()
+        with app_module.closing(app_module.db()) as connection:
+            results = app_module.retrieve_memories(connection, "小A为什么不主动写那首诗")
+            broad = app_module.retrieve_memories(connection, "小A")
+        self.assertEqual(results[0]["id"], relevant["id"])
+        self.assertLessEqual(len(broad), 6)
+        self.assertIn("reason", results[0])
+
     def test_provider_headers_keep_keys_server_side(self):
         anthropic = app_module.provider_headers("anthropic", "secret", '{"X-Test":"yes"}')
         openai = app_module.provider_headers("openai", "secret")

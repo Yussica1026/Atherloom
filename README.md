@@ -10,3 +10,5 @@ Atherloom 是一个为私人陪伴与共同生活设计的 AI 空间。
 
 **编：示例用户、示例助手、示例角色丁**  
 **写：示例助手**
+
+Source available for viewing. All rights reserved. No permission is granted to copy, modify, redistribute, or use this project without authorization.

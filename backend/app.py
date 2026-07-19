@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import json
 import hashlib
+import math
 import sqlite3
 import uuid
+from collections import Counter
 from contextlib import closing
 from datetime import datetime, timezone
 from pathlib import Path
@@ -705,19 +707,78 @@ def text_bigrams(value: str) -> set[str]:
     return {compact[index:index + 2] for index in range(max(0, len(compact) - 1))}
 
 
-def retrieve_memories(connection: sqlite3.Connection, query: str, limit: int = 5) -> list[dict[str, Any]]:
+def memory_type_hints(query: str) -> set[str]:
+    hints = set()
+    groups = {
+        "emotion": ("难过", "开心", "害怕", "焦虑", "生气", "感受", "情绪", "为什么不"),
+        "event": ("那次", "发生", "后来", "以前", "第一次", "什么时候"),
+        "preference": ("喜欢", "讨厌", "偏好", "习惯", "想吃", "想看"),
+        "promise": ("答应", "约定", "承诺", "说好", "别忘"),
+        "relationship": ("关系", "是谁", "我们", "朋友", "伴侣"),
+        "fact": ("什么", "多少", "哪里", "是谁", "事实", "资料"),
+    }
+    for kind, words in groups.items():
+        if any(word in query for word in words):
+            hints.add(kind)
+    return hints
+
+
+def retrieve_memories(connection: sqlite3.Connection, query: str, limit: int = 6, char_budget: int = 6000) -> list[dict[str, Any]]:
     query_terms = text_bigrams(query)
     if not query_terms:
         return []
+    rows = list(connection.execute("SELECT * FROM memories WHERE archived=0 AND deleted_at IS NULL"))
+    if not rows:
+        return []
+    documents = [Counter(text_bigrams(f"{row['title']} {row['content']}")) for row in rows]
+    frequencies = Counter(term for terms in documents for term in terms)
+    average_length = sum(sum(terms.values()) for terms in documents) / len(documents)
+    type_hints = memory_type_hints(query)
+    now = datetime.now(timezone.utc)
     ranked = []
-    for row in connection.execute("SELECT * FROM memories WHERE archived=0 AND deleted_at IS NULL"):
-        terms = text_bigrams(f"{row['title']} {row['content']}")
-        overlap = len(query_terms & terms)
-        if overlap:
-            score = overlap / max(1, len(query_terms)) + (0.15 if row["starred"] else 0)
-            ranked.append((score, row))
-    ranked.sort(key=lambda item: item[0], reverse=True)
-    return [{"id": row["id"], "title": row["title"], "kind": row["kind"], "content": row["content"]} for _, row in ranked[:limit]]
+    for row, terms in zip(rows, documents):
+        length = max(1, sum(terms.values()))
+        score = 0.0
+        matched = []
+        for term in query_terms & terms.keys():
+            document_frequency = frequencies[term]
+            idf = math.log(1 + (len(rows) - document_frequency + .5) / (document_frequency + .5))
+            frequency = terms[term]
+            score += idf * (frequency * 2.2) / (frequency + 1.2 * (.25 + .75 * length / max(1, average_length)))
+            if idf > .35:
+                matched.append(term)
+        if not score:
+            continue
+        if row["kind"] in type_hints:
+            score += .35
+        if row["starred"]:
+            score += .2
+        try:
+            age_days = max(0, (now - datetime.fromisoformat(row["updated_at"])).days)
+            score += .12 / (1 + age_days / 90)
+        except (TypeError, ValueError):
+            pass
+        ranked.append({"score": score, "row": row, "terms": set(terms), "matched": matched})
+    ranked.sort(key=lambda item: item["score"], reverse=True)
+
+    selected = []
+    used_chars = 0
+    while ranked and len(selected) < limit:
+        best = max(ranked, key=lambda item: item["score"] - .45 * max(
+            (len(item["terms"] & chosen["terms"]) / max(1, len(item["terms"] | chosen["terms"])) for chosen in selected),
+            default=0,
+        ))
+        ranked.remove(best)
+        content = best["row"]["content"]
+        if selected and used_chars + len(content) > char_budget:
+            continue
+        selected.append(best)
+        used_chars += len(content)
+    return [{
+        "id": item["row"]["id"], "title": item["row"]["title"], "kind": item["row"]["kind"],
+        "content": item["row"]["content"], "score": round(item["score"], 4),
+        "reason": "类型与主题匹配" if item["row"]["kind"] in type_hints else "主题相关",
+    } for item in selected]
 
 
 async def model_title(client: httpx.AsyncClient, provider: sqlite3.Row, content: str, headers: dict[str, str]) -> str:
