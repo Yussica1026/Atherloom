@@ -124,7 +124,7 @@ async function handleMessageAction(article, action) {
 
 function renderPickers() {
   const provider = activeProvider(); const persona = activePersona();
-  $("#modelPicker").textContent = provider ? `${provider.name} · ${provider.model}⌄` : "选择模型⌄";
+  $("#modelPicker").textContent = provider ? `${provider.name} · ${provider.model}⌄` : "添加 API 线路";
   $("#personaPicker").textContent = persona ? `${persona.name}⌄` : "默认人格⌄";
 }
 
@@ -292,7 +292,6 @@ $("#prompt").addEventListener("input", e => { e.target.style.height = "auto"; e.
 $("#attachmentButton").onclick=event=>{event.stopPropagation();$("#attachmentMenu").hidden=!$("#attachmentMenu").hidden;};document.querySelectorAll("[data-attachment-source]").forEach(button=>button.onclick=()=>{const inputs={camera:$("#cameraInput"),images:$("#imageInput"),files:$("#fileInput")};$("#attachmentMenu").hidden=true;inputs[button.dataset.attachmentSource].click();});[$("#cameraInput"),$("#imageInput"),$("#fileInput")].forEach(input=>input.onchange=async event=>{await addAttachments(event.target.files);event.target.value="";$("#send").disabled=false;});
 $("#prompt").addEventListener("keydown", e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendMessage(); } });
 $("#send").onclick = sendMessage; $("#newChat").onclick = newConversation;
-$("#shareChat").onclick = shareConversation;
 $("#titleButton").onclick = async () => { if (!state.current) return; const current = state.conversations.find(c => c.id === state.current); const title = window.prompt("重命名对话", current?.title || "新对话"); if (!title?.trim()) return; const saved = await api(`/api/conversations/${state.current}`, { method: "PATCH", body: JSON.stringify({ title: title.trim() }) }); current.title = saved.title; $("#titleButton").textContent = `${saved.title}⌄`; renderHistory(); };
 let searchTimer;
 $("#conversationSearch").oninput = event => { clearTimeout(searchTimer); searchTimer = setTimeout(async () => { const query = event.target.value.trim(); if (!query) { const fresh = await api("/api/bootstrap"); state.conversations = fresh.conversations; } else { state.conversations = await api(`/api/search?q=${encodeURIComponent(query)}`); } renderHistory(); }, 180); };
@@ -314,7 +313,7 @@ document.querySelectorAll("[data-bulk-permission]").forEach(button => button.onc
   });
   saveAppSettings();
 });
-$("#openSettings").onclick = () => openSettings(); $("#topSettings").onclick = () => openSettings(); $("#openMemory").onclick = () => openSettings("memory");
+$("#openSettings").onclick = () => openSettings();
 $("#openGames").onclick = openGameLibrary; $("#closeGames").onclick = () => $("#gameLibrary").hidden = true;
 $("#openFavorites").onclick=openFavorites;$("#closeFavorites").onclick=()=>$("#favoritesSpace").hidden=true;
 $("#openReading").onclick=()=>openMedia("reading");$("#openCinema").onclick=()=>openMedia("cinema");$("#closeMedia").onclick=()=>{$("#mediaSpace").hidden=true;$("#moviePlayer").pause();};
@@ -339,7 +338,7 @@ $("#cancelMemoryEdit").onclick = () => { const form = $("#memoryForm"); form.res
 let memorySearchTimer;
 $("#memorySearch").oninput = event => { clearTimeout(memorySearchTimer); memorySearchTimer = setTimeout(async () => { state.memories = await api(`/api/memories?q=${encodeURIComponent(event.target.value.trim())}`); renderSettings(); }, 180); };
 $("#memoryKindFilter").onchange = renderSettings;
-$("#modelPicker").onclick = e => { e.stopPropagation(); showPopover(e.currentTarget, $("#modelPopover"), state.providers.map(p => `<button data-value="${p.id}"><strong>${escapeHtml(p.name)}</strong><small>${escapeHtml(p.model)}</small></button>`).join(""), id => { state.provider = id; renderPickers(); }); };
+$("#modelPicker").onclick = e => { e.stopPropagation(); if (!state.providers.length) return openSettings("providers"); showPopover(e.currentTarget, $("#modelPopover"), state.providers.map(p => `<button data-value="${p.id}"><strong>${escapeHtml(p.name)}</strong><small>${escapeHtml(p.model)}</small></button>`).join(""), id => { state.provider = id; renderPickers(); }); };
 $("#personaPicker").onclick = e => { e.stopPropagation(); showPopover(e.currentTarget, $("#personaPopover"), `<button data-value="">默认人格</button>` + state.personas.map(p => `<button data-value="${p.id}">${escapeHtml(p.name)}</button>`).join(""), id => { state.persona = id || null; renderPickers(); }); };
 document.addEventListener("click", event => { if (!event.target.closest(".popover")) closePopovers(); if(!event.target.closest("#attachmentMenu")&&!event.target.closest("#attachmentButton"))$("#attachmentMenu").hidden=true; });
 document.addEventListener("keydown", event => { if (event.key === "Escape") closePopovers(); });
