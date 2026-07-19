@@ -245,6 +245,16 @@
   <div class="popover" id="personaPopover" hidden></div>
   <script src="assets/standalone.js?v=0402"></script>
   <script src="assets/app.js?v=0402" defer></script>
-  <script>if('serviceWorker' in navigator)navigator.serviceWorker.register('service-worker.js');</script>
+  <script>
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.register('service-worker.js?v=14', { updateViaCache: 'none' }).then(registration => registration.update());
+      navigator.serviceWorker.addEventListener('controllerchange', () => {
+        if (!sessionStorage.getItem('atherloom:sw-reloaded-v14')) {
+          sessionStorage.setItem('atherloom:sw-reloaded-v14', '1');
+          location.reload();
+        }
+      });
+    }
+  </script>
 </body>
 </html>

@@ -19,6 +19,7 @@ await command("Emulation.setDeviceMetricsOverride", { width: viewportWidth, heig
 await check("top bar keeps only call action", `!!document.querySelector('#openCall') && !document.querySelector('#shareChat') && !document.querySelector('#openMemory') && !document.querySelector('#topSettings')`);
 await check("call action remains visible on compact phone", `getComputedStyle(document.querySelector('#openCall')).display !== 'none'`);
 await check("welcome mark uses themeable SVG", `!!document.querySelector('.sun-mark svg') && getComputedStyle(document.querySelector('.sun-mark')).color === 'rgb(201, 100, 66)'`);
+await check("versioned service worker updater is present", `document.documentElement.innerHTML.includes('service-worker.js?v=14') && document.documentElement.innerHTML.includes("updateViaCache: 'none'")`);
 await check("call overlay starts hidden", `document.querySelector('#callSpace').hidden === true`);
 const hasProviders = await evaluate(`state.providers.length > 0`);
 await evaluate(`document.querySelector('#modelPicker').click()`); await wait(100);
