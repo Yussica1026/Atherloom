@@ -28,6 +28,24 @@ class LocalClientTests(unittest.TestCase):
         payload = {"data": [{"id": "glm-5"}, {"id": "deepseek-chat"}, {"id": "glm-5"}, "custom-model", {}]}
         self.assertEqual(app_module.extract_model_ids(payload), ["custom-model", "deepseek-chat", "glm-5"])
 
+    def test_answer_versions_can_be_selected_and_soft_deleted(self):
+        conversation_id, user_id = str(uuid.uuid4()), str(uuid.uuid4())
+        first_id, second_id = str(uuid.uuid4()), str(uuid.uuid4())
+        with app_module.closing(app_module.db()) as connection:
+            connection.execute("INSERT INTO conversations VALUES (?, '版本测试', NULL, NULL, '', ?, ?, 0, 0, 0)", (conversation_id, app_module.now_iso(), app_module.now_iso()))
+            connection.execute("INSERT INTO messages VALUES (?, ?, 'user', '你好', NULL, NULL, ?, '', NULL)", (user_id, conversation_id, "2026-07-19T10:00:00"))
+            connection.execute("INSERT INTO messages VALUES (?, ?, 'assistant', '第一版', NULL, 'm', ?, '', ?)", (first_id, conversation_id, "2026-07-19T10:00:01", user_id))
+            connection.execute("INSERT INTO messages VALUES (?, ?, 'assistant', '第二版', NULL, 'm', ?, '', ?)", (second_id, conversation_id, "2026-07-19T10:00:02", user_id))
+            connection.commit()
+        selected = self.client.patch("/api/messages/selection", json={"conversation_id": conversation_id, "parent_message_id": user_id, "assistant_message_id": first_id})
+        self.assertEqual(selected.status_code, 200)
+        rows = self.client.get(f"/api/conversations/{conversation_id}/messages").json()
+        self.assertTrue(next(row for row in rows if row["id"] == first_id)["selected"])
+        self.assertEqual(self.client.delete(f"/api/messages/{first_id}").status_code, 200)
+        remaining = self.client.get(f"/api/conversations/{conversation_id}/messages").json()
+        self.assertNotIn(first_id, [row["id"] for row in remaining])
+        self.assertIn(second_id, [row["id"] for row in remaining])
+
     def test_provider_is_saved_but_key_is_masked(self):
         response = self.client.post("/api/providers", json={
             "name": "测试反代", "protocol": "openai",

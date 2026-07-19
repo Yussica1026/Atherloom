@@ -23,7 +23,7 @@ await check("top bar keeps only call action", `!!document.querySelector('#openCa
 await check("call action uses a visible non-emoji icon", `getComputedStyle(document.querySelector('#openCall')).display !== 'none' && !!document.querySelector('#openCall svg')`);
 await check("persona picker remains visible on compact phone", `getComputedStyle(document.querySelector('#personaPicker')).display !== 'none'`);
 await check("welcome mark uses themeable SVG", `!!document.querySelector('.sun-mark svg') && getComputedStyle(document.querySelector('.sun-mark')).color === 'rgb(201, 100, 66)'`);
-await check("versioned service worker updater is present", `document.documentElement.innerHTML.includes('service-worker.js?v=19') && document.documentElement.innerHTML.includes("updateViaCache: 'none'")`);
+await check("versioned service worker updater is present", `document.documentElement.innerHTML.includes('service-worker.js?v=21') && document.documentElement.innerHTML.includes("updateViaCache: 'none'")`);
 await check("welcome and composer helper copy stay minimal", `!document.querySelector('#welcome p') && !document.querySelector('#prompt').hasAttribute('placeholder') && !document.querySelector('.disclaimer')`);
 await check("morning greeting follows local time", `renderTimeGreeting(new Date(2026,6,19,8,0)) === '早上好，今天想聊些什么？'`);
 await check("afternoon greeting follows local time", `renderTimeGreeting(new Date(2026,6,19,16,0)) === '下午好，想聊些什么？'`);
@@ -44,7 +44,11 @@ if (hasProviders) {
   await check("model popover closes outside", `document.querySelector('#modelPopover').hidden === true`);
 } else {
   await check("empty model picker opens API settings", `document.querySelector('#settingsPanel').classList.contains('open') && document.querySelector('#tab-providers').classList.contains('active')`);
-  await check("provider form supports fetching models", `!!document.querySelector('#fetchModels') && document.querySelector('#providerForm [name=model]').getAttribute('list') === 'providerModelOptions'`);
+  await check("provider form supports fetching models", `!!document.querySelector('#fetchModels') && !!document.querySelector('#providerModelSelect')`);
+await check("fetched models use a real mobile picker", `(()=>{const form=document.querySelector('#providerForm');showFetchedModels(['ds-v4-flash','ds-v4-pro'],form);const select=document.querySelector('#providerModelSelect');select.value='ds-v4-pro';select.dispatchEvent(new Event('change'));return !select.hidden&&select.options.length===3&&form.elements.model.value==='ds-v4-pro'})()`);
+await check("Roll versions stay in one message position", `(()=>{window.__smokeMessages=state.messages;window.__smokeVersions=state.version_selection;state.messages=[{id:'u1',role:'user',content:'你好'},{id:'a1',role:'assistant',content:'第一版',parent_message_id:'u1',model:'m'},{id:'a2',role:'assistant',content:'第二版',parent_message_id:'u1',model:'m'}];state.version_selection={u1:0};renderMessages();const first=document.querySelector('#messages').textContent.includes('第一版')&&document.querySelector('.version-switcher span')?.textContent==='1 / 2';state.version_selection.u1=1;renderMessages();return first&&document.querySelector('#messages').textContent.includes('第二版')&&document.querySelector('.version-switcher span')?.textContent==='2 / 2'&&!!document.querySelector('[data-action=more]')})()`);
+await check("message menu offers delete current version", `!!document.querySelector('#deleteMessageVersion') && document.querySelector('#deleteMessageVersion').textContent.includes('删除本版本')`);
+await evaluate(`state.messages=window.__smokeMessages;state.version_selection=window.__smokeVersions;delete window.__smokeMessages;delete window.__smokeVersions;renderMessages()`);
   await evaluate(`document.querySelector('#settingsPanel [data-close]').click()`); await wait(100);
 }
 await evaluate(`document.querySelector('#mobileMenu').click()`); await wait(100);

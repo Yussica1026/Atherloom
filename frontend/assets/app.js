@@ -1,5 +1,5 @@
 const $ = (s) => document.querySelector(s);
-const state = { providers: [], personas: [], conversations: [], memories: [], favorites: [], attachments: [], settings: { auto_title_mode: "local", tool_permissions: {} }, current: null, provider: null, persona: null, messages: [], busy: false };
+const state = { providers: [], personas: [], conversations: [], memories: [], favorites: [], attachments: [], version_selection: {}, settings: { auto_title_mode: "local", tool_permissions: {} }, current: null, provider: null, persona: null, messages: [], busy: false };
 const gameState = { catalog: [], current: null, fishing: null, claw: null, slots: null, waters: {} };
 
 async function api(path, options = {}) {
@@ -19,6 +19,15 @@ function renderTimeGreeting(now = new Date()) {
   const greeting = hour < 5 ? `夜深了${address}，想聊些什么？` : hour < 11 ? `早上好${address}，今天想聊些什么？` : hour < 14 ? `中午好${address}，想聊些什么？` : hour < 18 ? `下午好${address}，想聊些什么？` : hour < 23 ? `晚上好${address}，想聊些什么？` : `夜深了${address}，想聊些什么？`;
   if ($("#welcomeTitle")) $("#welcomeTitle").textContent = greeting;
   return greeting;
+}
+
+function showFetchedModels(models, form = $("#providerForm")) {
+  const select = $("#providerModelSelect");
+  const current = form.elements.model.value;
+  select.innerHTML = `<option value="">选择已拉取的模型（${models.length}）</option>` + models.map(model => `<option value="${escapeHtml(model)}">${escapeHtml(model)}</option>`).join("");
+  select.hidden = models.length === 0;
+  select.value = models.includes(current) ? current : "";
+  return select;
 }
 
 let bookObjectUrl;
@@ -141,12 +150,27 @@ async function openGameLibrary() {
   renderGameCards(); if (!gameState.current) openGame("quiet_fishing");
 }
 
+function visibleMessageVersions() {
+  const output = [], handled = new Set();
+  for (const message of state.messages) {
+    if (message.role !== "assistant" || !message.parent_message_id) { output.push(message); continue; }
+    if (handled.has(message.parent_message_id)) continue;
+    handled.add(message.parent_message_id);
+    const versions = state.messages.filter(item => item.role === "assistant" && item.parent_message_id === message.parent_message_id);
+    const requested = state.version_selection[message.parent_message_id];
+    const index = Math.max(0, Math.min(Number.isInteger(requested) ? requested : versions.length - 1, versions.length - 1));
+    output.push(Object.assign(versions[index], { _version_index: index, _version_count: versions.length }));
+  }
+  return output;
+}
+
 function renderMessages() {
   $("#welcome").hidden = state.messages.length > 0;
-  $("#messages").innerHTML = state.messages.map((m, index) => `<article class="message ${m.role}" data-index="${index}">
+  $("#messages").innerHTML = visibleMessageVersions().map(m => { const index=state.messages.indexOf(m); return `<article class="message ${m.role}" data-index="${index}">
     <div class="message-body">${m.memory_sources?.length ? `<div class="memory-sources">本轮使用记忆：${m.memory_sources.map(source => `<span>${escapeHtml(source.title)}</span>`).join("")}</div>` : ""}${m.reasoning ? `<details class="thinking"><summary>思考过程</summary><div>${escapeHtml(m.reasoning)}</div></details>` : ""}<div class="bubble">${escapeHtml(m.content)}</div></div>
-    <div class="message-actions"><button data-action="copy">复制</button>${m.id ? `<button data-action="favorite">${state.favorites.some(f => f.source_message_id === m.id && f.owners?.includes("user")) ? "★ 已珍藏" : "☆ 珍藏"}</button><button data-action="branch">分支</button>` : ""}${m.role === "assistant" && m.parent_message_id ? `<button data-action="regenerate">重新 Roll</button>` : ""}</div>
-    ${m.role === "assistant" && m.model ? `<div class="message-meta">${escapeHtml(m.model)}</div>` : ""}</article>`).join("");
+    <div class="message-actions"><button data-action="copy">复制</button>${m.id ? `<button data-action="favorite">${state.favorites.some(f => f.source_message_id === m.id && f.owners?.includes("user")) ? "★ 已珍藏" : "☆ 珍藏"}</button>` : ""}${m.role === "assistant" && m.parent_message_id ? `<button data-action="regenerate">重新 Roll</button>` : ""}${m.id ? `<button data-action="more" aria-label="更多消息操作">•••</button>` : ""}</div>
+    ${m.role === "assistant" && m._version_count > 1 ? `<div class="version-switcher"><button data-action="version-prev" ${m._version_index === 0 ? "disabled" : ""}>‹</button><span>${m._version_index + 1} / ${m._version_count}</span><button data-action="version-next" ${m._version_index === m._version_count - 1 ? "disabled" : ""}>›</button></div>` : ""}
+    ${m.role === "assistant" && m.model ? `<div class="message-meta">${escapeHtml(m.model)}</div>` : ""}</article>`; }).join("");
   document.querySelectorAll(".message-actions button").forEach(button => button.onclick = () => handleMessageAction(button.closest(".message"), button.dataset.action));
   $("#chatScroll").scrollTop = $("#chatScroll").scrollHeight;
   renderContextUsage();
@@ -162,6 +186,8 @@ async function handleMessageAction(article, action) {
     if(existing) await api(`/api/favorites/${message.id}?owner=user`,{method:"DELETE"}); else await api(`/api/favorites/${message.id}`,{method:"POST",body:JSON.stringify({owner:"user"})});
     state.favorites=await api("/api/favorites");renderMessages();return;
   }
+  if (action === "version-prev" || action === "version-next") { const current=message._version_index||0,next=current+(action==="version-next"?1:-1),versions=state.messages.filter(item=>item.role==="assistant"&&item.parent_message_id===message.parent_message_id),selected=versions[next];state.version_selection[message.parent_message_id]=next;renderMessages();if(selected?.id)await api("/api/messages/selection",{method:"PATCH",body:JSON.stringify({conversation_id:state.current,parent_message_id:message.parent_message_id,assistant_message_id:selected.id})});return; }
+  if (action === "more") { $("#messageMenu").dataset.messageIndex=article.dataset.index;$("#messageMenu").hidden=false;return; }
   if (action === "branch") {
     const conversation = await api(`/api/conversations/${state.current}/branch/${message.id}`, { method: "POST" });
     state.conversations.unshift(conversation); renderHistory(); return openConversation(conversation.id);
@@ -240,6 +266,7 @@ async function openConversation(id) {
   state.current = id; const conversation = state.conversations.find(c => c.id === id);
   state.provider = conversation.provider_id || state.provider; state.persona = conversation.persona_id || state.persona;
   state.messages = await api(`/api/conversations/${id}/messages`);
+  state.version_selection={};for(const message of state.messages)if(message.role==="assistant"&&message.parent_message_id&&message.selected){const versions=state.messages.filter(item=>item.role==="assistant"&&item.parent_message_id===message.parent_message_id);state.version_selection[message.parent_message_id]=versions.indexOf(message);}
   $("#titleButton").textContent = `${conversation.title}⌄`; renderHistory(); renderMessages(); renderPickers();
 }
 
@@ -256,6 +283,7 @@ async function generateReply(content, reuseUserMessageId = null, attachments = [
   const input = $("#prompt"); const provider = activeProvider();
   if (!provider) return openSettings("providers");
   state.busy = true;
+  if(reuseUserMessageId)delete state.version_selection[reuseUserMessageId];
   state.messages.push({ role: "assistant", content: "", reasoning: "", model: provider.model, parent_message_id: reuseUserMessageId }); renderMessages();
   const assistant = state.messages[state.messages.length - 1];
   try {
@@ -389,6 +417,9 @@ $("#openGames").onclick = openGameLibrary; $("#closeGames").onclick = () => $("#
 $("#openFavorites").onclick=openFavorites;$("#closeFavorites").onclick=()=>$("#favoritesSpace").hidden=true;
 $("#openReading").onclick=()=>openMedia("reading");$("#openCinema").onclick=()=>openMedia("cinema");$("#closeMedia").onclick=()=>{$("#mediaSpace").hidden=true;$("#moviePlayer").pause();};
 $("#openCall").onclick=openVoiceCall;$("#closeCall").onclick=()=>{endVoiceCall();$("#callSpace").hidden=true;};$("#startCall").onclick=()=>startVoiceCall().catch(error=>{$("#callStatus").textContent=`无法开始：${error.message}`;});$("#endCall").onclick=endVoiceCall;
+$("#closeMessageMenu").onclick=()=>$("#messageMenu").hidden=true;$("#messageMenu").onclick=event=>{if(event.target===$("#messageMenu"))$("#messageMenu").hidden=true;};
+$("#branchMessage").onclick=async()=>{const message=state.messages[Number($("#messageMenu").dataset.messageIndex)];$("#messageMenu").hidden=true;if(!message?.id)return;const conversation=await api(`/api/conversations/${state.current}/branch/${message.id}`,{method:"POST"});state.conversations.unshift(conversation);renderHistory();openConversation(conversation.id);};
+$("#deleteMessageVersion").onclick=async()=>{const index=Number($("#messageMenu").dataset.messageIndex),message=state.messages[index];if(!message?.id)return;await api(`/api/messages/${message.id}`,{method:"DELETE"});state.messages=state.messages.filter(item=>item.id!==message.id&&(message.role!=="user"||item.parent_message_id!==message.id));if(message.parent_message_id)delete state.version_selection[message.parent_message_id];$("#messageMenu").hidden=true;renderMessages();};
 $("#chooseBook").onclick=()=>$("#bookInput").click();$("#bookInput").onchange=async event=>{const file=event.target.files?.[0];event.target.value="";await openLocalBook(file);};
 let movieUrl;$("#chooseMovie").onclick=()=>$("#movieInput").click();$("#movieInput").onchange=event=>{const file=event.target.files?.[0];if(!file)return;if(movieUrl)URL.revokeObjectURL(movieUrl);movieUrl=URL.createObjectURL(file);const player=$("#moviePlayer"),key=`atherloom:movie:${file.name}:${file.size}`;player.src=movieUrl;$("#movieStatus").textContent=`${file.name} · 进度保存在本机`;player.onloadedmetadata=()=>{player.currentTime=Math.min(Number(localStorage.getItem(key)||0),Math.max(0,player.duration-1));};player.ontimeupdate=()=>{if(Math.floor(player.currentTime)%5===0)localStorage.setItem(key,String(player.currentTime));};};
 let favoriteSearchTimer;$("#favoriteSearch").oninput=event=>{clearTimeout(favoriteSearchTimer);favoriteSearchTimer=setTimeout(async()=>{state.favorites=await api(`/api/favorites?q=${encodeURIComponent(event.target.value.trim())}`);renderFavorites();},220);};
@@ -402,7 +433,8 @@ $("#providerForm").onsubmit = async e => { e.preventDefault(); const data = Obje
 $("#providerProtocol").onchange = event => { const form = $("#providerForm"); const presets = { deepseek: { name: "DeepSeek", base_url: "https://api.deepseek.com", model: "deepseek-v4-flash" }, glm: { name: "智谱 GLM", base_url: "https://open.bigmodel.cn/api/paas/v4", model: "glm-5.2" } }; const preset = presets[event.target.value]; if (preset) for (const [key, value] of Object.entries(preset)) if (!form.elements[key].value) form.elements[key].value = value; updateProviderCacheUI(); };
 $("#toggleApiKey").onclick = () => { const input = $("#providerForm").elements.api_key; input.type = input.type === "password" ? "text" : "password"; };
 $("#pasteApiKey").onclick=async()=>{const input=$("#providerForm").elements.api_key;try{const value=window.AtherloomNative?.getClipboard?window.AtherloomNative.getClipboard():await navigator.clipboard.readText();if(!value)throw new Error("剪贴板为空");input.value=value.trim();$("#connectionState").className="connection-state success";$("#connectionState").textContent="已从剪贴板粘贴";}catch(error){$("#connectionState").className="connection-state error";$("#connectionState").textContent=`无法读取剪贴板：${error.message}`;}};
-$("#fetchModels").onclick=async()=>{const form=$("#providerForm"),status=$("#connectionState"),data=Object.fromEntries(new FormData(form));if(!data.base_url){form.elements.base_url.reportValidity();return;}status.className="connection-state";status.textContent="正在拉取模型…";try{const result=await api("/api/providers/models",{method:"POST",body:JSON.stringify(data)}),models=result.models||[];$("#providerModelOptions").innerHTML=models.map(model=>`<option value="${escapeHtml(model)}"></option>`).join("");if(models.length&&!form.elements.model.value)form.elements.model.value=models[0];status.classList.add("success");status.textContent=models.length?`已读取 ${models.length} 个模型，可点开模型输入框选择`:`线路已响应，但没有返回模型`; }catch(error){status.classList.add("error");status.textContent=`拉取失败：${error.message}；仍可手动填写模型 ID`;}};
+$("#fetchModels").onclick=async()=>{const form=$("#providerForm"),status=$("#connectionState"),data=Object.fromEntries(new FormData(form));if(!data.base_url){form.elements.base_url.reportValidity();return;}status.className="connection-state";status.textContent="正在拉取模型…";try{const result=await api("/api/providers/models",{method:"POST",body:JSON.stringify(data)}),models=result.models||[];showFetchedModels(models,form);status.classList.add("success");status.textContent=models.length?`已读取 ${models.length} 个模型，请在下方选择`:`线路已响应，但没有返回模型`; }catch(error){status.classList.add("error");status.textContent=`拉取失败：${error.message}；仍可手动填写模型 ID`;}};
+$("#providerModelSelect").onchange=event=>{if(event.target.value)$("#providerForm").elements.model.value=event.target.value;};
 $("#testProvider").onclick = async () => { const form = $("#providerForm"); if (!form.reportValidity()) return; const data = Object.fromEntries(new FormData(form)); data.prompt_cache = form.elements.prompt_cache.checked; const status = $("#connectionState"); status.className = "connection-state"; status.textContent = "正在测试连接…"; try { const result = await api("/api/providers/test", { method: "POST", body: JSON.stringify(data) }); status.classList.add("success"); status.textContent = result.message; } catch (error) { status.classList.add("error"); status.textContent = error.message; } };
 $("#personaForm").onsubmit = async e => { e.preventDefault(); const data = Object.fromEntries(new FormData(e.target)); const saved = await api("/api/personas", { method: "POST", body: JSON.stringify(data) }); state.personas.push(saved); state.persona ||= saved.id; e.target.reset(); renderSettings(); renderPickers(); };
 $("#memoryForm").onsubmit = async e => { e.preventDefault(); const form = e.target; const data = Object.fromEntries(new FormData(form)); const editing = form.dataset.editing; const saved = await api(editing ? `/api/memories/${editing}` : "/api/memories", { method: editing ? "PUT" : "POST", body: JSON.stringify(data) }); if (editing) Object.assign(state.memories.find(item => item.id === editing), saved); else state.memories.unshift(saved); form.reset(); delete form.dataset.editing; $("#saveMemory").textContent = "添加记忆"; $("#cancelMemoryEdit").hidden = true; renderSettings(); };
