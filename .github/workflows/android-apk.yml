@@ -54,7 +54,7 @@ jobs:
         run: |
           APKSIGNER=$(find "$ANDROID_HOME/build-tools" -name apksigner -type f | sort -V | tail -n 1)
           "$APKSIGNER" verify --verbose --print-certs app/build/outputs/apk/release/app-release.apk | tee certificate.txt
-          grep -Fq 'C3:1E:C8:BE:39:56:25:8E:35:B8:52:54:5D:43:60:7E:A8:7C:BE:EF:A8:05:59:36:33:FA:0E:52:20:33:94:0A' certificate.txt
+          grep -Fq 'c31ec8be3956258e35b852545d43607ea87cbeefa805593633fa0e522033940a' certificate.txt
       - uses: actions/upload-artifact@v4
         with:
           name: Atherloom-Standalone-release
