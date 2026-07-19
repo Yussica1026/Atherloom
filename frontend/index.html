@@ -13,7 +13,7 @@
   <title>Atherloom</title>
   <link rel="manifest" href="manifest.json">
   <link rel="icon" href="assets/app-icon.svg" type="image/svg+xml">
-  <link rel="stylesheet" href="assets/app.css?v=0403">
+  <link rel="stylesheet" href="assets/app.css?v=0404">
 </head>
 <body>
   <div id="app" class="app-shell">
@@ -53,7 +53,7 @@
       <section class="chat-scroll" id="chatScroll">
         <div class="welcome" id="welcome">
           <div class="sun-mark" aria-hidden="true"><svg viewBox="0 0 32 32"><circle cx="16" cy="16" r="4"></circle><path d="M16 2v6M16 24v6M2 16h6M24 16h6M6.1 6.1l4.2 4.2M21.7 21.7l4.2 4.2M25.9 6.1l-4.2 4.2M10.3 21.7l-4.2 4.2"></path></svg></div>
-          <h1>今天想聊些什么？</h1>
+          <h1 id="welcomeTitle">今天想聊些什么？</h1>
           <p>你的对话、人格与记忆保存在这台设备上。</p>
         </div>
         <div class="messages" id="messages"></div>
@@ -244,14 +244,14 @@
   <div class="popover" id="modelPopover" hidden></div>
   <div class="popover" id="personaPopover" hidden></div>
   <div class="popover conversation-popover" id="conversationPopover" hidden></div>
-  <script src="assets/standalone.js?v=0403"></script>
-  <script src="assets/app.js?v=0403" defer></script>
+  <script src="assets/standalone.js?v=0404"></script>
+  <script src="assets/app.js?v=0404" defer></script>
   <script>
     if ('serviceWorker' in navigator) {
-      navigator.serviceWorker.register('service-worker.js?v=16', { updateViaCache: 'none' }).then(registration => registration.update());
+      navigator.serviceWorker.register('service-worker.js?v=17', { updateViaCache: 'none' }).then(registration => registration.update());
       navigator.serviceWorker.addEventListener('controllerchange', () => {
-        if (!sessionStorage.getItem('atherloom:sw-reloaded-v16')) {
-          sessionStorage.setItem('atherloom:sw-reloaded-v16', '1');
+        if (!sessionStorage.getItem('atherloom:sw-reloaded-v17')) {
+          sessionStorage.setItem('atherloom:sw-reloaded-v17', '1');
           location.reload();
         }
       });

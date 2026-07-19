@@ -189,6 +189,7 @@ class ChatIn(BaseModel):
     persona_id: str | None = None
     reuse_user_message_id: str | None = None
     attachments: list[dict[str, Any]] = Field(default_factory=list, max_length=8)
+    local_time: str = Field(default="", max_length=80)
 
 
 class MotivationEventIn(BaseModel):
@@ -796,7 +797,8 @@ def load_chat_context(connection: sqlite3.Connection, body: ChatIn, cutoff: str 
         params.append(cutoff)
     query += " ORDER BY created_at"
     messages = [{"role": row["role"], "content": row["content"]} for row in connection.execute(query, params)]
-    system_parts = [part for part in (persona_prompt, conversation["summary"]) if part]
+    time_context = f"当前本地时间（由用户设备提供）：{body.local_time}" if body.local_time else ""
+    system_parts = [part for part in (persona_prompt, conversation["summary"], time_context) if part]
     if system_parts:
         messages.insert(0, {"role": "system", "content": "\n\n".join(system_parts)})
     return provider, persona_prompt, messages
