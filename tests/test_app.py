@@ -1,5 +1,6 @@
 import tempfile
 import unittest
+import uuid
 from pathlib import Path
 
 from fastapi.testclient import TestClient
@@ -129,6 +130,27 @@ class LocalClientTests(unittest.TestCase):
         self.assertEqual(loaded["state"]["turn"], 2)
         other = self.client.get("/api/games/quiet_fishing/state", params={"persona_id": "another-persona"}).json()
         self.assertEqual(other["state"]["turn"], 0)
+
+    def test_message_favorite_keeps_a_server_snapshot(self):
+        conversation = self.client.post("/api/conversations", json={"title": "值得留下"}).json()
+        message_id = str(uuid.uuid4())
+        with app_module.closing(app_module.db()) as connection:
+            connection.execute("INSERT INTO messages VALUES(?, ?, 'user', ?, NULL, NULL, ?, '', NULL)", (message_id, conversation["id"], "这一句话要留下来", app_module.now_iso()))
+            connection.commit()
+        saved = self.client.post(f"/api/favorites/{message_id}", json={"owner": "user"})
+        self.assertEqual(saved.status_code, 200)
+        favorite = self.client.get("/api/favorites").json()[0]
+        self.assertEqual(favorite["text_snapshot"], "这一句话要留下来")
+        self.assertEqual(favorite["conversation_title_snapshot"], "值得留下")
+        self.assertEqual(favorite["owners"], ["user"])
+
+    def test_claw_and_slots_are_playable_and_persistent(self):
+        claw = self.client.post("/api/games/claw_machine/action", json={"action": "grab"}).json()
+        self.assertEqual(claw["state"]["coins"], 90)
+        self.assertEqual(self.client.get("/api/games/claw_machine/state").json()["state"]["turn"], 1)
+        slots = self.client.post("/api/games/cloud_slots/action", json={"action": "spin", "amount": 1}).json()
+        self.assertEqual(slots["state"]["turn"], 1)
+        self.assertEqual(len(slots["state"]["reels"]), 3)
 
 
 if __name__ == "__main__":

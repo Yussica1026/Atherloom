@@ -23,12 +23,13 @@
     const endpoint=anthropic?(base.endsWith("/v1")?`${base}/messages`:`${base}/v1/messages`):(base.endsWith("/chat/completions")?base:`${base}/chat/completions`);
     const headers={"Content-Type":"application/json",...(JSON.parse(provider.custom_headers||"{}"))};
     if(anthropic){headers["x-api-key"]=provider.api_key;headers["anthropic-version"]="2023-06-01";}else headers.Authorization=`Bearer ${provider.api_key}`;
-    const payload={model:provider.model,max_tokens:4096,messages:request.messages};if(anthropic&&request.system)payload.system=request.system;
+    const payload={model:provider.model,max_tokens:4096,messages:formatMessages(request.messages,provider.protocol)};if(anthropic&&request.system)payload.system=request.system;
     const response=await originalFetch(endpoint,{method:"POST",headers,body:JSON.stringify(payload)});
     const data=await response.json().catch(()=>({}));if(!response.ok)throw new Error(`HTTP ${response.status} · ${data.error?.message||data.message||"网关请求失败"}`);
     const content=anthropic?(data.content||[]).filter(block=>block.type==="text").map(block=>block.text).join(""):data.choices?.[0]?.message?.content;
     return {ok:true,content:content||"",model:provider.model};
   };
+  const formatMessages=(items,protocol)=>items.map(item=>{if(item.role!=="user"||!item.attachments?.length)return {role:item.role,content:item.content};const anthropic=protocol==="anthropic";if(anthropic){const blocks=[{type:"text",text:item.content}];for(const file of item.attachments){if(file.kind==="image")blocks.push({type:"image",source:{type:"base64",media_type:file.mime,data:file.data.split(",")[1]}});else if(file.kind==="pdf")blocks.push({type:"document",source:{type:"base64",media_type:"application/pdf",data:file.data.split(",")[1]}});else if(file.text)blocks.push({type:"text",text:`文件：${file.name}\n${file.text}`});}return {role:item.role,content:blocks};}const parts=[{type:"text",text:item.content}];for(const file of item.attachments){if(file.kind==="image")parts.push({type:"image_url",image_url:{url:file.data}});else if(file.text)parts.push({type:"text",text:`文件：${file.name}\n${file.text}`});else parts.push({type:"text",text:`[已选择文件 ${file.name}，当前兼容线路不支持直接传输此格式]`});}return {role:item.role,content:parts};});
   const messages = conversationId => read(`messages:${conversationId}`, []);
   const saveMessages = (conversationId, items) => write(`messages:${conversationId}`, items);
   const updateConversation = (id, changes) => {
@@ -41,6 +42,8 @@
   };
   const fish = { willow_bay: [["银尾鲫",8],["青纹鲈",18],["月斑鳜",55]], mist_lake: [["雾鳞鱼",22],["琉璃鳟",46],["星灯鲤",120]], cloud_coast: [["风翼鲷",50],["潮鸣鲭",95],["极光鳐",260]] };
   const defaultGame = () => ({ coins:120,bait:8,water:"willow_bay",turn:0,catch:{},journal:[],unlocked:["willow_bay"] });
+  const defaultClaw=()=>({coins:100,turn:0,position:2,prizes:["云朵兔","星星熊","橘子猫","月亮狗","小海豹"],inventory:{},journal:[]});
+  const defaultSlots=()=>({coins:100,turn:0,reels:["✦","◌","◇"],journal:[]});
   const settings = () => read("settings", { auto_title_mode:"local",summary_enabled:true,summary_trigger_rounds:24,summary_prompt:"请忠实总结较早对话。",default_summary_prompt:"请忠实总结较早对话。",display_name:"",tool_permissions:{web_search:"allow",memory_read:"allow",memory_write:"ask",diary_write:"ask",delete:"ask"},font_scale:100,message_density:"comfortable",code_theme:"auto",memory_strategy:"hybrid" });
   window.fetch = async (input, options = {}) => {
     const url = new URL(typeof input === "string" ? input : input.url, location.href);
@@ -51,6 +54,16 @@
     if (url.pathname === "/api/settings" && method === "PUT") return json(write("settings", body));
     if (url.pathname === "/api/memories" && method === "GET") { const q=(url.searchParams.get("q")||"").toLowerCase(); return json(read("memories",[]).filter(item=>!item.trash&&(!q||`${item.title} ${item.content} ${item.kind}`.toLowerCase().includes(q)))); }
     if (url.pathname === "/api/memories" && method === "POST") { const item={...body,id:uid(),starred:false,archived:false,created_at:new Date().toISOString(),updated_at:new Date().toISOString()}; write("memories",[item,...read("memories",[])]); return json(item); }
+    if(url.pathname==="/api/favorites"&&method==="GET"){const q=(url.searchParams.get("q")||"").toLowerCase();return json(read("favorites",[]).filter(item=>!q||`${item.text_snapshot} ${item.conversation_title_snapshot}`.toLowerCase().includes(q)));}
+    const favoriteMessage=url.pathname.match(/^\/api\/favorites\/([^/]+)$/);
+    if(favoriteMessage&&method==="POST"){
+      const messageId=decodeURIComponent(favoriteMessage[1]),conversations=read("conversations",[]);let source,conversation;
+      for(const item of conversations){source=messages(item.id).find(message=>message.id===messageId);if(source){conversation=item;break;}}
+      if(!source)return json({detail:"该消息不可珍藏"},404);const all=read("favorites",[]);let favorite=all.find(item=>item.source_message_id===messageId);
+      if(!favorite){favorite={id:uid(),source_message_id:messageId,conversation_id:conversation.id,role:source.role,text_snapshot:source.content,conversation_title_snapshot:conversation.title,original_message_created_at:source.created_at,favorited_at:new Date().toISOString(),owners:[]};all.unshift(favorite);}
+      if(!favorite.owners.includes(body.owner||"user"))favorite.owners.push(body.owner||"user");write("favorites",all);return json(favorite);
+    }
+    if(favoriteMessage&&method==="DELETE"){const owner=url.searchParams.get("owner")||"user",all=read("favorites",[]),favorite=all.find(item=>item.source_message_id===decodeURIComponent(favoriteMessage[1]));if(favorite)favorite.owners=favorite.owners.filter(item=>item!==owner);write("favorites",all.filter(item=>item.owners.length));return json({ok:true});}
     const memoryState=url.pathname.match(/^\/api\/memories\/([^/]+)\/state$/);
     if(memoryState&&method==="PATCH"){const all=read("memories",[]),item=all.find(row=>row.id===decodeURIComponent(memoryState[1]));if(item)Object.assign(item,body,{updated_at:new Date().toISOString()});write("memories",all);return json(item||{detail:"记忆不存在"},item?200:404);}
     const memoryItem=url.pathname.match(/^\/api\/memories\/([^/]+)$/);
@@ -78,11 +91,12 @@
       const history=messages(body.conversation_id), now=new Date().toISOString();
       let user;
       if(body.reuse_user_message_id) user=history.find(item=>item.id===body.reuse_user_message_id);
-      if(!user){user={id:uid(),role:"user",content:body.content,created_at:now};history.push(user);}
+      if(!user){user={id:uid(),role:"user",content:body.content,attachments:body.attachments||[],created_at:now};history.push(user);}
       const persona=read("personas",[]).find(item=>item.id===body.persona_id);
       const prompt=[persona?.prompt,`当前时间：${new Date().toLocaleString("zh-CN",{hour12:false})}`].filter(Boolean).join("\n\n");
       try {
-        const request={provider_id:body.provider_id,system:prompt,messages:history.filter(item=>item.role==="user"||item.role==="assistant").map(item=>({role:item.role,content:item.content}))};
+        const provider=providers().find(item=>item.id===body.provider_id);const rawMessages=history.filter(item=>item.role==="user"||item.role==="assistant").map(item=>({role:item.role,content:item.content,attachments:item.attachments||[]}));
+        const request={provider_id:body.provider_id,system:prompt,messages:native?formatMessages(rawMessages,provider?.protocol||"openai"):rawMessages};
         const result=native?nativeResult("chat",request):await webChat(request);
         const assistant={id:uid(),role:"assistant",content:result.content||"",model:result.model||"",parent_message_id:user.id,created_at:new Date().toISOString()};
         history.push(assistant);saveMessages(body.conversation_id,history);
@@ -91,7 +105,11 @@
         return ndjson([{delta:assistant.content},{done:true,assistant_id:assistant.id,user_id:user.id,title}]);
       } catch(error) { saveMessages(body.conversation_id,history); return ndjson([{error:error.message}]); }
     }
-    if (url.pathname === "/api/games") return json([{id:"quiet_fishing",name:"云汀钓记",icon:"◌",status:"playable",description:"离线也能保存进度的原创钓鱼游戏。"},{id:"claw_machine",name:"抓娃娃机",icon:"◇",status:"coming",description:"可视化抓娃娃玩法正在接入。"},{id:"text_arcade",name:"文字街机",icon:"✦",status:"adapter",description:"文字游戏扩展席位。"}]);
+    if (url.pathname === "/api/games") return json([{id:"quiet_fishing",name:"云汀钓记",icon:"◌",status:"playable",description:"离线也能保存进度的原创钓鱼游戏。"},{id:"claw_machine",name:"抓娃娃机",icon:"◇",status:"playable",description:"移动爪子、选择目标并收集娃娃。"},{id:"cloud_slots",name:"云纹老虎机",icon:"✦",status:"playable",description:"只使用本地云贝的确定性三轴小游戏。"}]);
+    if(/\/api\/games\/claw_machine\/state/.test(url.pathname))return json({game_id:"claw_machine",state:read("game:claw_machine",defaultClaw()),waters:{}});
+    if(/\/api\/games\/claw_machine\/action/.test(url.pathname)&&method==="POST"){const state=read("game:claw_machine",defaultClaw()),events=[];if(body.action==="move_left"){state.position=Math.max(0,state.position-1);events.push("爪子向左移动");}else if(body.action==="move_right"){state.position=Math.min(state.prizes.length-1,state.position+1);events.push("爪子向右移动");}else if(body.action==="grab"){if(state.coins<10)return json({detail:"云贝不够"},409);state.coins-=10;state.turn++;const prize=state.prizes[state.position],success=(state.turn*17+state.position*23)%100<58;if(success){state.inventory[prize]=(state.inventory[prize]||0)+1;events.push(`抓到了${prize}！`);}else events.push(`${prize}晃了一下，又掉回去了`);}state.journal=[...state.journal,...events].slice(-30);write("game:claw_machine",state);return json({state,events});}
+    if(/\/api\/games\/cloud_slots\/state/.test(url.pathname))return json({game_id:"cloud_slots",state:read("game:cloud_slots",defaultSlots()),waters:{}});
+    if(/\/api\/games\/cloud_slots\/action/.test(url.pathname)&&method==="POST"){const state=read("game:cloud_slots",defaultSlots()),events=[],symbols=["✦","◌","◇","☾","❀"],count=body.amount||1,cost=count*5;if(state.coins<cost)return json({detail:"云贝不够"},409);state.coins-=cost;for(let n=0;n<count;n++){state.turn++;state.reels=[symbols[(state.turn*3)%5],symbols[(state.turn*7+1)%5],symbols[(state.turn*11+2)%5]];const unique=new Set(state.reels).size,payout=unique===1?40:unique===2?10:0;state.coins+=payout;events.push(`${state.reels.join(" · ")}，${payout?`赢得 ${payout} 云贝`:"没有连线"}`);}state.journal=[...state.journal,...events].slice(-30);write("game:cloud_slots",state);return json({state,events});}
     if (/\/api\/games\/quiet_fishing\/state/.test(url.pathname)) return json({game_id:"quiet_fishing",state:read("game:quiet_fishing",defaultGame()),waters});
     if (/\/api\/games\/quiet_fishing\/action/.test(url.pathname) && method === "POST") {
       const state=read("game:quiet_fishing",defaultGame()), events=[];
