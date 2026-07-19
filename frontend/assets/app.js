@@ -20,7 +20,7 @@ function renderHistory() {
   const recent = active.filter(c => !c.pinned && !c.starred);
   const archived = state.conversations.filter(c => c.archived);
   $("#history").innerHTML = group("置顶", pinned) + group("星标", starred) + group("最近", recent) + group("已归档", archived) || `<p class="muted" style="padding:8px 11px">还没有对话</p>`;
-  document.querySelectorAll(".history-item").forEach(button => button.onclick = () => openConversation(button.dataset.id));
+  document.querySelectorAll(".history-item").forEach(button => button.onclick = () => { setSidebar(false); openConversation(button.dataset.id); });
   document.querySelectorAll("[data-history-action]").forEach(button => button.onclick = () => updateHistoryState(button.dataset.id, button.dataset.historyAction));
 }
 
@@ -100,7 +100,10 @@ function renderMessages() {
     ${m.role === "assistant" && m.model ? `<div class="message-meta">${escapeHtml(m.model)}</div>` : ""}</article>`).join("");
   document.querySelectorAll(".message-actions button").forEach(button => button.onclick = () => handleMessageAction(button.closest(".message"), button.dataset.action));
   $("#chatScroll").scrollTop = $("#chatScroll").scrollHeight;
+  renderContextUsage();
 }
+function estimateTokens(text){const chinese=(text.match(/[\u3400-\u9fff]/g)||[]).length,other=text.replace(/[\u3400-\u9fff]/g,"").length;return chinese+Math.ceil(other/4);}
+function renderContextUsage(){const history=state.messages.reduce((total,message)=>total+estimateTokens(message.content||"")+estimateTokens(message.reasoning||""),0),draft=estimateTokens($("#prompt")?.value||"");if($("#contextUsage"))$("#contextUsage").textContent=`估算上下文 ≈ ${(history+draft).toLocaleString()} tokens`;}
 
 async function handleMessageAction(article, action) {
   const message = state.messages[Number(article.dataset.index)];
@@ -283,7 +286,7 @@ function saveAppSettings() {
   }, 350);
 }
 
-$("#prompt").addEventListener("input", e => { e.target.style.height = "auto"; e.target.style.height = `${Math.min(e.target.scrollHeight, 180)}px`; $("#send").disabled = !e.target.value.trim() || state.busy; });
+$("#prompt").addEventListener("input", e => { e.target.style.height = "auto"; e.target.style.height = `${Math.min(e.target.scrollHeight, 180)}px`; $("#send").disabled = !e.target.value.trim() || state.busy; renderContextUsage(); });
 $("#attachmentButton").onclick=event=>{event.stopPropagation();$("#attachmentMenu").hidden=!$("#attachmentMenu").hidden;};document.querySelectorAll("[data-attachment-source]").forEach(button=>button.onclick=()=>{const inputs={camera:$("#cameraInput"),images:$("#imageInput"),files:$("#fileInput")};$("#attachmentMenu").hidden=true;inputs[button.dataset.attachmentSource].click();});[$("#cameraInput"),$("#imageInput"),$("#fileInput")].forEach(input=>input.onchange=async event=>{await addAttachments(event.target.files);event.target.value="";$("#send").disabled=false;});
 $("#prompt").addEventListener("keydown", e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendMessage(); } });
 $("#send").onclick = sendMessage; $("#newChat").onclick = newConversation;
@@ -322,7 +325,7 @@ document.querySelectorAll("[data-claw-action]").forEach(button=>button.onclick=(
 $("#backdrop").onclick = closeSettings; document.querySelectorAll("[data-close]").forEach(b => b.onclick = closeSettings);
 document.querySelectorAll(".settings-nav button").forEach(b => b.onclick = () => switchTab(b.dataset.tab));
 $("#addProvider").onclick = () => { $("#providerForm").hidden = false; $("#connectionState").textContent = ""; renderSettings(); updateProviderCacheUI(); }; $("#cancelProvider").onclick = () => { $("#providerForm").hidden = true; renderSettings(); };
-$("#providerForm").onsubmit = async e => { e.preventDefault(); const data = Object.fromEntries(new FormData(e.target)); data.prompt_cache = e.target.elements.prompt_cache.checked; const saved = await api("/api/providers", { method: "POST", body: JSON.stringify(data) }); state.providers.push(saved); state.provider ||= saved.id; e.target.reset(); e.target.elements.custom_headers.value = "{}"; e.target.elements.prompt_cache.checked = true; e.target.hidden = true; renderSettings(); renderPickers(); };
+$("#providerForm").onsubmit = async e => { e.preventDefault(); const data = Object.fromEntries(new FormData(e.target)); data.prompt_cache = e.target.elements.prompt_cache.checked; data.thinking_enabled=e.target.elements.thinking_enabled.checked; const saved = await api("/api/providers", { method: "POST", body: JSON.stringify(data) }); state.providers.push(saved); state.provider ||= saved.id; e.target.reset(); e.target.elements.custom_headers.value = "{}"; e.target.elements.prompt_cache.checked = true;e.target.elements.thinking_enabled.checked=true; e.target.hidden = true; renderSettings(); renderPickers(); };
 $("#providerProtocol").onchange = event => { const form = $("#providerForm"); const presets = { deepseek: { name: "DeepSeek", base_url: "https://api.deepseek.com", model: "deepseek-v4-flash" }, glm: { name: "智谱 GLM", base_url: "https://open.bigmodel.cn/api/paas/v4", model: "glm-5.2" } }; const preset = presets[event.target.value]; if (preset) for (const [key, value] of Object.entries(preset)) if (!form.elements[key].value) form.elements[key].value = value; updateProviderCacheUI(); };
 $("#toggleApiKey").onclick = () => { const input = $("#providerForm").elements.api_key; input.type = input.type === "password" ? "text" : "password"; };
 $("#pasteApiKey").onclick=async()=>{const input=$("#providerForm").elements.api_key;try{const value=window.AtherloomNative?.getClipboard?window.AtherloomNative.getClipboard():await navigator.clipboard.readText();if(!value)throw new Error("剪贴板为空");input.value=value.trim();$("#connectionState").className="connection-state success";$("#connectionState").textContent="已从剪贴板粘贴";}catch(error){$("#connectionState").className="connection-state error";$("#connectionState").textContent=`无法读取剪贴板：${error.message}`;}};
@@ -337,7 +340,9 @@ $("#modelPicker").onclick = e => { e.stopPropagation(); showPopover(e.currentTar
 $("#personaPicker").onclick = e => { e.stopPropagation(); showPopover(e.currentTarget, $("#personaPopover"), `<button data-value="">默认人格</button>` + state.personas.map(p => `<button data-value="${p.id}">${escapeHtml(p.name)}</button>`).join(""), id => { state.persona = id || null; renderPickers(); }); };
 document.addEventListener("click", event => { if (!event.target.closest(".popover")) closePopovers(); if(!event.target.closest("#attachmentMenu")&&!event.target.closest("#attachmentButton"))$("#attachmentMenu").hidden=true; });
 document.addEventListener("keydown", event => { if (event.key === "Escape") closePopovers(); });
-$("#mobileMenu").onclick = () => $("#sidebar").classList.toggle("open");
+function setSidebar(open){$("#sidebar").classList.toggle("open",open);$("#sidebarBackdrop").hidden=!open;}
+$("#mobileMenu").onclick=()=>setSidebar(true);$("#sidebarClose").onclick=()=>setSidebar(false);$("#sidebarToggle").onclick=()=>{if(innerWidth<=760)setSidebar(false);};$("#sidebarBackdrop").onclick=()=>setSidebar(false);document.querySelectorAll("#sidebar .new-chat,#sidebar .profile-row,#sidebar .history-item").forEach(button=>button.addEventListener("click",()=>setSidebar(false)));
+window.AtherloomHandleBack=()=>{if(!$("#callSpace").hidden){endVoiceCall();$("#callSpace").hidden=true;return true;}if(!$("#mediaSpace").hidden){$("#mediaSpace").hidden=true;$("#moviePlayer").pause();return true;}if(!$("#favoritesSpace").hidden){$("#favoritesSpace").hidden=true;return true;}if(!$("#gameLibrary").hidden){$("#gameLibrary").hidden=true;return true;}if($("#settingsPanel").classList.contains("open")){closeSettings();return true;}if($("#sidebar").classList.contains("open")){setSidebar(false);return true;}if([...document.querySelectorAll(".popover")].some(item=>!item.hidden)){closePopovers();return true;}return false;};
 $("#themeSelect").onchange = e => { document.documentElement.dataset.theme = e.target.value === "system" ? "" : e.target.value; localStorage.setItem("theme", e.target.value); };
 $("#exportBackup").onclick = exportLocalBackup;
 $("#chooseBackup").onclick = () => $("#backupFile").click();

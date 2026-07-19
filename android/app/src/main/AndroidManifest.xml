@@ -7,7 +7,7 @@
         android:icon="@drawable/ic_launcher"
         android:label="Atherloom"
         android:theme="@style/Theme.Atherloom">
-        <activity android:name=".MainActivity" android:exported="true">
+        <activity android:name=".MainActivity" android:exported="true" android:windowSoftInputMode="adjustResize">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />

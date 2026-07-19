@@ -102,7 +102,7 @@
         history.push(assistant);saveMessages(body.conversation_id,history);
         const conversation=read("conversations",[]).find(item=>item.id===body.conversation_id);let title="";
         if(conversation?.title==="新对话"){title=(user.content||"新对话").replace(/\s+/g," ").slice(0,24);updateConversation(body.conversation_id,{title});}
-        return ndjson([{delta:assistant.content},{done:true,assistant_id:assistant.id,user_id:user.id,title}]);
+        return ndjson([{reasoning_delta:result.reasoning||"",delta:assistant.content},{done:true,assistant_id:assistant.id,user_id:user.id,title}]);
       } catch(error) { saveMessages(body.conversation_id,history); return ndjson([{error:error.message}]); }
     }
     if (url.pathname === "/api/games") return json([{id:"quiet_fishing",name:"云汀钓记",icon:"◌",status:"playable",description:"离线也能保存进度的原创钓鱼游戏。"},{id:"claw_machine",name:"抓娃娃机",icon:"◇",status:"playable",description:"移动爪子、选择目标并收集娃娃。"},{id:"cloud_slots",name:"云纹老虎机",icon:"✦",status:"playable",description:"只使用本地云贝的确定性三轴小游戏。"}]);
