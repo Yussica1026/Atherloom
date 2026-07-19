@@ -32,6 +32,7 @@ import java.io.OutputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
+import java.util.Iterator;
 
 public class MainActivity extends Activity {
     private static final int FILE_CHOOSER = 41, AUDIO_PERMISSION = 42;
@@ -122,7 +123,8 @@ public class MainActivity extends Activity {
                 String apiKey = provider.optString("api_key");
                 if (protocol.equals("anthropic")) { connection.setRequestProperty("x-api-key", apiKey); connection.setRequestProperty("anthropic-version", "2023-06-01"); }
                 else connection.setRequestProperty("Authorization", "Bearer " + apiKey);
-                JSONObject custom = new JSONObject(provider.optString("custom_headers", "{}")); for (String key : custom.keySet()) connection.setRequestProperty(key, custom.getString(key));
+                JSONObject custom = new JSONObject(provider.optString("custom_headers", "{}"));
+                for (Iterator<String> keys = custom.keys(); keys.hasNext();) { String header = keys.next(); connection.setRequestProperty(header, custom.getString(header)); }
                 try (OutputStream output = connection.getOutputStream()) { output.write(payload.toString().getBytes(StandardCharsets.UTF_8)); }
                 int status = connection.getResponseCode(); String response = read(status >= 400 ? connection.getErrorStream() : connection.getInputStream());
                 if (status >= 400) throw new Exception("HTTP " + status + " · " + response.substring(0, Math.min(300, response.length())));
