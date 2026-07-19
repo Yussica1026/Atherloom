@@ -1,4 +1,6 @@
 const port = process.argv[2] || "9223";
+const viewportWidth = Number(process.argv[3] || 390);
+const viewportHeight = Number(process.argv[4] || 844);
 const pages = await fetch(`http://127.0.0.1:${port}/json`).then(response => response.json());
 const page = pages.find(item => item.type === "page" && item.url.includes("127.0.0.1:8876"));
 if (!page) throw new Error("没有找到 Atherloom 调试页面");
@@ -13,11 +15,21 @@ const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
 const check = async (name, expression) => { const ok = await evaluate(expression); if (!ok) throw new Error(`UI smoke failed: ${name}`); console.log(`PASS ${name}`); };
 
 await command("Runtime.enable");
+await command("Emulation.setDeviceMetricsOverride", { width: viewportWidth, height: viewportHeight, deviceScaleFactor: 3, mobile: true });
+await check("top bar keeps only call action", `!!document.querySelector('#openCall') && !document.querySelector('#shareChat') && !document.querySelector('#openMemory') && !document.querySelector('#topSettings')`);
+await check("call action remains visible on compact phone", `getComputedStyle(document.querySelector('#openCall')).display !== 'none'`);
+await check("welcome mark uses themeable SVG", `!!document.querySelector('.sun-mark svg') && getComputedStyle(document.querySelector('.sun-mark')).color === 'rgb(201, 100, 66)'`);
 await check("call overlay starts hidden", `document.querySelector('#callSpace').hidden === true`);
+const hasProviders = await evaluate(`state.providers.length > 0`);
 await evaluate(`document.querySelector('#modelPicker').click()`); await wait(100);
-await check("model popover opens", `document.querySelector('#modelPopover').hidden === false`);
-await evaluate(`document.body.click()`); await wait(100);
-await check("model popover closes outside", `document.querySelector('#modelPopover').hidden === true`);
+if (hasProviders) {
+  await check("model popover opens", `document.querySelector('#modelPopover').hidden === false`);
+  await evaluate(`document.body.click()`); await wait(100);
+  await check("model popover closes outside", `document.querySelector('#modelPopover').hidden === true`);
+} else {
+  await check("empty model picker opens API settings", `document.querySelector('#settingsPanel').classList.contains('open') && document.querySelector('#tab-providers').classList.contains('active')`);
+  await evaluate(`document.querySelector('#settingsPanel [data-close]').click()`); await wait(100);
+}
 await evaluate(`document.querySelector('#mobileMenu').click()`); await wait(100);
 await check("mobile sidebar opens", `document.querySelector('#sidebar').classList.contains('open') && !document.querySelector('#sidebarBackdrop').hidden`);
 await evaluate(`document.querySelector('#sidebarBackdrop').click()`); await wait(100);
