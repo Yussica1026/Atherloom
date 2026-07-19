@@ -22,6 +22,7 @@
         <button class="brand-button" id="sidebarToggle" aria-label="收起侧边栏">
           <span class="brand-mark"><img src="assets/app-icon.svg" alt=""></span><span class="brand-label">Atherloom</span>
         </button>
+        <button class="sidebar-close" id="sidebarClose" aria-label="关闭侧边栏">×</button>
         <button class="new-chat" id="newChat"><span>＋</span> 新对话</button>
         <button class="new-chat game-library-button" id="openGames"><span>✦</span> 游戏库</button>
         <button class="new-chat game-library-button" id="openFavorites"><span>☆</span> 珍藏</button>
@@ -38,6 +39,7 @@
         </button>
       </div>
     </aside>
+    <button class="mobile-sidebar-backdrop" id="sidebarBackdrop" aria-label="关闭侧边栏" hidden></button>
 
     <main class="main">
       <header class="topbar">
@@ -75,7 +77,7 @@
           <div class="attachment-menu" id="attachmentMenu" hidden><button type="button" data-attachment-source="camera">拍照</button><button type="button" data-attachment-source="images">选择图片</button><button type="button" data-attachment-source="files">选择文件</button></div>
           <input id="cameraInput" type="file" accept="image/*" capture="environment" hidden><input id="imageInput" type="file" accept="image/*" multiple hidden><input id="fileInput" type="file" multiple hidden>
         </div>
-        <p class="disclaimer">AI 可能会犯错，请核对重要信息。</p>
+        <p class="disclaimer"><span>AI 可能会犯错，请核对重要信息。</span><span id="contextUsage">估算上下文 ≈ 0 tokens</span></p>
       </section>
     </main>
   </div>
@@ -150,6 +152,7 @@
             <label>模型 ID<input name="model" required placeholder="claude-sonnet-4-5"></label>
             <label>自定义请求头（JSON）<textarea name="custom_headers" rows="4" placeholder='{"X-Custom-Header":"value"}'>{}</textarea></label>
             <label class="check-label" id="promptCacheControl"><input name="prompt_cache" type="checkbox" checked> 启用 Anthropic 显式提示词缓存</label>
+            <label class="check-label"><input name="thinking_enabled" type="checkbox" checked> 显示模型返回的思考过程（线路支持时）</label>
             <p class="cache-hint" id="automaticCacheHint" hidden>此供应商的缓存由 API 服务自动处理，无需手动开关。</p>
             <div class="form-actions"><button type="button" class="ghost" id="cancelProvider">取消</button><button type="button" class="ghost" id="testProvider">测试连接</button><button class="primary">保存线路</button></div>
             <p class="connection-state" id="connectionState"></p>

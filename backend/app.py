@@ -44,7 +44,7 @@ def init_db() -> None:
               id TEXT PRIMARY KEY, name TEXT NOT NULL, protocol TEXT NOT NULL,
               base_url TEXT NOT NULL, api_key TEXT NOT NULL DEFAULT '', model TEXT NOT NULL,
               enabled INTEGER NOT NULL DEFAULT 1, custom_headers TEXT NOT NULL DEFAULT '{}',
-              prompt_cache INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL
+              prompt_cache INTEGER NOT NULL DEFAULT 1, thinking_enabled INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL
             );
             CREATE TABLE IF NOT EXISTS personas (
               id TEXT PRIMARY KEY, name TEXT NOT NULL, prompt TEXT NOT NULL,
@@ -104,6 +104,8 @@ def init_db() -> None:
             connection.execute("ALTER TABLE providers ADD COLUMN custom_headers TEXT NOT NULL DEFAULT '{}'")
         if "prompt_cache" not in columns:
             connection.execute("ALTER TABLE providers ADD COLUMN prompt_cache INTEGER NOT NULL DEFAULT 1")
+        if "thinking_enabled" not in columns:
+            connection.execute("ALTER TABLE providers ADD COLUMN thinking_enabled INTEGER NOT NULL DEFAULT 1")
         message_columns = {row["name"] for row in connection.execute("PRAGMA table_info(messages)")}
         if "reasoning" not in message_columns:
             connection.execute("ALTER TABLE messages ADD COLUMN reasoning TEXT NOT NULL DEFAULT ''")
@@ -125,6 +127,7 @@ class ProviderIn(BaseModel):
     enabled: bool = True
     custom_headers: str = "{}"
     prompt_cache: bool = True
+    thinking_enabled: bool = True
 
 
 class PersonaIn(BaseModel):
@@ -218,6 +221,7 @@ def masked_provider(row: sqlite3.Row) -> dict[str, Any]:
     item = dict(row)
     item["enabled"] = bool(item["enabled"])
     item["prompt_cache"] = bool(item["prompt_cache"])
+    item["thinking_enabled"] = bool(item["thinking_enabled"])
     item["has_api_key"] = bool(item.pop("api_key"))
     return item
 
@@ -357,8 +361,8 @@ def save_provider(body: ProviderIn) -> dict[str, Any]:
         protocol = "glm"
     with closing(db()) as connection:
         connection.execute(
-            "INSERT INTO providers VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (provider_id, body.name, protocol, body.base_url.rstrip("/"), body.api_key, body.model, int(body.enabled), body.custom_headers, int(body.prompt_cache), now_iso()),
+            "INSERT INTO providers(id,name,protocol,base_url,api_key,model,enabled,custom_headers,prompt_cache,thinking_enabled,created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (provider_id, body.name, protocol, body.base_url.rstrip("/"), body.api_key, body.model, int(body.enabled), body.custom_headers, int(body.prompt_cache), int(body.thinking_enabled), now_iso()),
         )
         connection.commit()
         row = connection.execute("SELECT * FROM providers WHERE id=?", (provider_id,)).fetchone()
@@ -979,7 +983,7 @@ async def chat(body: ChatIn) -> StreamingResponse:
                     url = provider_endpoint(provider["base_url"], "anthropic")
                 else:
                     payload = {"model": provider["model"], "stream": True, "messages": provider_messages}
-                    if provider["protocol"] in ("deepseek", "glm"):
+                    if provider["protocol"] in ("deepseek", "glm") and provider["thinking_enabled"]:
                         payload["thinking"] = {"type": "enabled"}
                     headers = {"Authorization": f"Bearer {provider['api_key']}", "content-type": "application/json"}
                     url = provider_endpoint(provider["base_url"], provider["protocol"])

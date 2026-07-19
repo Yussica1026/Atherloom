@@ -129,6 +129,7 @@ public class MainActivity extends Activity {
                 String endpoint = protocol.equals("anthropic") ? (base.endsWith("/v1") ? base + "/messages" : base + "/v1/messages") : (base.endsWith("/chat/completions") ? base : base + "/chat/completions");
                 JSONObject payload = new JSONObject(); payload.put("model", provider.getString("model")); payload.put("max_tokens", 4096); payload.put("messages", request.getJSONArray("messages"));
                 if (protocol.equals("anthropic") && request.has("system")) payload.put("system", request.getString("system"));
+                if ((protocol.equals("deepseek") || protocol.equals("glm")) && provider.optBoolean("thinking_enabled", true)) payload.put("thinking", new JSONObject().put("type", "enabled"));
                 connection = (HttpURLConnection)new URL(endpoint).openConnection(); connection.setRequestMethod("POST"); connection.setConnectTimeout(25000); connection.setReadTimeout(180000); connection.setDoOutput(true); connection.setRequestProperty("Content-Type", "application/json");
                 String apiKey = provider.optString("api_key");
                 if (protocol.equals("anthropic")) { connection.setRequestProperty("x-api-key", apiKey); connection.setRequestProperty("anthropic-version", "2023-06-01"); }
@@ -141,7 +142,8 @@ public class MainActivity extends Activity {
                 JSONObject data = new JSONObject(response); String content;
                 if (protocol.equals("anthropic")) { StringBuilder text = new StringBuilder(); JSONArray blocks=data.optJSONArray("content"); if(blocks!=null)for(int i=0;i<blocks.length();i++)if("text".equals(blocks.getJSONObject(i).optString("type")))text.append(blocks.getJSONObject(i).optString("text")); content=text.toString(); }
                 else content=data.getJSONArray("choices").getJSONObject(0).getJSONObject("message").optString("content");
-                return new JSONObject().put("ok", true).put("content", content).put("model", provider.optString("model")).toString();
+                String reasoning = protocol.equals("anthropic") ? "" : data.getJSONArray("choices").getJSONObject(0).getJSONObject("message").optString("reasoning_content", data.getJSONArray("choices").getJSONObject(0).getJSONObject("message").optString("reasoning"));
+                return new JSONObject().put("ok", true).put("content", content).put("reasoning", reasoning).put("model", provider.optString("model")).toString();
             } catch (Exception error) { return failure(error); } finally { if (connection != null) connection.disconnect(); }
         }
 
@@ -149,7 +151,11 @@ public class MainActivity extends Activity {
         private static String failure(Exception error) { try { return new JSONObject().put("ok",false).put("error",error.getMessage()).toString(); } catch(Exception ignored){ return "{\"ok\":false,\"error\":\"unknown\"}"; } }
     }
 
-    @Override public void onBackPressed() { if (webView.canGoBack()) webView.goBack(); else super.onBackPressed(); }
+    @Override public void onBackPressed() {
+        webView.evaluateJavascript("window.AtherloomHandleBack ? window.AtherloomHandleBack() : false", handled -> {
+            if (!"true".equals(handled)) { if (webView.canGoBack()) webView.goBack(); else MainActivity.super.onBackPressed(); }
+        });
+    }
     @Override protected void onActivityResult(int request, int result, Intent data) {
         super.onActivityResult(request, result, data);
         if (request == FILE_CHOOSER && fileCallback != null) { fileCallback.onReceiveValue(WebChromeClient.FileChooserParams.parseResult(result, data)); fileCallback = null; }
