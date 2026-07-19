@@ -205,6 +205,13 @@ class GameActionIn(BaseModel):
     target: str = ""
 
 
+class AiGameTurnIn(BaseModel):
+    provider_id: str
+    persona_id: str | None = None
+    turns: int = Field(default=1, ge=1, le=3)
+    max_spend: int = Field(default=30, ge=0, le=100)
+
+
 class FavoriteIn(BaseModel):
     owner: str = Field(default="user", pattern="^(user|assistant)$")
 
@@ -652,6 +659,66 @@ def game_action(game_id: str, body: GameActionIn, persona_id: str | None = None)
         state["journal"] = (state["journal"] + events)[-30:]
         save_game(connection, game_id, persona_id, state); connection.commit()
     return {"state": state, "events": events}
+
+
+AI_GAME_ACTIONS = {
+    "quiet_fishing": [{"action": "cast", "amount": 1}, {"action": "buy_bait", "amount": 5}, {"action": "sell_all", "amount": 1}, *[{"action": "travel", "target": key, "amount": 1} for key in FISHING_WATERS]],
+    "claw_machine": [{"action": "move_left", "amount": 1}, {"action": "move_right", "amount": 1}, {"action": "grab", "amount": 1}],
+    "cloud_slots": [{"action": "spin", "amount": 1}],
+}
+
+
+def game_action_cost(game_id: str, action: dict[str, Any], state: dict[str, Any]) -> int:
+    if game_id == "claw_machine" and action["action"] == "grab": return 10
+    if game_id == "cloud_slots" and action["action"] == "spin": return 5 * int(action.get("amount", 1))
+    if game_id == "quiet_fishing" and action["action"] == "buy_bait": return 5 * int(action.get("amount", 1))
+    if game_id == "quiet_fishing" and action["action"] == "travel": return 0 if action.get("target") in state.get("unlocked", []) else int(FISHING_WATERS.get(action.get("target"), {}).get("unlock", 0))
+    return 0
+
+
+def parse_ai_game_choice(text: str, game_id: str) -> tuple[dict[str, Any], str]:
+    try:
+        payload = json.loads(text[text.index("{"):text.rindex("}") + 1])
+    except (ValueError, json.JSONDecodeError):
+        raise HTTPException(502, "模型没有返回可执行的游戏动作")
+    candidate = {"action": str(payload.get("action", "")), "amount": int(payload.get("amount", 1) or 1), "target": str(payload.get("target", ""))}
+    for allowed in AI_GAME_ACTIONS.get(game_id, []):
+        if candidate["action"] == allowed["action"] and ("target" not in allowed or candidate["target"] == allowed["target"]):
+            candidate["amount"] = allowed.get("amount", 1)
+            return candidate, str(payload.get("comment", "")).strip()[:160]
+    raise HTTPException(422, "模型选择了白名单之外的动作")
+
+
+@app.post("/api/games/{game_id}/ai-turn")
+async def ai_game_turn(game_id: str, body: AiGameTurnIn) -> dict[str, Any]:
+    if game_id not in AI_GAME_ACTIONS: raise HTTPException(404, "游戏尚未开放 AI 游玩")
+    with closing(db()) as connection:
+        provider = connection.execute("SELECT * FROM providers WHERE id=? AND enabled=1", (body.provider_id,)).fetchone()
+        persona = connection.execute("SELECT prompt FROM personas WHERE id=?", (body.persona_id,)).fetchone() if body.persona_id else None
+    if not provider: raise HTTPException(404, "API 线路不存在")
+    decisions, remaining = [], body.max_spend
+    async with httpx.AsyncClient(timeout=90) as client:
+        for _ in range(body.turns):
+            with closing(db()) as connection: current = load_game(connection, game_id, body.persona_id)
+            instruction = f"""你正在 Atherloom 中玩游戏 {game_id}。\n当前状态：{json.dumps(current, ensure_ascii=False)}\n允许动作：{json.dumps(AI_GAME_ACTIONS[game_id], ensure_ascii=False)}\n剩余可花云贝预算：{remaining}。\n只返回一个 JSON 对象：{{\"action\":\"白名单动作\",\"amount\":1,\"target\":\"需要时填写\",\"comment\":\"一句当轮想法\"}}。不要输出 Markdown。"""
+            if persona: instruction = persona["prompt"] + "\n\n" + instruction
+            headers = provider_headers(provider["protocol"], provider["api_key"], provider["custom_headers"])
+            if provider["protocol"] == "anthropic":
+                payload = {"model": provider["model"], "max_tokens": 220, "messages": [{"role": "user", "content": instruction}]}
+            else:
+                payload = {"model": provider["model"], "max_tokens": 220, "stream": False, "messages": [{"role": "user", "content": instruction}]}
+            response = await client.post(provider_endpoint(provider["base_url"], provider["protocol"]), headers=headers, json=payload)
+            if response.status_code >= 400: raise HTTPException(502, f"游戏 AI 请求失败：{response.status_code}")
+            data = response.json(); text = "".join(block.get("text", "") for block in data.get("content", []) if block.get("type") == "text") if provider["protocol"] == "anthropic" else data.get("choices", [{}])[0].get("message", {}).get("content", "")
+            choice, comment = parse_ai_game_choice(text, game_id); cost = game_action_cost(game_id, choice, current)
+            if cost > remaining: break
+            result = game_action(game_id, GameActionIn(**choice), body.persona_id); remaining -= cost
+            if comment:
+                with closing(db()) as connection:
+                    state = load_game(connection, game_id, body.persona_id); state["journal"] = (state.get("journal", []) + [f"AI：{comment}"])[-30:]; save_game(connection, game_id, body.persona_id, state); connection.commit(); result["state"] = state
+            decisions.append({"choice": choice, "comment": comment, "events": result["events"]})
+    with closing(db()) as connection: final_state = load_game(connection, game_id, body.persona_id)
+    return {"state": final_state, "decisions": decisions, "spent": body.max_spend - remaining}
 
 
 def load_motivation(connection: sqlite3.Connection, persona_id: str | None) -> tuple[bool, dict[str, Any]]:
