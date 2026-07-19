@@ -1,0 +1,203 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="color-scheme" content="light dark">
+  <meta name="theme-color" content="#f7f6f2">
+  <meta name="application-name" content="Atherloom">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <meta name="apple-mobile-web-app-title" content="Atherloom">
+  <meta name="mobile-web-app-capable" content="yes">
+  <title>Atherloom</title>
+  <link rel="manifest" href="/manifest.json">
+  <link rel="icon" href="/assets/app-icon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/assets/app.css">
+</head>
+<body>
+  <div id="app" class="app-shell">
+    <aside class="sidebar" id="sidebar">
+      <div class="sidebar-top">
+        <button class="brand-button" id="sidebarToggle" aria-label="收起侧边栏">
+          <span class="brand-mark"><img src="/assets/app-icon.svg" alt=""></span><span class="brand-label">Atherloom</span>
+        </button>
+        <button class="new-chat" id="newChat"><span>＋</span> 新对话</button>
+        <button class="new-chat game-library-button" id="openGames"><span>✦</span> 游戏库</button>
+      </div>
+      <div class="sidebar-search"><span>⌕</span><input id="conversationSearch" placeholder="搜索对话" aria-label="搜索对话"></div>
+      <nav class="history" id="history" aria-label="历史对话"></nav>
+      <div class="sidebar-footer">
+        <button class="profile-row" id="openSettings">
+          <span class="avatar" id="profileAvatar">·</span>
+          <span><strong id="profileName">设置用户名</strong></span>
+          <span class="dots">•••</span>
+        </button>
+      </div>
+    </aside>
+
+    <main class="main">
+      <header class="topbar">
+        <button class="mobile-menu" id="mobileMenu" aria-label="打开菜单">☰</button>
+        <button class="conversation-title" id="titleButton">新对话⌄</button>
+        <div class="top-actions">
+          <button class="icon-button" title="分享对话" id="shareChat">↗</button>
+          <button class="icon-button" title="记忆库" id="openMemory">◫</button>
+          <button class="icon-button" title="设置" id="topSettings">⚙</button>
+        </div>
+      </header>
+
+      <section class="chat-scroll" id="chatScroll">
+        <div class="welcome" id="welcome">
+          <div class="sun-mark">✳</div>
+          <h1>今天想聊些什么？</h1>
+          <p>你的对话、人格与记忆保存在这台电脑上。</p>
+        </div>
+        <div class="messages" id="messages"></div>
+      </section>
+
+      <section class="composer-wrap">
+        <div class="composer">
+          <textarea id="prompt" rows="1" placeholder="和你的助手聊聊……" aria-label="消息"></textarea>
+          <div class="composer-bottom">
+            <div class="composer-tools">
+              <button class="round-button" title="添加附件">＋</button>
+              <button class="model-picker" id="modelPicker">选择模型⌄</button>
+              <button class="persona-picker" id="personaPicker">默认人格⌄</button>
+            </div>
+            <button class="send-button" id="send" disabled aria-label="发送">↑</button>
+          </div>
+        </div>
+        <p class="disclaimer">AI 可能会犯错，请核对重要信息。</p>
+      </section>
+    </main>
+  </div>
+
+  <section class="game-library" id="gameLibrary" hidden>
+    <header><div><span class="eyebrow">AI PLAYGROUND</span><h2>游戏库</h2><p>你来玩、一起玩，或者把回合交给当前人格。</p></div><button class="close-button" id="closeGames">×</button></header>
+    <div class="game-layout">
+      <aside id="gameCards" class="game-cards"></aside>
+      <main class="game-stage">
+        <div id="gameEmpty" class="game-empty"><span>✦</span><h3>挑一款游戏吧</h3><p>每个人格拥有独立存档，AI 的操作会留下记录。</p></div>
+        <section id="fishingStage" hidden>
+          <div class="fishing-sky"><span class="fishing-moon">◌</span><div><span class="eyebrow">ORIGINAL AI GAME</span><h3>云汀钓记</h3><p id="fishingPlace">柳湾 · 水面安静</p></div></div>
+          <div class="game-stats"><span>云贝 <strong id="fishCoins">0</strong></span><span>鱼饵 <strong id="fishBait">0</strong></span><span>回合 <strong id="fishTurn">0</strong></span></div>
+          <div class="game-actions"><button class="primary" data-game-action="cast" data-amount="1">抛一竿</button><button class="ghost" data-game-action="cast" data-amount="5">连钓五竿</button><button class="ghost" data-game-action="buy_bait" data-amount="5">买五份鱼饵</button><button class="ghost" data-game-action="sell_all">出售全部渔获</button></div>
+          <div class="water-tabs" id="waterTabs"></div>
+          <div class="game-columns"><div><h4>鱼篓</h4><div id="fishCatch" class="catch-list"></div></div><div><h4>最近发生</h4><div id="fishJournal" class="game-journal"></div></div></div>
+          <div class="ai-playbar"><div><strong>AI 游玩</strong><small>下一步接入工具循环与回合预算；当前所有操作由你点击。</small></div><button class="ghost" disabled>交给当前人格</button></div>
+        </section>
+      </main>
+    </div>
+  </section>
+
+  <div class="backdrop" id="backdrop" hidden></div>
+  <aside class="settings-panel" id="settingsPanel" aria-hidden="true">
+    <header><div><span class="eyebrow">LOCAL WORKSPACE</span><h2>设置</h2></div><button class="close-button" data-close>×</button></header>
+    <div class="settings-layout">
+      <nav class="settings-nav">
+        <button class="active" data-tab="providers">API 与网关</button>
+        <button data-tab="personas">人格指令</button>
+        <button data-tab="summary">自动总结</button>
+        <button data-tab="memory">记忆库与 MCP</button>
+        <button data-tab="tools">工具与权限</button>
+        <button data-tab="appearance">外观</button>
+      </nav>
+      <div class="settings-content">
+        <section class="tab active" id="tab-providers">
+          <div class="section-heading"><div><h3>API 与网关</h3><p>添加多条线路，并在聊天中随时切换。</p></div><button class="primary small" id="addProvider">添加线路</button></div>
+          <div id="providerList" class="stack-list"></div>
+          <form id="providerForm" class="edit-card" hidden>
+            <label>显示名称<input name="name" required placeholder="例如：主线路"></label>
+            <label>供应商 / 协议<select name="protocol" id="providerProtocol"><option value="openai">OpenAI 兼容</option><option value="anthropic">Anthropic Messages</option><option value="deepseek">DeepSeek</option><option value="glm">智谱 GLM</option></select></label>
+            <label>官方或反代 Base URL<input name="base_url" required placeholder="https://proxy.example.com/v1"></label>
+            <label>API Key<span class="secret-field"><input name="api_key" type="password" autocomplete="new-password"><button type="button" id="toggleApiKey" aria-label="显示或隐藏 API Key">◉</button></span></label>
+            <label>模型 ID<input name="model" required placeholder="claude-sonnet-4-5"></label>
+            <label>自定义请求头（JSON）<textarea name="custom_headers" rows="4" placeholder='{"X-Custom-Header":"value"}'>{}</textarea></label>
+            <label class="check-label" id="promptCacheControl"><input name="prompt_cache" type="checkbox" checked> 启用 Anthropic 显式提示词缓存</label>
+            <p class="cache-hint" id="automaticCacheHint" hidden>此供应商的缓存由 API 服务自动处理，无需手动开关。</p>
+            <div class="form-actions"><button type="button" class="ghost" id="cancelProvider">取消</button><button type="button" class="ghost" id="testProvider">测试连接</button><button class="primary">保存线路</button></div>
+            <p class="connection-state" id="connectionState"></p>
+          </form>
+        </section>
+
+        <section class="tab" id="tab-personas">
+          <div class="section-heading"><div><h3>人格指令</h3><p>为不同助手保存独立身份、关系和边界。</p></div></div>
+          <form id="personaForm" class="edit-card visible">
+            <label>人格名称<input name="name" required placeholder="例如：私人助手"></label>
+            <label>系统指令<textarea name="prompt" rows="12" placeholder="身份、关系、说话方式、做事边界……"></textarea></label>
+            <div class="form-actions"><button class="primary">保存人格</button></div>
+          </form>
+          <div id="personaList" class="stack-list"></div>
+        </section>
+
+        <section class="tab" id="tab-summary">
+          <h3>自动总结</h3><p class="muted">长对话达到阈值后，将较早内容压缩成可追溯摘要。</p>
+          <div class="setting-row"><div><strong>新对话自动命名</strong><small>模型模式会多一次很小的 API 调用</small></div><select id="autoTitleMode"><option value="off">关闭</option><option value="local">本地快速命名</option><option value="model">由当前模型命名</option></select></div>
+          <div class="setting-row"><div><strong>启用滚动摘要</strong><small>达到设定轮数后整理较早上下文</small></div><label class="switch"><input id="summaryEnabled" type="checkbox" checked><span></span></label></div>
+          <div class="setting-row"><div><strong>长期记忆需确认</strong><small>模型提取的记忆先进入待确认区</small></div><label class="switch"><input type="checkbox" checked><span></span></label></div>
+          <label class="range-label">触发轮数<input id="summaryRounds" type="range" min="4" max="80" value="24"><span id="summaryRoundsValue">24 轮</span></label>
+          <label class="summary-prompt-label">自动总结提示词<textarea id="summaryPrompt" rows="14"></textarea></label>
+          <div class="prompt-help"><span>可用变量：<code>{{title}}</code> <code>{{existing_summary}}</code> <code>{{conversation}}</code></span><button class="ghost" id="resetSummaryPrompt" type="button">恢复默认</button></div>
+          <p class="save-state" id="summarySaveState"></p>
+        </section>
+
+        <section class="tab" id="tab-memory">
+          <h3>记忆库与 MCP</h3><p class="muted">本地 SQLite 默认开启；远程记忆通过受控 MCP 地址连接。</p>
+          <div class="memory-status"><span class="status-dot online"></span><div><strong>本地记忆库</strong><small>data/local.db · 已连接</small></div></div>
+          <div class="memory-toolbar"><input id="memorySearch" placeholder="搜索记忆内容"><select id="memoryKindFilter"><option value="">全部类型</option><option value="fact">事实</option><option value="preference">偏好</option><option value="relationship">关系</option><option value="promise">承诺</option><option value="event">事件</option><option value="emotion">情感</option><option value="summary">摘要</option><option value="diary">日记</option><option value="other">其他</option></select></div>
+          <form id="memoryForm" class="edit-card visible">
+            <label>标题<input name="title" required placeholder="这条记忆的简短标题"></label>
+            <label>类型<select name="kind"><option value="fact">事实</option><option value="preference">偏好</option><option value="relationship">关系</option><option value="promise">承诺</option><option value="event">事件</option><option value="emotion">情感</option><option value="summary">摘要</option><option value="diary">日记</option><option value="other">其他</option></select></label>
+            <label>内容<textarea name="content" rows="5" required placeholder="需要跨窗口记住的内容"></textarea></label>
+            <div class="form-actions"><button type="button" class="ghost" id="cancelMemoryEdit" hidden>取消编辑</button><button class="primary" id="saveMemory">添加记忆</button></div>
+          </form>
+          <div id="memoryList" class="stack-list"></div>
+          <h4 class="subheading">远程 MCP</h4>
+          <div class="memory-status"><span class="status-dot" id="mcpStatusDot"></span><div><strong id="mcpStatusLabel">远程记忆库未配置</strong><small id="mcpStatusDetail">保存并测试连接后显示状态与时间</small></div></div>
+          <form class="edit-card visible">
+            <label>MCP 服务名称<input placeholder="云端记忆库"></label>
+            <label>远程 MCP 地址<input placeholder="https://memory.example.com/mcp"></label>
+            <label>访问令牌<input type="password" autocomplete="new-password"></label>
+            <div class="form-actions"><button type="button" class="ghost">测试连接</button><button type="button" class="primary">保存连接</button></div>
+          </form>
+          <div class="setting-row"><div><strong>本地与远程冲突策略</strong><small>检索结果始终显示来源；默认融合后统一重排</small></div><select id="memoryStrategy"><option value="local_first">本地优先</option><option value="hybrid">融合重排</option><option value="remote_first">远程优先</option></select></div>
+          <p class="privacy-note">自动总结提取的长期记忆会先进入待确认区；确认后才保存到本地或你指定的 MCP，不会直接污染正式记忆库。</p>
+          <p class="privacy-note">远程连接只发送检索请求和被选中的记忆，不会自动上传全部聊天记录。</p>
+        </section>
+
+        <section class="tab" id="tab-tools">
+          <h3>工具与权限</h3><p class="muted">控制模型可以自主做什么。删除与外部高影响操作始终保留确认。</p>
+          <div class="bulk-permissions"><span>批量设置</span><button class="ghost" data-bulk-permission="allow">始终允许</button><button class="ghost" data-bulk-permission="ask">每次询问</button><button class="ghost" data-bulk-permission="deny">禁止</button></div>
+          <div class="permission-list">
+            <h4>网络</h4>
+            <div class="setting-row"><div><strong>联网搜索 <span class="recommend">推荐：始终允许</span></strong><small>查询公开网页与最新信息</small></div><select data-permission="web_search"><option value="allow">始终允许</option><option value="ask">每次询问</option><option value="deny">禁止</option></select></div>
+            <h4>记忆</h4>
+            <div class="setting-row"><div><strong>读取记忆 <span class="recommend">推荐：始终允许</span></strong><small>跨窗口检索相关本地或 MCP 记忆</small></div><select data-permission="memory_read"><option value="allow">始终允许</option><option value="ask">每次询问</option><option value="deny">禁止</option></select></div>
+            <div class="setting-row"><div><strong>写入记忆 <span class="recommend">推荐：每次询问</span></strong><small>新增、更新或关联长期记忆</small></div><select data-permission="memory_write"><option value="allow">始终允许</option><option value="ask">每次询问</option><option value="deny">禁止</option></select></div>
+            <h4>内容</h4>
+            <div class="setting-row"><div><strong>写日记 <span class="recommend">推荐：每次询问</span></strong><small>创建或更新日记条目</small></div><select data-permission="diary_write"><option value="allow">始终允许</option><option value="ask">每次询问</option><option value="deny">禁止</option></select></div>
+            <h4>高风险操作</h4>
+            <div class="setting-row danger-row"><div><strong>删除 <span class="recommend">固定：每次询问</span></strong><small>先进入回收站；永久删除仍需确认</small></div><select data-permission="delete"><option value="ask">每次询问</option><option value="deny">禁止</option></select></div>
+          </div>
+          <p class="save-state" id="toolSaveState"></p>
+        </section>
+
+        <section class="tab" id="tab-appearance">
+          <h3>外观</h3>
+          <label class="summary-prompt-label">用户名<input id="displayName" maxlength="40" placeholder="填写显示名称"></label>
+          <div class="setting-row"><div><strong>主题</strong><small>跟随系统或手动选择</small></div><select id="themeSelect"><option value="system">跟随系统</option><option value="light">浅色</option><option value="dark">深色</option></select></div>
+          <div class="setting-row"><div><strong>字体大小</strong><small id="fontScaleValue">100%</small></div><input id="fontScale" type="range" min="85" max="130" step="5" value="100"></div>
+          <div class="setting-row"><div><strong>消息密度</strong><small>调整消息之间的留白</small></div><select id="messageDensity"><option value="compact">紧凑</option><option value="comfortable">舒适</option><option value="relaxed">宽松</option></select></div>
+          <div class="setting-row"><div><strong>代码高亮主题</strong><small>为代码块单独选择显示方案</small></div><select id="codeTheme"><option value="auto">跟随主题</option><option value="light">浅色</option><option value="dark">深色</option><option value="contrast">高对比度</option></select></div>
+        </section>
+      </div>
+    </div>
+  </aside>
+
+  <div class="popover" id="modelPopover" hidden></div>
+  <div class="popover" id="personaPopover" hidden></div>
+  <script src="/assets/app.js" defer></script>
+  <script>if('serviceWorker' in navigator)navigator.serviceWorker.register('/service-worker.js');</script>
+</body>
+</html>

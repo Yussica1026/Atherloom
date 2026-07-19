@@ -1,0 +1,15 @@
+.venv/
+__pycache__/
+*.pyc
+data/*.db
+data/*.db-*
+data/backups/
+backups/
+*.backup
+*.zip
+.env
+.env.*
+!.env.example
+*.log
+.idea/
+.vscode/
