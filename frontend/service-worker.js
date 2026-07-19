@@ -1,5 +1,5 @@
-const CACHE = "atherloom-shell-v9";
-const SHELL = ["./", "manifest.json", "assets/app.css", "assets/app.js", "assets/standalone.js", "assets/app-icon.svg", "assets/app-icon-dark.svg", "assets/app-icon-monochrome.svg"];
+const CACHE = "atherloom-shell-v10";
+const SHELL = ["./", "manifest.json", "assets/app.css?v=0312", "assets/app.js?v=0312", "assets/standalone.js?v=0312", "assets/app-icon.svg", "assets/app-icon-dark.svg", "assets/app-icon-monochrome.svg"];
 self.addEventListener("install", event => event.waitUntil(caches.open(CACHE).then(cache => cache.addAll(SHELL)).then(() => self.skipWaiting())));
 self.addEventListener("activate", event => event.waitUntil(caches.keys().then(keys => Promise.all(keys.filter(key => key !== CACHE).map(key => caches.delete(key)))).then(() => self.clients.claim())));
 self.addEventListener("fetch", event => {
