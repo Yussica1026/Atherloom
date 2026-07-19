@@ -188,7 +188,14 @@ async function generateReply(content, reuseUserMessageId = null) {
 function openSettings(tab = "providers") { $("#backdrop").hidden = false; $("#settingsPanel").classList.add("open"); $("#settingsPanel").setAttribute("aria-hidden", "false"); switchTab(tab); }
 function closeSettings() { $("#settingsPanel").classList.remove("open"); $("#settingsPanel").setAttribute("aria-hidden", "true"); $("#backdrop").hidden = true; }
 function switchTab(tab) { document.querySelectorAll(".settings-nav button").forEach(b => b.classList.toggle("active", b.dataset.tab === tab)); document.querySelectorAll(".tab").forEach(s => s.classList.toggle("active", s.id === `tab-${tab}`)); }
-function showPopover(target, popover, items, select) { const rect = target.getBoundingClientRect(); popover.innerHTML = items || `<button disabled>暂无可选项</button>`; popover.hidden = false; popover.style.left = `${Math.min(rect.left, innerWidth - 270)}px`; popover.style.bottom = `${innerHeight - rect.top + 8}px`; popover.querySelectorAll("button[data-value]").forEach(b => b.onclick = () => { select(b.dataset.value); popover.hidden = true; }); }
+function closePopovers() { document.querySelectorAll(".popover").forEach(popover => { popover.hidden = true; }); }
+function showPopover(target, popover, items, select) {
+  const wasOpen = !popover.hidden; closePopovers(); if (wasOpen) return;
+  const rect = target.getBoundingClientRect(); popover.innerHTML = items || `<button type="button" data-close-popover>暂无可选项 · 点击关闭</button>`; popover.hidden = false;
+  popover.style.left = `${Math.max(8, Math.min(rect.left, innerWidth - 270))}px`; popover.style.bottom = `${innerHeight - rect.top + 8}px`;
+  popover.querySelectorAll("button[data-value]").forEach(b => b.onclick = () => { select(b.dataset.value); closePopovers(); });
+  popover.querySelector("[data-close-popover]")?.addEventListener("click", closePopovers);
+}
 
 function shareConversation() {
   if (!state.messages.length) return;
@@ -288,8 +295,10 @@ $("#cancelMemoryEdit").onclick = () => { const form = $("#memoryForm"); form.res
 let memorySearchTimer;
 $("#memorySearch").oninput = event => { clearTimeout(memorySearchTimer); memorySearchTimer = setTimeout(async () => { state.memories = await api(`/api/memories?q=${encodeURIComponent(event.target.value.trim())}`); renderSettings(); }, 180); };
 $("#memoryKindFilter").onchange = renderSettings;
-$("#modelPicker").onclick = e => showPopover(e.currentTarget, $("#modelPopover"), state.providers.map(p => `<button data-value="${p.id}"><strong>${escapeHtml(p.name)}</strong><small>${escapeHtml(p.model)}</small></button>`).join(""), id => { state.provider = id; renderPickers(); });
-$("#personaPicker").onclick = e => showPopover(e.currentTarget, $("#personaPopover"), `<button data-value="">默认人格</button>` + state.personas.map(p => `<button data-value="${p.id}">${escapeHtml(p.name)}</button>`).join(""), id => { state.persona = id || null; renderPickers(); });
+$("#modelPicker").onclick = e => { e.stopPropagation(); showPopover(e.currentTarget, $("#modelPopover"), state.providers.map(p => `<button data-value="${p.id}"><strong>${escapeHtml(p.name)}</strong><small>${escapeHtml(p.model)}</small></button>`).join(""), id => { state.provider = id; renderPickers(); }); };
+$("#personaPicker").onclick = e => { e.stopPropagation(); showPopover(e.currentTarget, $("#personaPopover"), `<button data-value="">默认人格</button>` + state.personas.map(p => `<button data-value="${p.id}">${escapeHtml(p.name)}</button>`).join(""), id => { state.persona = id || null; renderPickers(); }); };
+document.addEventListener("click", event => { if (!event.target.closest(".popover")) closePopovers(); });
+document.addEventListener("keydown", event => { if (event.key === "Escape") closePopovers(); });
 $("#mobileMenu").onclick = () => $("#sidebar").classList.toggle("open");
 $("#themeSelect").onchange = e => { document.documentElement.dataset.theme = e.target.value === "system" ? "" : e.target.value; localStorage.setItem("theme", e.target.value); };
 $("#exportBackup").onclick = exportLocalBackup;
