@@ -11,5 +11,8 @@ backups/
 .env.*
 !.env.example
 *.log
+*.jks
+*.keystore
+keystore.properties
 .idea/
 .vscode/
