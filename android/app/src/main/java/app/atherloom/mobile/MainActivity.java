@@ -9,6 +9,8 @@ import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
 import android.net.Uri;
 import android.os.Bundle;
+import android.os.Handler;
+import android.os.Looper;
 import android.view.ViewGroup;
 import android.webkit.GeolocationPermissions;
 import android.webkit.JavascriptInterface;
@@ -116,6 +118,10 @@ public class MainActivity extends Activity {
             if (clipboard == null || !clipboard.hasPrimaryClip() || clipboard.getPrimaryClip() == null || clipboard.getPrimaryClip().getItemCount() == 0) return "";
             CharSequence value = clipboard.getPrimaryClip().getItemAt(0).coerceToText(context);
             return value == null ? "" : value.toString();
+        }
+
+        @JavascriptInterface public void showNotice(String message) {
+            new Handler(Looper.getMainLooper()).post(() -> Toast.makeText(context, message, Toast.LENGTH_LONG).show());
         }
 
         @JavascriptInterface public String chat(String raw) {

@@ -22,6 +22,9 @@ await check("persona picker remains visible on compact phone", `getComputedStyle
 await check("welcome mark uses themeable SVG", `!!document.querySelector('.sun-mark svg') && getComputedStyle(document.querySelector('.sun-mark')).color === 'rgb(201, 100, 66)'`);
 await check("versioned service worker updater is present", `document.documentElement.innerHTML.includes('service-worker.js?v=16') && document.documentElement.innerHTML.includes("updateViaCache: 'none'")`);
 await check("call overlay starts hidden", `document.querySelector('#callSpace').hidden === true`);
+await evaluate(`window.AtherloomNative={showNotice:message=>window.__androidCallNotice=message};document.querySelector('#openCall').click()`);
+await check("Android call guard avoids the blocking overlay", `document.querySelector('#callSpace').hidden === true && window.__androidCallNotice.includes('已阻止')`);
+await evaluate(`delete window.AtherloomNative`);
 await evaluate(`document.querySelector('#titleButton').click()`); await wait(100);
 await check("conversation switcher opens from title", `!document.querySelector('#conversationPopover').hidden && !!document.querySelector('#conversationPopover [data-value="__new__"]')`);
 await evaluate(`document.body.click()`); await wait(100);
