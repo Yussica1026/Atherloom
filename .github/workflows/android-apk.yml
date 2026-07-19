@@ -23,7 +23,17 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: "8.10.2"
-      - run: gradle :app:assembleDebug --stacktrace
+      - name: Compile APK
+        shell: bash
+        run: |
+          set +e
+          gradle :app:assembleDebug --stacktrace 2>&1 | tee build.log
+          status=${PIPESTATUS[0]}
+          if [ "$status" -ne 0 ]; then
+            message=$(tail -n 80 build.log | tr '\n' ' ' | sed 's/%/%25/g; s/\r/%0D/g')
+            echo "::error title=Android compiler::$message"
+          fi
+          exit "$status"
       - uses: actions/upload-artifact@v4
         with:
           name: Atherloom-Standalone-debug
