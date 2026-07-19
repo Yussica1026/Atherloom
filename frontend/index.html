@@ -24,6 +24,9 @@
         </button>
         <button class="new-chat" id="newChat"><span>＋</span> 新对话</button>
         <button class="new-chat game-library-button" id="openGames"><span>✦</span> 游戏库</button>
+        <button class="new-chat game-library-button" id="openFavorites"><span>☆</span> 珍藏</button>
+        <button class="new-chat game-library-button" id="openReading"><span>▤</span> 一起读书</button>
+        <button class="new-chat game-library-button" id="openCinema"><span>▷</span> 一起看电影</button>
       </div>
       <div class="sidebar-search"><span>⌕</span><input id="conversationSearch" placeholder="搜索对话" aria-label="搜索对话"></div>
       <nav class="history" id="history" aria-label="历史对话"></nav>
@@ -41,6 +44,7 @@
         <button class="mobile-menu" id="mobileMenu" aria-label="打开菜单">☰</button>
         <button class="conversation-title" id="titleButton">新对话⌄</button>
         <div class="top-actions">
+          <button class="icon-button" title="语音通话" id="openCall">☎</button>
           <button class="icon-button" title="分享对话" id="shareChat">↗</button>
           <button class="icon-button" title="记忆库" id="openMemory">◫</button>
           <button class="icon-button" title="设置" id="topSettings">⚙</button>
@@ -61,12 +65,15 @@
           <textarea id="prompt" rows="1" placeholder="和你的助手聊聊……" aria-label="消息"></textarea>
           <div class="composer-bottom">
             <div class="composer-tools">
-              <button class="round-button" title="添加附件">＋</button>
+              <button class="round-button" id="attachmentButton" title="添加附件" type="button">＋</button>
               <button class="model-picker" id="modelPicker">选择模型⌄</button>
               <button class="persona-picker" id="personaPicker">默认人格⌄</button>
             </div>
             <button class="send-button" id="send" disabled aria-label="发送">↑</button>
           </div>
+          <div class="attachment-tray" id="attachmentTray" hidden></div>
+          <div class="attachment-menu" id="attachmentMenu" hidden><button type="button" data-attachment-source="camera">拍照</button><button type="button" data-attachment-source="images">选择图片</button><button type="button" data-attachment-source="files">选择文件</button></div>
+          <input id="cameraInput" type="file" accept="image/*" capture="environment" hidden><input id="imageInput" type="file" accept="image/*" multiple hidden><input id="fileInput" type="file" multiple hidden>
         </div>
         <p class="disclaimer">AI 可能会犯错，请核对重要信息。</p>
       </section>
@@ -87,8 +94,35 @@
           <div class="game-columns"><div><h4>鱼篓</h4><div id="fishCatch" class="catch-list"></div></div><div><h4>最近发生</h4><div id="fishJournal" class="game-journal"></div></div></div>
           <div class="ai-playbar"><div><strong>AI 游玩</strong><small>下一步接入工具循环与回合预算；当前所有操作由你点击。</small></div><button class="ghost" disabled>交给当前人格</button></div>
         </section>
+        <section id="clawStage" class="mini-game-stage" hidden>
+          <div class="claw-cabinet"><div class="claw-rail"><span id="clawHead">▼</span></div><div class="prize-row" id="clawPrizes"></div></div>
+          <div class="game-stats"><span>云贝 <strong id="clawCoins">0</strong></span><span>次数 <strong id="clawTurns">0</strong></span></div>
+          <div class="game-actions"><button class="ghost" data-claw-action="move_left">向左</button><button class="primary" data-claw-action="grab">下爪 · 10 云贝</button><button class="ghost" data-claw-action="move_right">向右</button></div>
+          <div class="game-columns"><div><h4>收藏柜</h4><div id="clawInventory" class="catch-list"></div></div><div><h4>抓取记录</h4><div id="clawJournal" class="game-journal"></div></div></div>
+        </section>
+        <section id="slotsStage" class="mini-game-stage" hidden>
+          <div class="slots-machine"><span id="slotOne">✦</span><span id="slotTwo">◌</span><span id="slotThree">◇</span></div>
+          <div class="game-stats"><span>云贝 <strong id="slotCoins">0</strong></span><span>回合 <strong id="slotTurns">0</strong></span></div>
+          <div class="game-actions"><button class="primary" data-slot-amount="1">转一次 · 5 云贝</button><button class="ghost" data-slot-amount="5">连续五次</button></div>
+          <div class="game-columns"><div><h4>规则</h4><p class="muted">三个相同得 40 云贝，两个相同得 10 云贝。仅使用本地游戏云贝。</p></div><div><h4>最近结果</h4><div id="slotJournal" class="game-journal"></div></div></div>
+        </section>
       </main>
     </div>
+  </section>
+
+  <section class="collection-space" id="favoritesSpace" hidden>
+    <header><div><span class="eyebrow">KEPT MOMENTS</span><h2>珍藏</h2><p>保留某一句话当时的模样。</p></div><button class="close-button" id="closeFavorites">×</button></header>
+    <main class="collection-main"><input class="collection-search" id="favoriteSearch" placeholder="搜索珍藏正文或来源对话"><div id="favoriteList" class="favorite-list"></div></main>
+  </section>
+  <section class="collection-space" id="mediaSpace" hidden>
+    <header><div><span class="eyebrow">SHARED MEDIA</span><h2 id="mediaTitle">一起读书</h2><p>文件留在本机，只保存书签与播放进度。</p></div><button class="close-button" id="closeMedia">×</button></header>
+    <main class="media-main">
+      <section id="readingRoom"><div class="media-toolbar"><button class="primary" id="chooseBook">选择本地书籍</button><span id="bookStatus" class="muted">支持 TXT、Markdown 与 PDF</span></div><input id="bookInput" type="file" accept="text/plain,text/markdown,application/pdf,.txt,.md,.pdf" hidden><div id="bookReader" class="book-reader"><div class="game-empty"><span>▤</span><h3>挑一本书</h3><p>书的正文不会上传。</p></div></div></section>
+      <section id="cinemaRoom" hidden><div class="media-toolbar"><button class="primary" id="chooseMovie">选择本地视频</button><span id="movieStatus" class="muted">重新选择同一文件可恢复进度</span></div><input id="movieInput" type="file" accept="video/*" hidden><video id="moviePlayer" class="movie-player" controls playsinline></video></section>
+    </main>
+  </section>
+  <section class="call-space" id="callSpace" hidden>
+    <button class="close-button call-close" id="closeCall">×</button><div class="call-orb" id="callOrb">A</div><h2>语音通话</h2><p id="callStatus">点击开始后，我会听你说话并朗读模型回复。</p><div id="callTranscript" class="call-transcript"></div><div class="call-actions"><button class="primary" id="startCall">开始通话</button><button class="ghost" id="endCall" disabled>结束</button></div>
   </section>
 
   <div class="backdrop" id="backdrop" hidden></div>
@@ -112,7 +146,7 @@
             <label>显示名称<input name="name" required placeholder="例如：主线路"></label>
             <label>供应商 / 协议<select name="protocol" id="providerProtocol"><option value="openai">OpenAI 兼容</option><option value="anthropic">Anthropic Messages</option><option value="deepseek">DeepSeek</option><option value="glm">智谱 GLM</option></select></label>
             <label>官方或反代 Base URL<input name="base_url" required placeholder="https://proxy.example.com/v1"></label>
-            <label>API Key<span class="secret-field"><input name="api_key" type="password" autocomplete="new-password"><button type="button" id="toggleApiKey" aria-label="显示或隐藏 API Key">◉</button></span></label>
+            <label>API Key<span class="secret-field"><input name="api_key" type="password" autocomplete="new-password"><button type="button" id="pasteApiKey" aria-label="从剪贴板粘贴 API Key">粘贴</button><button type="button" id="toggleApiKey" aria-label="显示或隐藏 API Key">◉</button></span></label>
             <label>模型 ID<input name="model" required placeholder="claude-sonnet-4-5"></label>
             <label>自定义请求头（JSON）<textarea name="custom_headers" rows="4" placeholder='{"X-Custom-Header":"value"}'>{}</textarea></label>
             <label class="check-label" id="promptCacheControl"><input name="prompt_cache" type="checkbox" checked> 启用 Anthropic 显式提示词缓存</label>

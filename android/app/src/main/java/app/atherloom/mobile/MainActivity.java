@@ -4,6 +4,7 @@ import android.Manifest;
 import android.app.Activity;
 import android.content.Intent;
 import android.content.Context;
+import android.content.ClipboardManager;
 import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
 import android.net.Uri;
@@ -79,7 +80,9 @@ public class MainActivity extends Activity {
 
     static class NativeBridge {
         private final SharedPreferences secrets;
+        private final Context context;
         NativeBridge(Context context) {
+            this.context = context;
             try {
                 MasterKey key = new MasterKey.Builder(context).setKeyScheme(MasterKey.KeyScheme.AES256_GCM).build();
                 secrets = EncryptedSharedPreferences.create(context, "atherloom_secrets", key,
@@ -107,6 +110,13 @@ public class MainActivity extends Activity {
         }
 
         @JavascriptInterface public String deleteProvider(String id) { secrets.edit().remove("provider:" + id).apply(); return "{\"ok\":true}"; }
+
+        @JavascriptInterface public String getClipboard() {
+            ClipboardManager clipboard = (ClipboardManager) context.getSystemService(Context.CLIPBOARD_SERVICE);
+            if (clipboard == null || !clipboard.hasPrimaryClip() || clipboard.getPrimaryClip() == null || clipboard.getPrimaryClip().getItemCount() == 0) return "";
+            CharSequence value = clipboard.getPrimaryClip().getItemAt(0).coerceToText(context);
+            return value == null ? "" : value.toString();
+        }
 
         @JavascriptInterface public String chat(String raw) {
             HttpURLConnection connection = null;

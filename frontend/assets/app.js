@@ -1,6 +1,6 @@
 const $ = (s) => document.querySelector(s);
-const state = { providers: [], personas: [], conversations: [], memories: [], settings: { auto_title_mode: "local", tool_permissions: {} }, current: null, provider: null, persona: null, messages: [], busy: false };
-const gameState = { catalog: [], current: null, fishing: null, waters: {} };
+const state = { providers: [], personas: [], conversations: [], memories: [], favorites: [], attachments: [], settings: { auto_title_mode: "local", tool_permissions: {} }, current: null, provider: null, persona: null, messages: [], busy: false };
+const gameState = { catalog: [], current: null, fishing: null, claw: null, slots: null, waters: {} };
 
 async function api(path, options = {}) {
   const response = await fetch(path, { headers: { "Content-Type": "application/json", ...(options.headers || {}) }, ...options });
@@ -45,6 +45,10 @@ function applyAppearance() {
   document.documentElement.dataset.codeTheme = state.settings.code_theme || "auto";
 }
 
+function renderAttachments(){const tray=$("#attachmentTray");tray.hidden=!state.attachments.length;tray.innerHTML=state.attachments.map((item,index)=>`<span>${item.kind==="image"?"▧":"▤"} ${escapeHtml(item.name)}<button type="button" data-remove-attachment="${index}">×</button></span>`).join("");document.querySelectorAll("[data-remove-attachment]").forEach(button=>button.onclick=()=>{state.attachments.splice(Number(button.dataset.removeAttachment),1);renderAttachments();});}
+const readFile=(file,mode)=>new Promise((resolve,reject)=>{const reader=new FileReader();reader.onload=()=>resolve(reader.result);reader.onerror=()=>reject(reader.error);mode==="text"?reader.readAsText(file):reader.readAsDataURL(file);});
+async function addAttachments(files){for(const file of [...files]){if(file.size>12*1024*1024){alert(`${file.name} 超过 12 MB，暂不添加`);continue;}const image=file.type.startsWith("image/");const text=file.type.startsWith("text/")||/\.(md|txt|json|csv|js|ts|py|html|css)$/i.test(file.name);state.attachments.push({id:crypto.randomUUID?.()||`${Date.now()}-${Math.random()}`,name:file.name,mime:file.type||"application/octet-stream",kind:image?"image":text?"text":file.type==="application/pdf"?"pdf":"file",data:image||file.type==="application/pdf"?await readFile(file,"data"):undefined,text:text?(await readFile(file,"text")).slice(0,120000):undefined,size:file.size});}renderAttachments();}
+
 function personaQuery() { return state.persona ? `?persona_id=${encodeURIComponent(state.persona)}` : ""; }
 
 function renderGameCards() {
@@ -63,11 +67,15 @@ function renderFishing() {
   document.querySelectorAll("[data-water]").forEach(button => button.onclick = () => playGame("travel", 1, button.dataset.water));
 }
 
+function renderClaw(){const current=gameState.claw;if(!current)return;$("#clawCoins").textContent=current.coins;$("#clawTurns").textContent=current.turn;$("#clawHead").style.left=`${current.position*20+10}%`;$("#clawPrizes").innerHTML=current.prizes.map((name,index)=>`<span class="${index===current.position?"targeted":""}">◇<small>${escapeHtml(name)}</small></span>`).join("");$("#clawInventory").innerHTML=Object.entries(current.inventory).map(([name,count])=>`<span><b>${escapeHtml(name)}</b><em>× ${count}</em></span>`).join("")||"<small>还没有抓到娃娃。</small>";$("#clawJournal").innerHTML=[...current.journal].reverse().slice(0,8).map(item=>`<span>${escapeHtml(item)}</span>`).join("")||"<small>机器正在等待第一爪。</small>";}
+function renderSlots(){const current=gameState.slots;if(!current)return;[$("#slotOne"),$("#slotTwo"),$("#slotThree")].forEach((node,index)=>node.textContent=current.reels[index]);$("#slotCoins").textContent=current.coins;$("#slotTurns").textContent=current.turn;$("#slotJournal").innerHTML=[...current.journal].reverse().slice(0,8).map(item=>`<span>${escapeHtml(item)}</span>`).join("")||"<small>拉下摇杆开始。</small>";}
+
 async function openGame(gameId) {
   gameState.current = gameId; renderGameCards();
-  if (gameId !== "quiet_fishing") { $("#gameEmpty").hidden = false; $("#fishingStage").hidden = true; const game = gameState.catalog.find(item => item.id === gameId); $("#gameEmpty").innerHTML = `<span>${game.icon}</span><h3>${escapeHtml(game.name)}</h3><p>${escapeHtml(game.description)}</p>`; return; }
+  $("#gameEmpty").hidden=true;$("#fishingStage").hidden=gameId!=="quiet_fishing";$("#clawStage").hidden=gameId!=="claw_machine";$("#slotsStage").hidden=gameId!=="cloud_slots";
+  if(!["quiet_fishing","claw_machine","cloud_slots"].includes(gameId)){$("#gameEmpty").hidden=false;const game=gameState.catalog.find(item=>item.id===gameId);$("#gameEmpty").innerHTML=`<span>${game.icon}</span><h3>${escapeHtml(game.name)}</h3><p>${escapeHtml(game.description)}</p>`;return;}
   const payload = await api(`/api/games/${gameId}/state${personaQuery()}`); gameState.fishing = payload.state; gameState.waters = payload.waters;
-  $("#gameEmpty").hidden = true; $("#fishingStage").hidden = false; renderFishing();
+  if(gameId==="quiet_fishing"){gameState.fishing=payload.state;gameState.waters=payload.waters;renderFishing();}else if(gameId==="claw_machine"){gameState.claw=payload.state;renderClaw();}else{gameState.slots=payload.state;renderSlots();}
 }
 
 async function playGame(action, amount = 1, target = "") {
@@ -76,6 +84,7 @@ async function playGame(action, amount = 1, target = "") {
     gameState.fishing = payload.state; renderFishing();
   } catch (error) { alert(error.message); }
 }
+async function playMiniGame(gameId,action,amount=1){try{const payload=await api(`/api/games/${gameId}/action${personaQuery()}`,{method:"POST",body:JSON.stringify({action,amount})});if(gameId==="claw_machine"){gameState.claw=payload.state;renderClaw();}else{gameState.slots=payload.state;renderSlots();}}catch(error){alert(error.message);}}
 
 async function openGameLibrary() {
   $("#gameLibrary").hidden = false;
@@ -87,7 +96,7 @@ function renderMessages() {
   $("#welcome").hidden = state.messages.length > 0;
   $("#messages").innerHTML = state.messages.map((m, index) => `<article class="message ${m.role}" data-index="${index}">
     <div class="message-body">${m.memory_sources?.length ? `<div class="memory-sources">本轮使用记忆：${m.memory_sources.map(source => `<span>${escapeHtml(source.title)}</span>`).join("")}</div>` : ""}${m.reasoning ? `<details class="thinking"><summary>思考过程</summary><div>${escapeHtml(m.reasoning)}</div></details>` : ""}<div class="bubble">${escapeHtml(m.content)}</div></div>
-    <div class="message-actions"><button data-action="copy">复制</button>${m.id ? `<button data-action="branch">分支</button>` : ""}${m.role === "assistant" && m.parent_message_id ? `<button data-action="regenerate">重新 Roll</button>` : ""}</div>
+    <div class="message-actions"><button data-action="copy">复制</button>${m.id ? `<button data-action="favorite">${state.favorites.some(f => f.source_message_id === m.id && f.owners?.includes("user")) ? "★ 已珍藏" : "☆ 珍藏"}</button><button data-action="branch">分支</button>` : ""}${m.role === "assistant" && m.parent_message_id ? `<button data-action="regenerate">重新 Roll</button>` : ""}</div>
     ${m.role === "assistant" && m.model ? `<div class="message-meta">${escapeHtml(m.model)}</div>` : ""}</article>`).join("");
   document.querySelectorAll(".message-actions button").forEach(button => button.onclick = () => handleMessageAction(button.closest(".message"), button.dataset.action));
   $("#chatScroll").scrollTop = $("#chatScroll").scrollHeight;
@@ -96,6 +105,11 @@ function renderMessages() {
 async function handleMessageAction(article, action) {
   const message = state.messages[Number(article.dataset.index)];
   if (action === "copy") return navigator.clipboard.writeText(message.content);
+  if (action === "favorite") {
+    const existing=state.favorites.find(item=>item.source_message_id===message.id&&item.owners?.includes("user"));
+    if(existing) await api(`/api/favorites/${message.id}?owner=user`,{method:"DELETE"}); else await api(`/api/favorites/${message.id}`,{method:"POST",body:JSON.stringify({owner:"user"})});
+    state.favorites=await api("/api/favorites");renderMessages();return;
+  }
   if (action === "branch") {
     const conversation = await api(`/api/conversations/${state.current}/branch/${message.id}`, { method: "POST" });
     state.conversations.unshift(conversation); renderHistory(); return openConversation(conversation.id);
@@ -132,6 +146,7 @@ function updateProviderCacheUI() {
 async function bootstrap() {
   Object.assign(state, await api("/api/bootstrap"));
   state.memories = await api("/api/memories");
+  state.favorites = await api("/api/favorites");
   state.provider = state.providers[0]?.id || null; state.persona = state.personas[0]?.id || null;
   $("#autoTitleMode").value = state.settings.auto_title_mode || "local";
   $("#summaryEnabled").checked = state.settings.summary_enabled;
@@ -149,6 +164,19 @@ async function bootstrap() {
   renderProfile(); renderHistory(); renderSettings(); renderPickers();
 }
 
+function renderFavorites() {
+  $("#favoriteList").innerHTML=state.favorites.map(item=>`<article class="favorite-card"><div class="favorite-meta"><span>${item.role==="user"?"用户":"助手"}</span><span>${escapeHtml(item.conversation_title_snapshot||"未命名对话")}</span><time>${new Date(item.original_message_created_at).toLocaleString()}</time></div><p>${escapeHtml(item.text_snapshot)}</p><button class="ghost" data-remove-favorite="${item.source_message_id}">取消珍藏</button></article>`).join("")||`<div class="game-empty"><span>☆</span><h3>还没有珍藏</h3><p>在任意消息下点击“☆ 珍藏”。</p></div>`;
+  document.querySelectorAll("[data-remove-favorite]").forEach(button=>button.onclick=async()=>{await api(`/api/favorites/${button.dataset.removeFavorite}?owner=user`,{method:"DELETE"});state.favorites=await api(`/api/favorites?q=${encodeURIComponent($("#favoriteSearch").value)}`);renderFavorites();renderMessages();});
+}
+
+async function openFavorites(){state.favorites=await api("/api/favorites");renderFavorites();$("#favoritesSpace").hidden=false;}
+function openMedia(mode){$("#mediaSpace").hidden=false;$("#readingRoom").hidden=mode!=="reading";$("#cinemaRoom").hidden=mode!=="cinema";$("#mediaTitle").textContent=mode==="reading"?"一起读书":"一起看电影";}
+const callState={active:false,recognition:null};
+function callLine(role,text){$("#callTranscript").insertAdjacentHTML("beforeend",`<p class="${role}"><b>${role==="user"?"你":"AI"}</b>${escapeHtml(text)}</p>`);$("#callTranscript").scrollTop=$("#callTranscript").scrollHeight;}
+async function callTurn(content){const provider=activeProvider();if(!provider)throw new Error("请先添加并选择 API 线路");if(!state.current)await newConversation();callLine("user",content);$("#callStatus").textContent="正在思考…";const response=await fetch("/api/chat",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({conversation_id:state.current,content,provider_id:provider.id,persona_id:state.persona})});const reader=response.body.getReader(),decoder=new TextDecoder();let pending="",reply="";while(true){const {value,done}=await reader.read();if(done)break;pending+=decoder.decode(value,{stream:true});const lines=pending.split("\n");pending=lines.pop();for(const line of lines){if(!line)continue;const event=JSON.parse(line);if(event.error)throw new Error(event.error);if(event.delta)reply+=event.delta;}}callLine("assistant",reply);if(!callState.active)return;$("#callStatus").textContent="正在朗读…";const utterance=new SpeechSynthesisUtterance(reply);utterance.lang="zh-CN";utterance.onend=()=>{if(callState.active){$("#callStatus").textContent="正在听…";try{callState.recognition.start();}catch{}}};speechSynthesis.speak(utterance);}
+async function startVoiceCall(){const Recognition=window.SpeechRecognition||window.webkitSpeechRecognition;if(!Recognition)throw new Error("当前浏览器没有系统语音识别能力");const stream=await navigator.mediaDevices.getUserMedia({audio:true});stream.getTracks().forEach(track=>track.stop());callState.active=true;callState.recognition=new Recognition();callState.recognition.lang="zh-CN";callState.recognition.interimResults=false;callState.recognition.onresult=event=>callTurn(event.results[event.results.length-1][0].transcript).catch(error=>{$("#callStatus").textContent=error.message;});callState.recognition.onerror=event=>{if(callState.active)$("#callStatus").textContent=`没有听清：${event.error}`;};callState.recognition.start();$("#callStatus").textContent="正在听…";$("#startCall").disabled=true;$("#endCall").disabled=false;}
+function endVoiceCall(){callState.active=false;callState.recognition?.abort();speechSynthesis.cancel();$("#callStatus").textContent="通话已结束";$("#startCall").disabled=false;$("#endCall").disabled=true;}
+
 async function newConversation() {
   const conversation = await api("/api/conversations", { method: "POST", body: JSON.stringify({ provider_id: state.provider, persona_id: state.persona }) });
   state.conversations.unshift(conversation); state.current = conversation.id; state.messages = [];
@@ -164,20 +192,21 @@ async function openConversation(id) {
 
 async function sendMessage() {
   const input = $("#prompt"); const content = input.value.trim(); const provider = activeProvider();
-  if (!content || state.busy) return; if (!provider) return openSettings("providers"); if (!state.current) await newConversation();
+  if ((!content&&!state.attachments.length) || state.busy) return; if (!provider) return openSettings("providers"); if (!state.current) await newConversation();
+  const attachments=state.attachments.splice(0);renderAttachments();const visibleContent=content||"请查看附件";
   state.busy = true; input.value = ""; input.style.height = "auto"; $("#send").disabled = true;
-  state.messages.push({ role: "user", content }); renderMessages();
-  await generateReply(content);
+  state.messages.push({ role: "user", content:visibleContent,attachments }); renderMessages();
+  await generateReply(visibleContent,null,attachments);
 }
 
-async function generateReply(content, reuseUserMessageId = null) {
+async function generateReply(content, reuseUserMessageId = null, attachments = []) {
   const input = $("#prompt"); const provider = activeProvider();
   if (!provider) return openSettings("providers");
   state.busy = true;
   state.messages.push({ role: "assistant", content: "", reasoning: "", model: provider.model, parent_message_id: reuseUserMessageId }); renderMessages();
   const assistant = state.messages[state.messages.length - 1];
   try {
-    const response = await fetch("/api/chat", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ conversation_id: state.current, content: content || "重新生成", provider_id: provider.id, persona_id: state.persona, reuse_user_message_id: reuseUserMessageId }) });
+    const response = await fetch("/api/chat", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ conversation_id: state.current, content: content || "重新生成", attachments, provider_id: provider.id, persona_id: state.persona, reuse_user_message_id: reuseUserMessageId }) });
     if (!response.ok) throw new Error(`请求失败 ${response.status}`);
     const reader = response.body.getReader(); const decoder = new TextDecoder(); let pending = "";
     while (true) { const { value, done } = await reader.read(); if (done) break; pending += decoder.decode(value, { stream: true }); const lines = pending.split("\n"); pending = lines.pop(); for (const line of lines) { if (!line) continue; const event = JSON.parse(line); if (event.error) throw new Error(event.error); if (event.memory_sources) assistant.memory_sources = event.memory_sources; if (event.delta) assistant.content += event.delta; if (event.reasoning_delta) assistant.reasoning += event.reasoning_delta; if (event.done) { assistant.id = event.assistant_id; assistant.parent_message_id = event.user_id; const pendingUser = [...state.messages].reverse().find(m => m.role === "user" && !m.id); if (pendingUser) pendingUser.id = event.user_id; if (event.title) { const conversation = state.conversations.find(c => c.id === state.current); if (conversation) conversation.title = event.title; $("#titleButton").textContent = `${event.title}⌄`; renderHistory(); } } renderMessages(); } }
@@ -255,6 +284,7 @@ function saveAppSettings() {
 }
 
 $("#prompt").addEventListener("input", e => { e.target.style.height = "auto"; e.target.style.height = `${Math.min(e.target.scrollHeight, 180)}px`; $("#send").disabled = !e.target.value.trim() || state.busy; });
+$("#attachmentButton").onclick=event=>{event.stopPropagation();$("#attachmentMenu").hidden=!$("#attachmentMenu").hidden;};document.querySelectorAll("[data-attachment-source]").forEach(button=>button.onclick=()=>{const inputs={camera:$("#cameraInput"),images:$("#imageInput"),files:$("#fileInput")};$("#attachmentMenu").hidden=true;inputs[button.dataset.attachmentSource].click();});[$("#cameraInput"),$("#imageInput"),$("#fileInput")].forEach(input=>input.onchange=async event=>{await addAttachments(event.target.files);event.target.value="";$("#send").disabled=false;});
 $("#prompt").addEventListener("keydown", e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendMessage(); } });
 $("#send").onclick = sendMessage; $("#newChat").onclick = newConversation;
 $("#shareChat").onclick = shareConversation;
@@ -281,13 +311,21 @@ document.querySelectorAll("[data-bulk-permission]").forEach(button => button.onc
 });
 $("#openSettings").onclick = () => openSettings(); $("#topSettings").onclick = () => openSettings(); $("#openMemory").onclick = () => openSettings("memory");
 $("#openGames").onclick = openGameLibrary; $("#closeGames").onclick = () => $("#gameLibrary").hidden = true;
+$("#openFavorites").onclick=openFavorites;$("#closeFavorites").onclick=()=>$("#favoritesSpace").hidden=true;
+$("#openReading").onclick=()=>openMedia("reading");$("#openCinema").onclick=()=>openMedia("cinema");$("#closeMedia").onclick=()=>{$("#mediaSpace").hidden=true;$("#moviePlayer").pause();};
+$("#openCall").onclick=()=>$("#callSpace").hidden=false;$("#closeCall").onclick=()=>{endVoiceCall();$("#callSpace").hidden=true;};$("#startCall").onclick=()=>startVoiceCall().catch(error=>{$("#callStatus").textContent=`无法开始：${error.message}`;});$("#endCall").onclick=endVoiceCall;
+$("#chooseBook").onclick=()=>$("#bookInput").click();$("#bookInput").onchange=async event=>{const file=event.target.files?.[0];if(!file)return;const reader=$("#bookReader"),key=`atherloom:book:${file.name}:${file.size}`;$("#bookStatus").textContent=`${file.name} · 本地文件`;if(file.type==="application/pdf"||/\.pdf$/i.test(file.name)){const url=URL.createObjectURL(file);reader.innerHTML=`<iframe title="${escapeHtml(file.name)}" src="${url}#page=${Number(localStorage.getItem(key)||1)}"></iframe>`;}else{reader.innerHTML=`<pre>${escapeHtml(await file.text())}</pre>`;reader.scrollTop=Number(localStorage.getItem(key)||0);reader.onscroll=()=>localStorage.setItem(key,String(reader.scrollTop));}};
+let movieUrl;$("#chooseMovie").onclick=()=>$("#movieInput").click();$("#movieInput").onchange=event=>{const file=event.target.files?.[0];if(!file)return;if(movieUrl)URL.revokeObjectURL(movieUrl);movieUrl=URL.createObjectURL(file);const player=$("#moviePlayer"),key=`atherloom:movie:${file.name}:${file.size}`;player.src=movieUrl;$("#movieStatus").textContent=`${file.name} · 进度保存在本机`;player.onloadedmetadata=()=>{player.currentTime=Math.min(Number(localStorage.getItem(key)||0),Math.max(0,player.duration-1));};player.ontimeupdate=()=>{if(Math.floor(player.currentTime)%5===0)localStorage.setItem(key,String(player.currentTime));};};
+let favoriteSearchTimer;$("#favoriteSearch").oninput=event=>{clearTimeout(favoriteSearchTimer);favoriteSearchTimer=setTimeout(async()=>{state.favorites=await api(`/api/favorites?q=${encodeURIComponent(event.target.value.trim())}`);renderFavorites();},220);};
 document.querySelectorAll("[data-game-action]").forEach(button => button.onclick = () => playGame(button.dataset.gameAction, Number(button.dataset.amount || 1)));
+document.querySelectorAll("[data-claw-action]").forEach(button=>button.onclick=()=>playMiniGame("claw_machine",button.dataset.clawAction));document.querySelectorAll("[data-slot-amount]").forEach(button=>button.onclick=()=>playMiniGame("cloud_slots","spin",Number(button.dataset.slotAmount)));
 $("#backdrop").onclick = closeSettings; document.querySelectorAll("[data-close]").forEach(b => b.onclick = closeSettings);
 document.querySelectorAll(".settings-nav button").forEach(b => b.onclick = () => switchTab(b.dataset.tab));
 $("#addProvider").onclick = () => { $("#providerForm").hidden = false; $("#connectionState").textContent = ""; renderSettings(); updateProviderCacheUI(); }; $("#cancelProvider").onclick = () => { $("#providerForm").hidden = true; renderSettings(); };
 $("#providerForm").onsubmit = async e => { e.preventDefault(); const data = Object.fromEntries(new FormData(e.target)); data.prompt_cache = e.target.elements.prompt_cache.checked; const saved = await api("/api/providers", { method: "POST", body: JSON.stringify(data) }); state.providers.push(saved); state.provider ||= saved.id; e.target.reset(); e.target.elements.custom_headers.value = "{}"; e.target.elements.prompt_cache.checked = true; e.target.hidden = true; renderSettings(); renderPickers(); };
 $("#providerProtocol").onchange = event => { const form = $("#providerForm"); const presets = { deepseek: { name: "DeepSeek", base_url: "https://api.deepseek.com", model: "deepseek-v4-flash" }, glm: { name: "智谱 GLM", base_url: "https://open.bigmodel.cn/api/paas/v4", model: "glm-5.2" } }; const preset = presets[event.target.value]; if (preset) for (const [key, value] of Object.entries(preset)) if (!form.elements[key].value) form.elements[key].value = value; updateProviderCacheUI(); };
 $("#toggleApiKey").onclick = () => { const input = $("#providerForm").elements.api_key; input.type = input.type === "password" ? "text" : "password"; };
+$("#pasteApiKey").onclick=async()=>{const input=$("#providerForm").elements.api_key;try{const value=window.AtherloomNative?.getClipboard?window.AtherloomNative.getClipboard():await navigator.clipboard.readText();if(!value)throw new Error("剪贴板为空");input.value=value.trim();$("#connectionState").className="connection-state success";$("#connectionState").textContent="已从剪贴板粘贴";}catch(error){$("#connectionState").className="connection-state error";$("#connectionState").textContent=`无法读取剪贴板：${error.message}`;}};
 $("#testProvider").onclick = async () => { const form = $("#providerForm"); if (!form.reportValidity()) return; const data = Object.fromEntries(new FormData(form)); data.prompt_cache = form.elements.prompt_cache.checked; const status = $("#connectionState"); status.className = "connection-state"; status.textContent = "正在测试连接…"; try { const result = await api("/api/providers/test", { method: "POST", body: JSON.stringify(data) }); status.classList.add("success"); status.textContent = result.message; } catch (error) { status.classList.add("error"); status.textContent = error.message; } };
 $("#personaForm").onsubmit = async e => { e.preventDefault(); const data = Object.fromEntries(new FormData(e.target)); const saved = await api("/api/personas", { method: "POST", body: JSON.stringify(data) }); state.personas.push(saved); state.persona ||= saved.id; e.target.reset(); renderSettings(); renderPickers(); };
 $("#memoryForm").onsubmit = async e => { e.preventDefault(); const form = e.target; const data = Object.fromEntries(new FormData(form)); const editing = form.dataset.editing; const saved = await api(editing ? `/api/memories/${editing}` : "/api/memories", { method: editing ? "PUT" : "POST", body: JSON.stringify(data) }); if (editing) Object.assign(state.memories.find(item => item.id === editing), saved); else state.memories.unshift(saved); form.reset(); delete form.dataset.editing; $("#saveMemory").textContent = "添加记忆"; $("#cancelMemoryEdit").hidden = true; renderSettings(); };
@@ -297,7 +335,7 @@ $("#memorySearch").oninput = event => { clearTimeout(memorySearchTimer); memoryS
 $("#memoryKindFilter").onchange = renderSettings;
 $("#modelPicker").onclick = e => { e.stopPropagation(); showPopover(e.currentTarget, $("#modelPopover"), state.providers.map(p => `<button data-value="${p.id}"><strong>${escapeHtml(p.name)}</strong><small>${escapeHtml(p.model)}</small></button>`).join(""), id => { state.provider = id; renderPickers(); }); };
 $("#personaPicker").onclick = e => { e.stopPropagation(); showPopover(e.currentTarget, $("#personaPopover"), `<button data-value="">默认人格</button>` + state.personas.map(p => `<button data-value="${p.id}">${escapeHtml(p.name)}</button>`).join(""), id => { state.persona = id || null; renderPickers(); }); };
-document.addEventListener("click", event => { if (!event.target.closest(".popover")) closePopovers(); });
+document.addEventListener("click", event => { if (!event.target.closest(".popover")) closePopovers(); if(!event.target.closest("#attachmentMenu")&&!event.target.closest("#attachmentButton"))$("#attachmentMenu").hidden=true; });
 document.addEventListener("keydown", event => { if (event.key === "Escape") closePopovers(); });
 $("#mobileMenu").onclick = () => $("#sidebar").classList.toggle("open");
 $("#themeSelect").onchange = e => { document.documentElement.dataset.theme = e.target.value === "system" ? "" : e.target.value; localStorage.setItem("theme", e.target.value); };

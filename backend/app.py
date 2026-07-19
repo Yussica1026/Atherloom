@@ -85,6 +85,18 @@ def init_db() -> None:
               game_id TEXT NOT NULL, persona_key TEXT NOT NULL, state_json TEXT NOT NULL,
               updated_at TEXT NOT NULL, PRIMARY KEY(game_id, persona_key)
             );
+            CREATE TABLE IF NOT EXISTS favorites (
+              id TEXT PRIMARY KEY, source_message_id TEXT NOT NULL UNIQUE,
+              conversation_id TEXT NOT NULL, role TEXT NOT NULL,
+              text_snapshot TEXT NOT NULL, conversation_title_snapshot TEXT NOT NULL DEFAULT '',
+              original_message_created_at TEXT NOT NULL, favorited_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS favorite_owners (
+              favorite_id TEXT NOT NULL, owner TEXT NOT NULL,
+              created_at TEXT NOT NULL, PRIMARY KEY(favorite_id, owner),
+              FOREIGN KEY(favorite_id) REFERENCES favorites(id) ON DELETE CASCADE
+            );
+            CREATE INDEX IF NOT EXISTS favorites_order ON favorites(favorited_at DESC, id DESC);
             """
         )
         columns = {row["name"] for row in connection.execute("PRAGMA table_info(providers)")}
@@ -173,6 +185,7 @@ class ChatIn(BaseModel):
     provider_id: str
     persona_id: str | None = None
     reuse_user_message_id: str | None = None
+    attachments: list[dict[str, Any]] = Field(default_factory=list, max_length=8)
 
 
 class MotivationEventIn(BaseModel):
@@ -187,6 +200,10 @@ class GameActionIn(BaseModel):
     action: str
     amount: int = Field(default=1, ge=1, le=20)
     target: str = ""
+
+
+class FavoriteIn(BaseModel):
+    owner: str = Field(default="user", pattern="^(user|assistant)$")
 
 
 app = FastAPI(title="Local Claude Style Client", docs_url=None, redoc_url=None)
@@ -453,6 +470,52 @@ def get_messages(conversation_id: str) -> list[dict[str, Any]]:
         return [dict(row) for row in connection.execute("SELECT * FROM messages WHERE conversation_id=? ORDER BY created_at", (conversation_id,))]
 
 
+@app.get("/api/favorites")
+def list_favorites(q: str = "") -> list[dict[str, Any]]:
+    escaped = q.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    pattern = f"%{escaped}%"
+    with closing(db()) as connection:
+        rows = connection.execute(
+            """SELECT f.*, GROUP_CONCAT(o.owner) AS owners FROM favorites f
+               LEFT JOIN favorite_owners o ON o.favorite_id=f.id
+               WHERE (?='' OR f.text_snapshot LIKE ? ESCAPE '\\' OR f.conversation_title_snapshot LIKE ? ESCAPE '\\')
+               GROUP BY f.id ORDER BY f.favorited_at DESC, f.id DESC LIMIT 500""",
+            (q, pattern, pattern),
+        ).fetchall()
+    return [{**dict(row), "owners": (row["owners"] or "").split(",") if row["owners"] else []} for row in rows]
+
+
+@app.post("/api/favorites/{message_id}")
+def favorite_message(message_id: str, body: FavoriteIn) -> dict[str, Any]:
+    with closing(db()) as connection:
+        message = connection.execute("SELECT * FROM messages WHERE id=?", (message_id,)).fetchone()
+        if not message or message["role"] not in ("user", "assistant") or not message["content"].strip():
+            raise HTTPException(404, "该消息不可珍藏")
+        existing = connection.execute("SELECT * FROM favorites WHERE source_message_id=?", (message_id,)).fetchone()
+        favorite_id = existing["id"] if existing else str(uuid.uuid4())
+        if not existing:
+            title = connection.execute("SELECT title FROM conversations WHERE id=?", (message["conversation_id"],)).fetchone()
+            connection.execute(
+                "INSERT INTO favorites VALUES(?,?,?,?,?,?,?,?)",
+                (favorite_id, message_id, message["conversation_id"], message["role"], message["content"][:50000], title["title"] if title else "", message["created_at"], now_iso()),
+            )
+        connection.execute("INSERT OR IGNORE INTO favorite_owners VALUES(?,?,?)", (favorite_id, body.owner, now_iso()))
+        connection.commit()
+    return {"id": favorite_id, "source_message_id": message_id, "owner": body.owner}
+
+
+@app.delete("/api/favorites/{message_id}")
+def unfavorite_message(message_id: str, owner: str = "user") -> dict[str, bool]:
+    with closing(db()) as connection:
+        favorite = connection.execute("SELECT id FROM favorites WHERE source_message_id=?", (message_id,)).fetchone()
+        if favorite:
+            connection.execute("DELETE FROM favorite_owners WHERE favorite_id=? AND owner=?", (favorite["id"], owner))
+            remaining = connection.execute("SELECT 1 FROM favorite_owners WHERE favorite_id=?", (favorite["id"],)).fetchone()
+            if not remaining: connection.execute("DELETE FROM favorites WHERE id=?", (favorite["id"],))
+            connection.commit()
+    return {"ok": True}
+
+
 def motivation_key(persona_id: str | None) -> str:
     return persona_id or "__default__"
 
@@ -466,6 +529,14 @@ FISHING_WATERS = {
 
 def default_fishing_state() -> dict[str, Any]:
     return {"coins": 120, "bait": 8, "water": "willow_bay", "turn": 0, "catch": {}, "journal": [], "unlocked": ["willow_bay"]}
+
+
+def default_claw_state() -> dict[str, Any]:
+    return {"coins": 100, "turn": 0, "position": 2, "prizes": ["云朵兔", "星星熊", "橘子猫", "月亮狗", "小海豹"], "inventory": {}, "journal": []}
+
+
+def default_slots_state() -> dict[str, Any]:
+    return {"coins": 100, "turn": 0, "reels": ["✦", "◌", "◇"], "journal": []}
 
 
 def fishing_pick(state: dict[str, Any]) -> tuple[str, int]:
@@ -483,8 +554,8 @@ def fishing_pick(state: dict[str, Any]) -> tuple[str, int]:
 def game_catalog() -> list[dict[str, Any]]:
     return [
         {"id": "quiet_fishing", "name": "云汀钓记", "icon": "◌", "status": "playable", "description": "为 AI 与用户共同设计的原创确定性钓鱼游戏。"},
-        {"id": "claw_machine", "name": "抓娃娃机", "icon": "◇", "status": "coming", "description": "观察、移动、瞄准和下爪；将接入我们的可视化物理玩法。"},
-        {"id": "text_arcade", "name": "文字街机", "icon": "✦", "status": "adapter", "description": "虚拟筹码街机入口；等待外部游戏许可与适配。"},
+        {"id": "claw_machine", "name": "抓娃娃机", "icon": "◇", "status": "playable", "description": "移动爪子、选择目标并收集娃娃。"},
+        {"id": "cloud_slots", "name": "云纹老虎机", "icon": "✦", "status": "playable", "description": "只使用游戏内云贝的确定性三轴小游戏。"},
     ]
 
 
@@ -494,6 +565,10 @@ def load_game(connection: sqlite3.Connection, game_id: str, persona_id: str | No
         return json.loads(row["state_json"])
     if game_id == "quiet_fishing":
         return default_fishing_state()
+    if game_id == "claw_machine":
+        return default_claw_state()
+    if game_id == "cloud_slots":
+        return default_slots_state()
     raise HTTPException(404, "游戏尚未开放")
 
 
@@ -519,12 +594,29 @@ def game_state(game_id: str, persona_id: str | None = None) -> dict[str, Any]:
 
 @app.post("/api/games/{game_id}/action")
 def game_action(game_id: str, body: GameActionIn, persona_id: str | None = None) -> dict[str, Any]:
-    if game_id != "quiet_fishing":
-        raise HTTPException(409, "游戏尚未开放")
     with closing(db()) as connection:
         state = load_game(connection, game_id, persona_id)
         events: list[str] = []
-        if body.action == "cast":
+        if game_id == "claw_machine":
+            if body.action == "move_left": state["position"] = max(0, state["position"] - 1); events.append("爪子向左移动")
+            elif body.action == "move_right": state["position"] = min(len(state["prizes"]) - 1, state["position"] + 1); events.append("爪子向右移动")
+            elif body.action == "grab":
+                if state["coins"] < 10: raise HTTPException(409, "云贝不够")
+                state["coins"] -= 10; state["turn"] += 1; prize = state["prizes"][state["position"]]
+                roll = int.from_bytes(hashlib.sha256(f"claw:{state['turn']}:{state['position']}".encode()).digest()[:2], "big") % 100
+                if roll < 58: state["inventory"][prize] = state["inventory"].get(prize, 0) + 1; events.append(f"抓到了{prize}！")
+                else: events.append(f"{prize}晃了一下，又掉回去了")
+            else: raise HTTPException(422, "未知游戏动作")
+        elif game_id == "cloud_slots":
+            if body.action != "spin": raise HTTPException(422, "未知游戏动作")
+            bet = 5 * body.amount
+            if state["coins"] < bet: raise HTTPException(409, "云贝不够")
+            state["coins"] -= bet; symbols = ["✦", "◌", "◇", "☾", "❀"]
+            for _ in range(body.amount):
+                state["turn"] += 1; digest = hashlib.sha256(f"slots:{state['turn']}".encode()).digest(); state["reels"] = [symbols[digest[i] % len(symbols)] for i in range(3)]
+                payout = 40 if len(set(state["reels"])) == 1 else 10 if len(set(state["reels"])) == 2 else 0; state["coins"] += payout
+                events.append(" · ".join(state["reels"]) + (f"，赢得 {payout} 云贝" if payout else "，没有连线"))
+        elif game_id == "quiet_fishing" and body.action == "cast":
             count = min(body.amount, state["bait"])
             if count < 1:
                 raise HTTPException(409, "鱼饵用完了")
@@ -533,16 +625,16 @@ def game_action(game_id: str, body: GameActionIn, persona_id: str | None = None)
                 name, value = fishing_pick(state)
                 state["catch"][name] = state["catch"].get(name, 0) + 1
                 events.append(f"钓到了{name}，价值 {value} 枚云贝")
-        elif body.action == "buy_bait":
+        elif game_id == "quiet_fishing" and body.action == "buy_bait":
             cost = body.amount * 5
             if state["coins"] < cost:
                 raise HTTPException(409, "云贝不够")
             state["coins"] -= cost; state["bait"] += body.amount; events.append(f"买了 {body.amount} 份鱼饵")
-        elif body.action == "sell_all":
+        elif game_id == "quiet_fishing" and body.action == "sell_all":
             values = {name: value for water in FISHING_WATERS.values() for name, value, _ in water["fish"]}
             income = sum(values.get(name, 0) * count for name, count in state["catch"].items())
             state["coins"] += income; state["catch"] = {}; events.append(f"渔获卖出，得到 {income} 枚云贝")
-        elif body.action == "travel":
+        elif game_id == "quiet_fishing" and body.action == "travel":
             if body.target not in FISHING_WATERS:
                 raise HTTPException(422, "未知水域")
             water = FISHING_WATERS[body.target]
@@ -646,6 +738,31 @@ def provider_endpoint(base_url: str, protocol: str) -> str:
     if base.endswith("/chat/completions"):
         return base
     return base + "/chat/completions"
+
+
+def attachment_content(text: str, attachments: list[dict[str, Any]], protocol: str) -> str | list[dict[str, Any]]:
+    if not attachments:
+        return text
+    if protocol == "anthropic":
+        blocks: list[dict[str, Any]] = [{"type": "text", "text": text}]
+        for item in attachments:
+            data = str(item.get("data", "")); encoded = data.split(",", 1)[1] if "," in data else ""
+            if item.get("kind") == "image" and encoded:
+                blocks.append({"type": "image", "source": {"type": "base64", "media_type": item.get("mime", "image/jpeg"), "data": encoded}})
+            elif item.get("kind") == "pdf" and encoded:
+                blocks.append({"type": "document", "source": {"type": "base64", "media_type": "application/pdf", "data": encoded}})
+            elif item.get("text"):
+                blocks.append({"type": "text", "text": f"文件：{item.get('name', '未命名')}\n{str(item['text'])[:120000]}"})
+        return blocks
+    parts: list[dict[str, Any]] = [{"type": "text", "text": text}]
+    for item in attachments:
+        if item.get("kind") == "image" and item.get("data"):
+            parts.append({"type": "image_url", "image_url": {"url": item["data"]}})
+        elif item.get("text"):
+            parts.append({"type": "text", "text": f"文件：{item.get('name', '未命名')}\n{str(item['text'])[:120000]}"})
+        else:
+            parts.append({"type": "text", "text": f"[当前兼容线路无法直接读取文件 {item.get('name', '未命名')}]"})
+    return parts
 
 
 def provider_models_endpoint(base_url: str, protocol: str) -> str:
@@ -847,15 +964,21 @@ async def chat(body: ChatIn) -> StreamingResponse:
             if memory_sources:
                 yield json.dumps({"memory_sources": [{"id": item["id"], "title": item["title"], "kind": item["kind"]} for item in memory_sources]}, ensure_ascii=False) + "\n"
             async with httpx.AsyncClient(timeout=180) as client:
+                provider_messages = [dict(message) for message in messages]
+                if body.attachments:
+                    for message in reversed(provider_messages):
+                        if message["role"] == "user":
+                            message["content"] = attachment_content(body.content, body.attachments, provider["protocol"])
+                            break
                 if provider["protocol"] == "anthropic":
-                    system = "\n\n".join(m["content"] for m in messages if m["role"] == "system")
-                    payload = {"model": provider["model"], "max_tokens": 4096, "stream": True, "messages": [m for m in messages if m["role"] != "system"]}
+                    system = "\n\n".join(m["content"] for m in provider_messages if m["role"] == "system")
+                    payload = {"model": provider["model"], "max_tokens": 4096, "stream": True, "messages": [m for m in provider_messages if m["role"] != "system"]}
                     if system:
                         payload["system"] = [{"type": "text", "text": system, **({"cache_control": {"type": "ephemeral"}} if provider["prompt_cache"] else {})}]
                     headers = {"x-api-key": provider["api_key"], "anthropic-version": "2023-06-01", "content-type": "application/json"}
                     url = provider_endpoint(provider["base_url"], "anthropic")
                 else:
-                    payload = {"model": provider["model"], "stream": True, "messages": messages}
+                    payload = {"model": provider["model"], "stream": True, "messages": provider_messages}
                     if provider["protocol"] in ("deepseek", "glm"):
                         payload["thinking"] = {"type": "enabled"}
                     headers = {"Authorization": f"Bearer {provider['api_key']}", "content-type": "application/json"}
