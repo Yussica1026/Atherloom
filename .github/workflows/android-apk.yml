@@ -29,23 +29,40 @@ jobs:
           gradle-version: "8.10.2"
       - name: Compile APK
         shell: bash
+        env:
+          ATHERLOOM_KEYSTORE_BASE64: ${{ secrets.ATHERLOOM_KEYSTORE_BASE64 }}
+          ATHERLOOM_STORE_PASSWORD: ${{ secrets.ATHERLOOM_STORE_PASSWORD }}
+          ATHERLOOM_KEY_ALIAS: ${{ secrets.ATHERLOOM_KEY_ALIAS }}
+          ATHERLOOM_KEY_PASSWORD: ${{ secrets.ATHERLOOM_KEY_PASSWORD }}
         run: |
+          if [ -z "$ATHERLOOM_KEYSTORE_BASE64" ] || [ -z "$ATHERLOOM_STORE_PASSWORD" ] || [ -z "$ATHERLOOM_KEY_ALIAS" ] || [ -z "$ATHERLOOM_KEY_PASSWORD" ]; then
+            echo "::error title=Signing secrets missing::Configure the four ATHERLOOM signing secrets before building."
+            exit 1
+          fi
+          export ATHERLOOM_KEYSTORE_FILE="$RUNNER_TEMP/atherloom-release.p12"
+          printf '%s' "$ATHERLOOM_KEYSTORE_BASE64" | base64 --decode > "$ATHERLOOM_KEYSTORE_FILE"
           set +e
-          gradle :app:assembleDebug --stacktrace 2>&1 | tee build.log
+          gradle :app:assembleRelease --stacktrace 2>&1 | tee build.log
           status=${PIPESTATUS[0]}
           if [ "$status" -ne 0 ]; then
             message=$(grep -Ei 'error:|failure:|what went wrong|execution failed|could not|caused by|exception is' build.log | head -n 80 | tr '\n' ' ' | sed 's/%/%25/g; s/\r/%0D/g')
             echo "::error title=Android compiler::$message"
           fi
           exit "$status"
+      - name: Verify release certificate
+        shell: bash
+        run: |
+          APKSIGNER=$(find "$ANDROID_HOME/build-tools" -name apksigner -type f | sort -V | tail -n 1)
+          "$APKSIGNER" verify --verbose --print-certs app/build/outputs/apk/release/app-release.apk | tee certificate.txt
+          grep -Fq 'C3:1E:C8:BE:39:56:25:8E:35:B8:52:54:5D:43:60:7E:A8:7C:BE:EF:A8:05:59:36:33:FA:0E:52:20:33:94:0A' certificate.txt
       - uses: actions/upload-artifact@v4
         with:
-          name: Atherloom-Standalone-debug
-          path: android/app/build/outputs/apk/debug/app-debug.apk
+          name: Atherloom-Standalone-release
+          path: android/app/build/outputs/apk/release/app-release.apk
       - name: Publish installable APK
         if: startsWith(github.ref, 'refs/tags/v')
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          cp app/build/outputs/apk/debug/app-debug.apk Atherloom-Android.apk
-          gh release create "$GITHUB_REF_NAME" Atherloom-Android.apk --title "Atherloom $GITHUB_REF_NAME" --notes "Atherloom · 心织域 Android 独立测试版。下载 APK 后即可安装，首次打开请添加自己的 API 与网关线路。"
+          cp app/build/outputs/apk/release/app-release.apk Atherloom-Android.apk
+          gh release create "$GITHUB_REF_NAME" Atherloom-Android.apk --title "Atherloom $GITHUB_REF_NAME" --notes "Atherloom · 心织域 Android 固定签名版。下载 APK 后即可安装，首次打开请添加自己的 API 与网关线路。"
