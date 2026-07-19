@@ -160,6 +160,16 @@ class LocalClientTests(unittest.TestCase):
         with self.assertRaises(Exception):
             app_module.parse_ai_game_choice('{"action":"delete_save"}', "claw_machine")
 
+    def test_device_local_time_is_injected_into_chat_context(self):
+        provider = self.client.post("/api/providers", json={"name": "时间测试", "protocol": "openai", "base_url": "https://example.com/v1", "api_key": "test", "model": "test-model"}).json()
+        conversation = self.client.post("/api/conversations", json={"provider_id": provider["id"]}).json()
+        body = app_module.ChatIn(conversation_id=conversation["id"], content="现在几点", provider_id=provider["id"], local_time="2026年7月19日 星期日 17:30:00 GMT+8")
+        with app_module.closing(app_module.db()) as connection:
+            _, _, messages = app_module.load_chat_context(connection, body)
+        self.assertEqual(messages[0]["role"], "system")
+        self.assertIn("2026年7月19日", messages[0]["content"])
+        self.assertIn("由用户设备提供", messages[0]["content"])
+
 
 if __name__ == "__main__":
     unittest.main()

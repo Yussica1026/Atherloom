@@ -11,6 +11,15 @@ async function api(path, options = {}) {
 function escapeHtml(value) { const div = document.createElement("div"); div.textContent = value; return div.innerHTML; }
 function activeProvider() { return state.providers.find(p => p.id === state.provider) || state.providers[0]; }
 function activePersona() { return state.personas.find(p => p.id === state.persona); }
+function localTimeContext(now = new Date()) { return now.toLocaleString("zh-CN", { year: "numeric", month: "long", day: "numeric", weekday: "long", hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false, timeZoneName: "short" }); }
+function renderTimeGreeting(now = new Date()) {
+  const hour = now.getHours();
+  const name = state.settings.display_name?.trim();
+  const address = name ? `，${name}` : "";
+  const greeting = hour < 5 ? `夜深了${address}，想聊些什么？` : hour < 11 ? `早上好${address}，今天想聊些什么？` : hour < 14 ? `中午好${address}，想聊些什么？` : hour < 18 ? `下午好${address}，想聊些什么？` : hour < 23 ? `晚上好${address}，想聊些什么？` : `夜深了${address}，想聊些什么？`;
+  if ($("#welcomeTitle")) $("#welcomeTitle").textContent = greeting;
+  return greeting;
+}
 
 function renderHistory() {
   const group = (label, items) => items.length ? `<div class="history-group"><div class="history-label">${label}</div>${items.map(c => `<div class="history-row ${c.id === state.current ? "active" : ""}"><button class="history-item" data-id="${c.id}">${escapeHtml(c.title)}</button><div class="history-actions"><button data-history-action="star" data-id="${c.id}" title="星标">${c.starred ? "★" : "☆"}</button><button data-history-action="pin" data-id="${c.id}" title="置顶">${c.pinned ? "●" : "○"}</button><button data-history-action="archive" data-id="${c.id}" title="${c.archived ? "取消归档" : "归档"}">⌑</button></div></div>`).join("")}</div>` : "";
@@ -166,7 +175,7 @@ async function bootstrap() {
   $("#memoryStrategy").value = state.settings.memory_strategy || "hybrid";
   document.querySelectorAll("[data-permission]").forEach(select => select.value = state.settings.tool_permissions?.[select.dataset.permission] || "ask");
   applyAppearance();
-  renderProfile(); renderHistory(); renderSettings(); renderPickers();
+  renderProfile(); renderTimeGreeting(); renderHistory(); renderSettings(); renderPickers();
 }
 
 function renderFavorites() {
@@ -178,7 +187,7 @@ async function openFavorites(){state.favorites=await api("/api/favorites");rende
 function openMedia(mode){$("#mediaSpace").hidden=false;$("#readingRoom").hidden=mode!=="reading";$("#cinemaRoom").hidden=mode!=="cinema";$("#mediaTitle").textContent=mode==="reading"?"一起读书":"一起看电影";}
 const callState={active:false,recognition:null};
 function callLine(role,text){$("#callTranscript").insertAdjacentHTML("beforeend",`<p class="${role}"><b>${role==="user"?"你":"AI"}</b>${escapeHtml(text)}</p>`);$("#callTranscript").scrollTop=$("#callTranscript").scrollHeight;}
-async function callTurn(content){const provider=activeProvider();if(!provider)throw new Error("请先添加并选择 API 线路");if(!state.current)await newConversation();callLine("user",content);$("#callStatus").textContent="正在思考…";const response=await fetch("/api/chat",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({conversation_id:state.current,content,provider_id:provider.id,persona_id:state.persona})});const reader=response.body.getReader(),decoder=new TextDecoder();let pending="",reply="";while(true){const {value,done}=await reader.read();if(done)break;pending+=decoder.decode(value,{stream:true});const lines=pending.split("\n");pending=lines.pop();for(const line of lines){if(!line)continue;const event=JSON.parse(line);if(event.error)throw new Error(event.error);if(event.delta)reply+=event.delta;}}callLine("assistant",reply);if(!callState.active)return;$("#callStatus").textContent="正在朗读…";const utterance=new SpeechSynthesisUtterance(reply);utterance.lang="zh-CN";utterance.onend=()=>{if(callState.active){$("#callStatus").textContent="正在听…";try{callState.recognition.start();}catch{}}};speechSynthesis.speak(utterance);}
+async function callTurn(content){const provider=activeProvider();if(!provider)throw new Error("请先添加并选择 API 线路");if(!state.current)await newConversation();callLine("user",content);$("#callStatus").textContent="正在思考…";const response=await fetch("/api/chat",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({conversation_id:state.current,content,provider_id:provider.id,persona_id:state.persona,local_time:localTimeContext()})});const reader=response.body.getReader(),decoder=new TextDecoder();let pending="",reply="";while(true){const {value,done}=await reader.read();if(done)break;pending+=decoder.decode(value,{stream:true});const lines=pending.split("\n");pending=lines.pop();for(const line of lines){if(!line)continue;const event=JSON.parse(line);if(event.error)throw new Error(event.error);if(event.delta)reply+=event.delta;}}callLine("assistant",reply);if(!callState.active)return;$("#callStatus").textContent="正在朗读…";const utterance=new SpeechSynthesisUtterance(reply);utterance.lang="zh-CN";utterance.onend=()=>{if(callState.active){$("#callStatus").textContent="正在听…";try{callState.recognition.start();}catch{}}};speechSynthesis.speak(utterance);}
 async function startVoiceCall(){const Recognition=window.SpeechRecognition||window.webkitSpeechRecognition;if(!Recognition)throw new Error("当前浏览器没有系统语音识别能力");const stream=await navigator.mediaDevices.getUserMedia({audio:true});stream.getTracks().forEach(track=>track.stop());callState.active=true;callState.recognition=new Recognition();callState.recognition.lang="zh-CN";callState.recognition.interimResults=false;callState.recognition.onresult=event=>callTurn(event.results[event.results.length-1][0].transcript).catch(error=>{$("#callStatus").textContent=error.message;});callState.recognition.onerror=event=>{if(callState.active)$("#callStatus").textContent=`没有听清：${event.error}`;};callState.recognition.start();$("#callStatus").textContent="正在听…";$("#startCall").disabled=true;$("#endCall").disabled=false;}
 function endVoiceCall(){callState.active=false;callState.recognition?.abort();speechSynthesis.cancel();$("#callStatus").textContent="通话已结束";$("#startCall").disabled=false;$("#endCall").disabled=true;}
 function openVoiceCall(){if(window.AtherloomNative?.showNotice){window.AtherloomNative.showNotice("Android 测试版暂未接通稳定语音，已阻止会卡死的通话页。");return;}$("#callSpace").hidden=false;}
@@ -212,7 +221,7 @@ async function generateReply(content, reuseUserMessageId = null, attachments = [
   state.messages.push({ role: "assistant", content: "", reasoning: "", model: provider.model, parent_message_id: reuseUserMessageId }); renderMessages();
   const assistant = state.messages[state.messages.length - 1];
   try {
-    const response = await fetch("/api/chat", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ conversation_id: state.current, content: content || "重新生成", attachments, provider_id: provider.id, persona_id: state.persona, reuse_user_message_id: reuseUserMessageId }) });
+    const response = await fetch("/api/chat", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ conversation_id: state.current, content: content || "重新生成", attachments, provider_id: provider.id, persona_id: state.persona, reuse_user_message_id: reuseUserMessageId, local_time: localTimeContext() }) });
     if (!response.ok) throw new Error(`请求失败 ${response.status}`);
     const reader = response.body.getReader(); const decoder = new TextDecoder(); let pending = "";
     while (true) { const { value, done } = await reader.read(); if (done) break; pending += decoder.decode(value, { stream: true }); const lines = pending.split("\n"); pending = lines.pop(); for (const line of lines) { if (!line) continue; const event = JSON.parse(line); if (event.error) throw new Error(event.error); if (event.memory_sources) assistant.memory_sources = event.memory_sources; if (event.delta) assistant.content += event.delta; if (event.reasoning_delta) assistant.reasoning += event.reasoning_delta; if (event.done) { assistant.id = event.assistant_id; assistant.parent_message_id = event.user_id; const pendingUser = [...state.messages].reverse().find(m => m.role === "user" && !m.id); if (pendingUser) pendingUser.id = event.user_id; if (event.title) { const conversation = state.conversations.find(c => c.id === state.current); if (conversation) conversation.title = event.title; $("#titleButton").textContent = `${event.title}⌄`; renderHistory(); } } renderMessages(); } }
@@ -306,6 +315,7 @@ function saveAppSettings() {
     }) });
     applyAppearance();
     renderProfile();
+    renderTimeGreeting();
     $("#summarySaveState").textContent = "已保存到本地";
     $("#toolSaveState").textContent = "已保存到本地";
   }, 350);
@@ -375,3 +385,4 @@ $("#backupFile").onchange = async event => { const file = event.target.files?.[0
 const theme = localStorage.getItem("theme") || "system"; $("#themeSelect").value = theme; if (theme !== "system") document.documentElement.dataset.theme = theme;
 bootstrap().catch(error => { console.error(error); openSettings("providers"); });
 updateProviderCacheUI();
+setInterval(renderTimeGreeting, 60_000);
