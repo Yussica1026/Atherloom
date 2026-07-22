@@ -13,7 +13,7 @@
   <title>Atherloom</title>
   <link rel="manifest" href="manifest.json">
   <link rel="icon" href="assets/app-icon.svg" type="image/svg+xml">
-  <link rel="stylesheet" href="assets/app.css?v=0430">
+  <link rel="stylesheet" href="assets/app.css?v=0434">
   <script>document.documentElement.dataset.launchMode=performance.getEntriesByType("navigation")[0]?.type==="reload"?"refresh":"full";</script>
 </head>
 <body>
@@ -82,7 +82,8 @@
             <button class="send-button" id="send" disabled aria-label="发送">↑</button>
           </div>
           <div class="attachment-tray" id="attachmentTray" hidden></div>
-          <div class="attachment-menu" id="attachmentMenu" hidden><button type="button" id="openGamesFromComposer">打开游戏库</button><button type="button" data-attachment-source="camera">拍照</button><button type="button" data-attachment-source="images">选择图片</button><button type="button" data-attachment-source="files">选择文件</button></div>
+          <div class="attachment-menu" id="attachmentMenu" hidden><button type="button" id="openInstructionInjection">指令注入</button><button type="button" id="openGamesFromComposer">打开游戏库</button><button type="button" data-attachment-source="camera">拍照</button><button type="button" data-attachment-source="images">选择图片</button><button type="button" data-attachment-source="files">选择文件</button></div>
+          <div class="injection-tray" id="injectionTray" hidden></div>
           <input id="cameraInput" type="file" accept="image/*" capture="environment" hidden><input id="imageInput" type="file" accept="image/*" multiple hidden><input id="fileInput" type="file" multiple hidden>
         </div>
       </section>
@@ -141,6 +142,7 @@
       <nav class="settings-nav">
         <button class="active" data-tab="providers">API 与网关</button>
         <button data-tab="personas">人格指令</button>
+        <button data-tab="worldbooks">世界书</button>
         <button data-tab="summary">自动总结</button>
         <button data-tab="memory">记忆库与 MCP</button>
         <button data-tab="tools">工具与权限</button>
@@ -199,6 +201,11 @@
           <label class="summary-prompt-label">自动总结提示词<textarea id="summaryPrompt" rows="14"></textarea></label>
           <div class="prompt-help"><span>可用变量：<code>{{title}}</code> <code>{{existing_summary}}</code> <code>{{conversation}}</code></span><button class="ghost" id="resetSummaryPrompt" type="button">恢复默认</button></div>
           <p class="save-state" id="summarySaveState"></p>
+        </section>
+        <section class="tab" id="tab-worldbooks">
+          <div class="section-heading"><div><h3>世界书</h3><p>保存可复用的背景、规则与预设，在每个聊天窗口中按需注入。</p></div><div class="provider-card-actions"><button class="ghost" id="importWorldbooks">导入</button><button class="ghost" id="exportWorldbooks">导出</button><button class="primary small" id="addWorldbook">添加世界书</button></div></div><input id="worldbookImportFile" type="file" accept="application/json,.json" hidden>
+          <div id="worldbookList" class="stack-list"></div>
+          <form id="worldbookForm" class="edit-card worldbook-form" hidden><label>名称<input name="name" maxlength="100" required></label><label>简介<input name="description" maxlength="1000"></label><label class="check-label"><input name="enabled" type="checkbox" checked>启用世界书</label><div class="worldbook-entry-head"><strong>条目</strong><button type="button" class="ghost" id="addWorldbookEntry">添加条目</button></div><div id="worldbookEntryList" class="worldbook-entry-list"></div><div class="form-actions"><button type="button" class="ghost" id="cancelWorldbook">取消</button><button class="primary">保存世界书</button></div></form>
         </section>
 
         <section class="tab" id="tab-memory">
@@ -272,14 +279,16 @@
   <div class="popover conversation-popover" id="conversationPopover" hidden></div>
   <div class="message-menu-backdrop" id="messageMenu" hidden><section class="message-menu" role="dialog" aria-label="消息操作"><button type="button" id="branchMessage">创建分支</button><button type="button" id="editMessage">修改内容</button><button type="button" class="danger" id="deleteMessageVersion">删除本版本</button><button type="button" class="danger" id="deleteAllMessageVersions">删除全部版本</button><button type="button" id="closeMessageMenu">取消</button></section></div>
   <div class="message-menu-backdrop" id="messageEditor" hidden><form class="message-editor" role="dialog" aria-label="修改消息"><h3>修改内容</h3><textarea id="messageEditContent" rows="7" required></textarea><div class="form-actions"><button type="button" class="ghost" id="cancelMessageEdit">取消</button><button class="primary">保存修改</button></div></form></div>
-  <script src="assets/standalone.js?v=0430"></script>
-  <script src="assets/app.js?v=0430" defer></script>
+  <div class="message-menu-backdrop" id="instructionPicker" hidden><section class="message-editor instruction-picker" role="dialog" aria-label="指令注入"><h3>指令注入</h3><p class="muted">仅对当前聊天窗口生效，可随时取消。</p><div id="instructionBookList" class="instruction-book-list"></div><div class="form-actions"><button type="button" class="primary" id="closeInstructionPicker">完成</button></div></section></div>
+  <div class="message-menu-backdrop" id="worldbookEntryEditor" hidden><form class="message-editor worldbook-entry-editor" role="dialog" aria-label="世界书条目"><h3>世界书条目</h3><label>条目名称<input name="name" maxlength="100" required></label><label>内容<textarea name="content" rows="8" required></textarea></label><label class="check-label"><input name="enabled" type="checkbox" checked>启用条目</label><label class="check-label"><input name="constant" type="checkbox">常驻激活</label><label>关键词（每行一个）<textarea name="keywords" rows="3"></textarea></label><div class="entry-options"><label class="check-label"><input name="use_regex" type="checkbox">使用正则</label><label class="check-label"><input name="case_sensitive" type="checkbox">区分大小写</label><label>扫描深度<input name="scan_depth" type="number" min="1" max="100" value="4"></label><label>注入位置<select name="position"><option value="system_before">系统提示前</option><option value="system_after" selected>系统提示后</option><option value="history_before">对话历史前</option><option value="history_after">对话历史后</option></select></label><label>注入角色<select name="role"><option value="system">系统</option><option value="user">用户</option><option value="assistant">助手</option></select></label><label>优先级<input name="priority" type="number" min="-9999" max="9999" value="0"></label></div><div class="form-actions"><button type="button" class="ghost" id="cancelWorldbookEntry">取消</button><button class="primary">保存条目</button></div></form></div>
+  <script src="assets/standalone.js?v=0434"></script>
+  <script src="assets/app.js?v=0434" defer></script>
   <script>
     if ('serviceWorker' in navigator) {
-      navigator.serviceWorker.register('service-worker.js?v=38', { updateViaCache: 'none' }).then(registration => registration.update());
+      navigator.serviceWorker.register('service-worker.js?v=42', { updateViaCache: 'none' }).then(registration => registration.update());
       navigator.serviceWorker.addEventListener('controllerchange', () => {
-        if (!sessionStorage.getItem('atherloom:sw-reloaded-v38')) {
-          sessionStorage.setItem('atherloom:sw-reloaded-v38', '1');
+        if (!sessionStorage.getItem('atherloom:sw-reloaded-v42')) {
+          sessionStorage.setItem('atherloom:sw-reloaded-v42', '1');
           location.reload();
         }
       });

@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import hashlib
 import math
+import re
 import sqlite3
 import uuid
 from collections import Counter
@@ -110,6 +111,11 @@ def init_db() -> None:
               FOREIGN KEY(favorite_id) REFERENCES favorites(id) ON DELETE CASCADE
             );
             CREATE INDEX IF NOT EXISTS favorites_order ON favorites(favorited_at DESC, id DESC);
+            CREATE TABLE IF NOT EXISTS worldbooks (
+              id TEXT PRIMARY KEY, name TEXT NOT NULL, description TEXT NOT NULL DEFAULT '',
+              enabled INTEGER NOT NULL DEFAULT 1, entries_json TEXT NOT NULL DEFAULT '[]',
+              created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+            );
             """
         )
         columns = {row["name"] for row in connection.execute("PRAGMA table_info(providers)")}
@@ -178,6 +184,13 @@ class PersonaIn(BaseModel):
     config: dict[str, Any] = Field(default_factory=dict)
 
 
+class WorldbookIn(BaseModel):
+    name: str = Field(min_length=1, max_length=100)
+    description: str = Field(default="", max_length=1000)
+    enabled: bool = True
+    entries: list[dict[str, Any]] = Field(default_factory=list, max_length=500)
+
+
 class ConversationIn(BaseModel):
     title: str = "新对话"
     provider_id: str | None = None
@@ -236,6 +249,7 @@ class ChatIn(BaseModel):
     attachments: list[dict[str, Any]] = Field(default_factory=list, max_length=8)
     local_time: str = Field(default="", max_length=80)
     game_context: str = Field(default="", max_length=2400)
+    worldbook_ids: list[str] = Field(default_factory=list, max_length=50)
 
 
 class MotivationEventIn(BaseModel):
@@ -281,6 +295,13 @@ def masked_provider(row: sqlite3.Row) -> dict[str, Any]:
     return item
 
 
+def worldbook_dict(row: sqlite3.Row) -> dict[str, Any]:
+    item = dict(row);item["enabled"] = bool(item["enabled"])
+    try: item["entries"] = json.loads(item.pop("entries_json"))
+    except json.JSONDecodeError: item["entries"] = []
+    return item
+
+
 PERSONA_CONFIG_DEFAULTS = {
     "memory_enabled": True, "history_enabled": True, "summary_frequency": 20,
     "quick_phrases": [], "custom_headers": {}, "custom_body": {}, "regex_rules": [],
@@ -313,8 +334,9 @@ def bootstrap() -> dict[str, Any]:
         providers = [masked_provider(row) for row in connection.execute("SELECT * FROM providers ORDER BY created_at")]
         personas = [{**dict(row), "config": normalize_persona_config(row["config_json"])} for row in connection.execute("SELECT p.*,c.config_json FROM personas p LEFT JOIN persona_configs c ON c.persona_id=p.id ORDER BY p.created_at")]
         conversations = [dict(row) for row in connection.execute("SELECT * FROM conversations ORDER BY updated_at DESC")]
+        worldbooks = [worldbook_dict(row) for row in connection.execute("SELECT * FROM worldbooks ORDER BY updated_at DESC")]
         settings_rows = {row["key"]: row["value"] for row in connection.execute("SELECT * FROM app_settings")}
-    return {"providers": providers, "personas": personas, "conversations": conversations, "settings": {
+    return {"providers": providers, "personas": personas, "conversations": conversations, "worldbooks": worldbooks, "settings": {
         "auto_title_mode": settings_rows.get("auto_title_mode", "local"),
         "title_provider_id": settings_rows.get("title_provider_id", ""),
         "summary_enabled": settings_rows.get("summary_enabled", "true") == "true",
@@ -509,6 +531,46 @@ def delete_persona(persona_id: str) -> dict[str, bool]:
         connection.execute("DELETE FROM persona_configs WHERE persona_id=?", (persona_id,))
         connection.commit()
     return {"ok": True}
+
+
+def normalize_worldbook_entries(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    normalized = []
+    for raw in entries[:500]:
+        if not isinstance(raw, dict) or not str(raw.get("content", "")).strip(): continue
+        normalized.append({
+            "id": str(raw.get("id") or uuid.uuid4()), "name": str(raw.get("name") or "未命名条目")[:100],
+            "content": str(raw.get("content") or "")[:100000], "enabled": bool(raw.get("enabled", True)),
+            "constant": bool(raw.get("constant", False)), "keywords": [str(item)[:200] for item in raw.get("keywords", []) if str(item).strip()][:100],
+            "use_regex": bool(raw.get("use_regex", False)), "case_sensitive": bool(raw.get("case_sensitive", False)),
+            "scan_depth": max(1, min(100, int(raw.get("scan_depth") or 4))),
+            "position": str(raw.get("position") or "system_after") if str(raw.get("position") or "system_after") in ("system_before", "system_after", "history_before", "history_after") else "system_after",
+            "role": str(raw.get("role") or "system") if str(raw.get("role") or "system") in ("system", "user", "assistant") else "system",
+            "priority": max(-9999, min(9999, int(raw.get("priority") or 0))),
+        })
+    return normalized
+
+
+@app.post("/api/worldbooks")
+def create_worldbook(body: WorldbookIn) -> dict[str, Any]:
+    item_id,created=str(uuid.uuid4()),now_iso();entries=normalize_worldbook_entries(body.entries)
+    with closing(db()) as connection:
+        connection.execute("INSERT INTO worldbooks VALUES (?,?,?,?,?,?,?)",(item_id,body.name,body.description,int(body.enabled),json.dumps(entries,ensure_ascii=False),created,created));connection.commit()
+        return worldbook_dict(connection.execute("SELECT * FROM worldbooks WHERE id=?",(item_id,)).fetchone())
+
+
+@app.put("/api/worldbooks/{worldbook_id}")
+def update_worldbook(worldbook_id: str, body: WorldbookIn) -> dict[str, Any]:
+    entries=normalize_worldbook_entries(body.entries)
+    with closing(db()) as connection:
+        if not connection.execute("SELECT 1 FROM worldbooks WHERE id=?",(worldbook_id,)).fetchone(): raise HTTPException(404,"世界书不存在")
+        connection.execute("UPDATE worldbooks SET name=?,description=?,enabled=?,entries_json=?,updated_at=? WHERE id=?",(body.name,body.description,int(body.enabled),json.dumps(entries,ensure_ascii=False),now_iso(),worldbook_id));connection.commit()
+        return worldbook_dict(connection.execute("SELECT * FROM worldbooks WHERE id=?",(worldbook_id,)).fetchone())
+
+
+@app.delete("/api/worldbooks/{worldbook_id}")
+def delete_worldbook(worldbook_id: str) -> dict[str, bool]:
+    with closing(db()) as connection: connection.execute("DELETE FROM worldbooks WHERE id=?",(worldbook_id,));connection.commit()
+    return {"ok":True}
 
 
 @app.post("/api/conversations")
@@ -876,14 +938,14 @@ def parse_ai_game_choice(text: str, game_id: str) -> tuple[dict[str, Any], str]:
 
 def fallback_ai_game_choice(game_id: str, state: dict[str, Any], remaining: int) -> tuple[dict[str, Any], str]:
     if game_id == "quiet_fishing":
-        if state.get("bait", 0) > 0: return {"action": "cast", "amount": 1}, "先抛一竿，看看水面会回应什么。"
-        if state.get("catch"): return {"action": "sell_all", "amount": 1}, "先出售渔获，补充下一步所需的云贝。"
-        if remaining >= 25 and state.get("coins", 0) >= 25: return {"action": "buy_bait", "amount": 5}, "先补充鱼饵，再继续垂钓。"
+        if state.get("bait", 0) > 0: return {"action": "cast", "amount": 1}, ""
+        if state.get("catch"): return {"action": "sell_all", "amount": 1}, ""
+        if remaining >= 25 and state.get("coins", 0) >= 25: return {"action": "buy_bait", "amount": 5}, ""
     if game_id == "claw_machine":
-        if remaining >= 10 and state.get("coins", 0) >= 10: return {"action": "grab", "amount": 1}, "就从当前位置下爪试试。"
-        return {"action": "move_right", "amount": 1}, "先移动爪子观察目标。"
+        if remaining >= 10 and state.get("coins", 0) >= 10: return {"action": "grab", "amount": 1}, ""
+        return {"action": "move_right", "amount": 1}, ""
     if game_id == "cloud_slots" and remaining >= 5 and state.get("coins", 0) >= 5:
-        return {"action": "spin", "amount": 1}, "轻轻转动一次。"
+        return {"action": "spin", "amount": 1}, ""
     raise HTTPException(409, "当前局面没有可安全执行的游戏动作")
 
 
@@ -982,6 +1044,24 @@ def motivation_tick(persona_key: str) -> dict[str, Any]:
     return {"enabled": enabled, **result}
 
 
+def active_worldbook_entries(connection: sqlite3.Connection, ids: list[str], messages: list[dict[str, str]]) -> list[dict[str, Any]]:
+    if not ids: return []
+    placeholders=",".join("?" for _ in ids);rows=connection.execute(f"SELECT * FROM worldbooks WHERE enabled=1 AND id IN ({placeholders})",ids).fetchall();active=[]
+    for row in rows:
+        book=worldbook_dict(row)
+        for entry in book["entries"]:
+            if not entry.get("enabled",True): continue
+            depth=max(1,int(entry.get("scan_depth") or 4));source="\n".join(str(item.get("content", "")) for item in messages[-depth:]);keywords=entry.get("keywords") or []
+            matched=bool(entry.get("constant"))
+            for keyword in keywords:
+                try:
+                    if entry.get("use_regex") and re.search(keyword,source,0 if entry.get("case_sensitive") else re.IGNORECASE): matched=True
+                    elif (keyword in source if entry.get("case_sensitive") else keyword.lower() in source.lower()): matched=True
+                except re.error: continue
+            if matched: active.append(entry)
+    return sorted(active,key=lambda item:int(item.get("priority") or 0))
+
+
 def load_chat_context(connection: sqlite3.Connection, body: ChatIn, cutoff: str | None = None) -> tuple[sqlite3.Row, str, list[dict[str, str]]]:
     provider = connection.execute("SELECT * FROM providers WHERE id=? AND enabled=1", (body.provider_id,)).fetchone()
     if not provider:
@@ -1020,7 +1100,11 @@ def load_chat_context(connection: sqlite3.Connection, body: ChatIn, cutoff: str 
     tool_context = f"该人格启用的本地能力偏好：{', '.join(tool_names)}。只有宿主实际提供的能力才可调用。" if tool_names else ""
     game_tool_context = "宿主提供云汀钓记、抓娃娃机和云纹老虎机游戏工具。用户要求你去玩时，宿主会在回复前执行工具并提供 <verified_game_result>。只有收到该结果才能声称自己玩过，并应自然讲述真实动作、收获与心里话；没有结果时不得虚构游戏经历。"
     game_context = f"<verified_game_result>\n{body.game_context}\n</verified_game_result>\n这是宿主刚刚真实执行的游戏结果。请以当前人格自然回应，可以主动谈起收获与心情，不要声称没有玩过。" if body.game_context else ""
-    system_parts = [part for part in (persona_prompt, conversation["summary"] if persona_config["history_enabled"] else "", time_context, question_context, formatting_context, tool_context, game_tool_context, game_context) if part]
+    entries=active_worldbook_entries(connection,body.worldbook_ids,messages);before=[entry["content"] for entry in entries if entry.get("position")=="system_before"];after=[entry["content"] for entry in entries if entry.get("position")=="system_after" or entry.get("role")=="system" and str(entry.get("position","")).startswith("history_")]
+    for entry in reversed([item for item in entries if item.get("position")=="history_before" and item.get("role")!="system"]): messages.insert(0,{"role":entry.get("role","user"),"content":entry["content"]})
+    for entry in [item for item in entries if item.get("position")=="history_after" and item.get("role")!="system"]: messages.append({"role":entry.get("role","user"),"content":entry["content"]})
+    worldbook_before="<worldbook_instructions>\n"+"\n\n".join(before)+"\n</worldbook_instructions>" if before else "";worldbook_after="<worldbook_instructions>\n"+"\n\n".join(after)+"\n</worldbook_instructions>" if after else ""
+    system_parts = [part for part in (worldbook_before,persona_prompt,worldbook_after,conversation["summary"] if persona_config["history_enabled"] else "", time_context, question_context, formatting_context, tool_context, game_tool_context, game_context) if part]
     if system_parts:
         messages.insert(0, {"role": "system", "content": "\n\n".join(system_parts)})
     return provider, persona_prompt, messages

@@ -1,5 +1,5 @@
 const $ = (s) => document.querySelector(s);
-const state = { providers: [], personas: [], conversations: [], memories: [], favorites: [], attachments: [], version_selection: {}, settings: { auto_title_mode: "local", tool_permissions: {} }, current: null, provider: null, persona: null, messages: [], busy: false };
+const state = { providers: [], personas: [], worldbooks: [], conversations: [], memories: [], favorites: [], attachments: [], version_selection: {}, settings: { auto_title_mode: "local", tool_permissions: {} }, current: null, provider: null, persona: null, messages: [], generating: new Set(), generation_controllers: new Map(), message_cache: new Map(), navigation: 0 };
 const gameState = { catalog: [], current: null, fishing: null, claw: null, slots: null, waters: {} };
 function dismissLaunchScreen(){const screen=$("#launchScreen");if(!screen||screen.classList.contains("dismissed"))return;screen.classList.add("dismissed");setTimeout(()=>screen.remove(),320);}
 if($("#launchScreen")){const refresh=document.documentElement.dataset.launchMode==="refresh",delay=matchMedia("(prefers-reduced-motion: reduce)").matches?180:refresh?430:1250;$("#launchScreen").onclick=dismissLaunchScreen;setTimeout(dismissLaunchScreen,delay);}
@@ -28,6 +28,18 @@ function renderMarkdown(value) {
 function activeProvider() { return state.providers.find(p => p.id === state.provider) || state.providers[0]; }
 function activePersona() { return state.personas.find(p => p.id === state.persona); }
 function activePersonaName() { return activePersona()?.name?.trim() || "当前人格"; }
+function currentBusy(){return !!state.current&&state.generating.has(state.current);}
+function generationDot(conversationId){return state.generating.has(conversationId)?`<i class="generation-dot" aria-label="正在生成"></i>`:"";}
+function renderCurrentTitle(){const conversation=state.conversations.find(item=>item.id===state.current),title=conversation?.title||"新对话";$("#titleButton").innerHTML=`<span>${escapeHtml(title)}</span>${generationDot(state.current)}<span aria-hidden="true">⌄</span>`;}
+function draftKey(conversationId){return `atherloom:draft:${conversationId}`;}
+function saveCurrentDraft(){if(!state.current)return;const value=$("#prompt").value;if(value)localStorage.setItem(draftKey(state.current),value);else localStorage.removeItem(draftKey(state.current));}
+function updateComposerState(){const button=$("#send"),busy=currentBusy();button.disabled=!busy&&!$("#prompt").value.trim()&&!state.attachments.length;button.classList.toggle("stop",busy);button.textContent=busy?"■":"↑";button.setAttribute("aria-label",busy?"停止生成":"发送");button.title=busy?"停止生成":"发送";}
+function restoreCurrentDraft(){const input=$("#prompt"),value=state.current?localStorage.getItem(draftKey(state.current))||"":"";input.value=value;input.style.height="auto";input.style.height=value?`${Math.min(input.scrollHeight,180)}px`:"auto";updateComposerState();renderContextUsage();}
+function stopCurrentGeneration(){state.generation_controllers.get(state.current)?.abort();}
+function worldbookSelectionKey(conversationId){return `atherloom:worldbooks:${conversationId}`;}
+function selectedWorldbookIds(){try{return state.current?JSON.parse(localStorage.getItem(worldbookSelectionKey(state.current))||"[]"):[];}catch{return [];}}
+function saveSelectedWorldbooks(ids){if(!state.current)return;localStorage.setItem(worldbookSelectionKey(state.current),JSON.stringify(ids));renderInjectionTray();}
+function renderInjectionTray(){const tray=$("#injectionTray"),selected=selectedWorldbookIds().map(id=>state.worldbooks.find(book=>book.id===id)).filter(Boolean);tray.hidden=!selected.length;tray.innerHTML=selected.map(book=>`<span>${escapeHtml(book.name)}<button type="button" data-remove-worldbook="${book.id}" aria-label="取消注入 ${escapeHtml(book.name)}">×</button></span>`).join("");tray.querySelectorAll("[data-remove-worldbook]").forEach(button=>button.onclick=()=>saveSelectedWorldbooks(selectedWorldbookIds().filter(id=>id!==button.dataset.removeWorldbook)));}
 function localTimeContext(now = new Date()) { return now.toLocaleString("zh-CN", { year: "numeric", month: "long", day: "numeric", weekday: "long", hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false, timeZoneName: "short" }); }
 function renderTimeGreeting(now = new Date()) {
   const hour = now.getHours();
@@ -86,7 +98,7 @@ async function openLocalBook(file) {
 }
 
 function renderHistory() {
-  const group = (label, items) => items.length ? `<div class="history-group"><div class="history-label">${label}</div>${items.map(c => `<div class="history-row ${c.id === state.current ? "active" : ""}"><button class="history-item" data-id="${c.id}">${escapeHtml(c.title)}</button><div class="history-actions"><button data-history-action="star" data-id="${c.id}" title="星标">${c.starred ? "★" : "☆"}</button><button data-history-action="pin" data-id="${c.id}" title="置顶">${c.pinned ? "●" : "○"}</button><button data-history-action="archive" data-id="${c.id}" title="${c.archived ? "取消归档" : "归档"}">⌑</button></div></div>`).join("")}</div>` : "";
+  const group = (label, items) => items.length ? `<div class="history-group"><div class="history-label">${label}</div>${items.map(c => `<div class="history-row ${c.id === state.current ? "active" : ""}"><button class="history-item" data-id="${c.id}"><span>${escapeHtml(c.title)}</span>${generationDot(c.id)}</button><div class="history-actions"><button data-history-action="star" data-id="${c.id}" title="星标">${c.starred ? "★" : "☆"}</button><button data-history-action="pin" data-id="${c.id}" title="置顶">${c.pinned ? "●" : "○"}</button><button data-history-action="archive" data-id="${c.id}" title="${c.archived ? "取消归档" : "归档"}">⌑</button></div></div>`).join("")}</div>` : "";
   const active = state.conversations.filter(c => !c.archived);
   const pinned = active.filter(c => c.pinned);
   const starred = active.filter(c => c.starred && !c.pinned);
@@ -252,9 +264,17 @@ function renderPickers() {
   const phrases=persona?.config?.quick_phrases||[];$("#quickPhraseButton").hidden=!phrases.length;
 }
 
+let editingWorldbookEntries=[];
+function renderWorldbookEntries(){const list=$("#worldbookEntryList");list.innerHTML=editingWorldbookEntries.map((entry,index)=>`<div class="worldbook-entry-row"><div><strong>${escapeHtml(entry.name||"未命名条目")}</strong><small>${entry.constant?"常驻":"关键词触发"} · ${entry.enabled!==false?"启用":"停用"} · 优先级 ${entry.priority||0}</small></div><div><button type="button" data-edit-worldbook-entry="${index}">编辑</button><button type="button" data-delete-worldbook-entry="${index}">删除</button></div></div>`).join("")||`<p class="muted">还没有条目。添加后才能向模型注入内容。</p>`;list.querySelectorAll("[data-edit-worldbook-entry]").forEach(button=>button.onclick=()=>openWorldbookEntryEditor(Number(button.dataset.editWorldbookEntry)));list.querySelectorAll("[data-delete-worldbook-entry]").forEach(button=>button.onclick=()=>{editingWorldbookEntries.splice(Number(button.dataset.deleteWorldbookEntry),1);renderWorldbookEntries();});}
+function renderWorldbooks(){const list=$("#worldbookList");list.innerHTML=state.worldbooks.map(book=>`<div class="list-card"><div><strong>${escapeHtml(book.name)}</strong><small>${book.enabled?"已启用":"已停用"} · ${book.entries?.length||0} 个条目 · ${escapeHtml(book.description||"无简介")}</small></div><div class="provider-card-actions"><button data-edit-worldbook="${book.id}">编辑</button><button data-delete-worldbook="${book.id}">删除</button></div></div>`).join("")||`<p class="muted">还没有世界书。</p>`;list.querySelectorAll("[data-edit-worldbook]").forEach(button=>button.onclick=()=>openWorldbookForm(state.worldbooks.find(book=>book.id===button.dataset.editWorldbook)));list.querySelectorAll("[data-delete-worldbook]").forEach(button=>button.onclick=async()=>{if(!confirm("删除这本世界书？现有聊天中的选择也会失效。"))return;await api(`/api/worldbooks/${button.dataset.deleteWorldbook}`,{method:"DELETE"});state.worldbooks=state.worldbooks.filter(book=>book.id!==button.dataset.deleteWorldbook);renderWorldbooks();renderInjectionTray();});}
+function openWorldbookForm(book=null){const form=$("#worldbookForm");form.hidden=false;form.dataset.editing=book?.id||"";form.elements.name.value=book?.name||"";form.elements.description.value=book?.description||"";form.elements.enabled.checked=book?.enabled!==false;editingWorldbookEntries=(book?.entries||[]).map(entry=>({...entry,keywords:[...(entry.keywords||[])]}));renderWorldbookEntries();requestAnimationFrame(()=>form.elements.name.focus());}
+function openWorldbookEntryEditor(index=-1){const overlay=$("#worldbookEntryEditor"),form=overlay.querySelector("form"),entry=index>=0?editingWorldbookEntries[index]:{};form.dataset.entryIndex=String(index);for(const name of ["name","content","position","role","priority","scan_depth"])form.elements[name].value=entry[name]??({position:"system_after",role:"system",priority:0,scan_depth:4}[name]??"");form.elements.enabled.checked=entry.enabled!==false;form.elements.constant.checked=!!entry.constant;form.elements.use_regex.checked=!!entry.use_regex;form.elements.case_sensitive.checked=!!entry.case_sensitive;form.elements.keywords.value=(entry.keywords||[]).join("\n");overlay.hidden=false;}
+function openInstructionPicker(){const selected=new Set(selectedWorldbookIds()),books=state.worldbooks.filter(book=>book.enabled);$("#instructionBookList").innerHTML=books.map(book=>`<label><input type="checkbox" value="${book.id}" ${selected.has(book.id)?"checked":""}><span><strong>${escapeHtml(book.name)}</strong><small>${escapeHtml(book.description||`${book.entries?.length||0} 个条目`)}</small></span></label>`).join("")||`<p class="muted">请先在设置的“世界书”中添加内容。</p>`;$("#instructionPicker").hidden=false;}
+
 function renderSettings() {
   $("#providerList").innerHTML = state.providers.map(p => `<div class="list-card"><div><strong>${escapeHtml(p.name)}</strong><small>${escapeHtml(p.protocol)} · ${escapeHtml(p.model)} · 温度 ${p.temperature ?? 0.7} · ${p.has_api_key ? "Key 已保存" : "无 Key"}</small></div><div class="provider-card-actions"><button data-edit-provider="${p.id}">编辑</button><button data-delete-provider="${p.id}">删除</button></div></div>`).join("") || ($("#providerForm").hidden ? `<div class="empty-provider"><p class="muted">还没有 API 线路。</p><button class="primary" id="emptyAddProvider">添加第一条线路</button></div>` : "");
   $("#personaList").innerHTML = state.personas.map(p => `<div class="list-card"><div><strong>${escapeHtml(p.name)}</strong><small>${escapeHtml(p.prompt.slice(0, 70) || "空白人格")}</small></div><div class="provider-card-actions"><button data-edit-persona="${p.id}">编辑</button><button data-delete-persona="${p.id}">删除</button></div></div>`).join("");
+  renderWorldbooks();
   const kindLabels = { fact: "事实", preference: "偏好", relationship: "关系", promise: "承诺", event: "事件", emotion: "情感", summary: "摘要", diary: "日记", other: "其他" };
   const kindFilter = $("#memoryKindFilter")?.value || "";
   const visibleMemories = state.memories.filter(memory => !kindFilter || memory.kind === kindFilter);
@@ -321,34 +341,37 @@ function endVoiceCall(){callState.active=false;callState.recognition?.abort();sp
 function openVoiceCall(){if(window.AtherloomNative?.showNotice){window.AtherloomNative.showNotice("Android 测试版暂未接通稳定语音，已阻止会卡死的通话页。");return;}$("#callSpace").hidden=false;}
 
 async function newConversation() {
+  saveCurrentDraft();++state.navigation;
   const conversation = await api("/api/conversations", { method: "POST", body: JSON.stringify({ provider_id: state.provider, persona_id: state.persona }) });
-  state.conversations.unshift(conversation); state.current = conversation.id; state.messages = [];
+  state.conversations.unshift(conversation); state.current = conversation.id; state.messages = [];state.message_cache.set(conversation.id,state.messages);
   if(state.persona)localStorage.setItem("atherloom:last-persona",state.persona);localStorage.setItem("atherloom:last-conversation",conversation.id);
-  $("#titleButton").textContent = "新对话⌄"; renderHistory(); renderMessages();
+  renderCurrentTitle();renderHistory();renderMessages();restoreCurrentDraft();renderInjectionTray();
 }
 
 async function openConversation(id) {
-  state.current = id; const conversation = state.conversations.find(c => c.id === id);
+  if(id===state.current)return;saveCurrentDraft();const navigation=++state.navigation,conversation = state.conversations.find(c => c.id === id);if(!conversation)return;
+  const messages=state.message_cache.has(id)?state.message_cache.get(id):await api(`/api/conversations/${id}/messages`);if(navigation!==state.navigation)return;
+  state.current = id;
   state.provider = conversation.provider_id || state.provider; state.persona = conversation.persona_id || state.persona;
   if(state.persona)localStorage.setItem("atherloom:last-persona",state.persona);localStorage.setItem("atherloom:last-conversation",id);
-  state.messages = await api(`/api/conversations/${id}/messages`);
+  state.messages = messages;state.message_cache.set(id,messages);
   state.version_selection={};for(const message of state.messages)if(message.role==="assistant"&&message.parent_message_id&&message.selected){const versions=state.messages.filter(item=>item.role==="assistant"&&item.parent_message_id===message.parent_message_id);state.version_selection[message.parent_message_id]=versions.indexOf(message);}
-  $("#titleButton").textContent = `${conversation.title}⌄`; renderHistory(); renderMessages(); renderPickers();
+  renderCurrentTitle();renderHistory();renderMessages();renderPickers();restoreCurrentDraft();renderInjectionTray();
 }
 
 async function sendMessage() {
   const input = $("#prompt"); const content = input.value.trim(); const provider = activeProvider();
-  if ((!content&&!state.attachments.length) || state.busy) return; if (!provider) return openSettings("providers"); if (!state.current) await newConversation();
+  if ((!content&&!state.attachments.length) || currentBusy()) return; if (!provider) return openSettings("providers"); if (!state.current) await newConversation();
   const attachments=state.attachments.splice(0);renderAttachments();const visibleContent=content||"请查看附件";
-  state.busy = true; input.value = ""; input.style.height = "auto"; $("#send").disabled = true;
+  input.value = "";input.style.height = "auto";localStorage.removeItem(draftKey(state.current));updateComposerState();
   state.messages.push({ role: "user", content:visibleContent,attachments }); renderMessages();
   await generateReply(visibleContent,null,attachments);
 }
 
 let streamScrollFrame=0,streamScrollDue=0;
 function scheduleStreamingScroll(){const now=performance.now();if(streamScrollFrame||now<streamScrollDue)return;streamScrollFrame=requestAnimationFrame(()=>{streamScrollFrame=0;streamScrollDue=performance.now()+120;const area=$("#chatScroll");area.scrollTop=area.scrollHeight;});}
-function updateStreamingMessage(message) {
-  const index=state.messages.indexOf(message),article=document.querySelector(`.message[data-index="${index}"]`);
+function updateStreamingMessage(message,messages=state.messages,conversationId=state.current) {
+  if(conversationId!==state.current)return;const index=messages.indexOf(message),article=document.querySelector(`.message[data-index="${index}"]`);
   if(!article){renderMessages();return;}
   const body=article.querySelector(".message-body"),bubble=article.querySelector(".bubble");
   if(message.memory_sources?.length){let sources=article.querySelector(".memory-sources");if(!sources){sources=document.createElement("div");sources.className="memory-sources";body.insertBefore(sources,body.firstChild);}sources.innerHTML=`本轮使用记忆：${message.memory_sources.map(source=>`<span>${escapeHtml(source.title)}</span>`).join("")}`;}
@@ -357,31 +380,33 @@ function updateStreamingMessage(message) {
   scheduleStreamingScroll();
 }
 
-function createStreamPresenter(message, animated) {
+function createStreamPresenter(message, animated, messages=state.messages, conversationId=state.current) {
   let queue=[],timer=null,ended=false,resolveFinished;
   const finishTimer=()=>{if(timer){clearInterval(timer);timer=null;}if(resolveFinished){resolveFinished();resolveFinished=null;}};
-  const tick=()=>{if(!queue.length){if(ended)finishTimer();return;}const count=!animated?queue.length:1;message.content+=queue.splice(0,count).join("");message.pending=false;updateStreamingMessage(message);if(ended&&!queue.length)finishTimer();};
+  const tick=()=>{if(!queue.length){if(ended)finishTimer();return;}const count=!animated?queue.length:1;message.content+=queue.splice(0,count).join("");message.pending=false;updateStreamingMessage(message,messages,conversationId);if(ended&&!queue.length)finishTimer();};
   return {
     push(text){if(!text)return;queue.push(...Array.from(text));if(!animated){tick();return;}if(!timer){tick();const delay={slow:90,standard:55,fast:30}[state.settings.stream_speed]||55;timer=setInterval(tick,delay);}},
-    finish(){ended=true;tick();if(!timer&&!queue.length)return Promise.resolve();return new Promise(resolve=>{resolveFinished=resolve;});}
+    finish(){ended=true;tick();if(!timer&&!queue.length)return Promise.resolve();return new Promise(resolve=>{resolveFinished=resolve;});},
+    cancel(){queue=[];ended=true;finishTimer();}
   };
 }
 
 async function generateReply(content, reuseUserMessageId = null, attachments = []) {
-  const input = $("#prompt"); const provider = activeProvider();
+  const conversationId=state.current,messages=state.messages,provider=activeProvider(),personaId=state.persona,worldbookIds=selectedWorldbookIds(),controller=new AbortController();
   if (!provider) return openSettings("providers");
-  state.busy = true;
+  state.generating.add(conversationId);state.generation_controllers.set(conversationId,controller);state.message_cache.set(conversationId,messages);renderHistory();renderCurrentTitle();updateComposerState();
   if(reuseUserMessageId)delete state.version_selection[reuseUserMessageId];
-  state.messages.push({ role: "assistant", content: "", reasoning: "", model: provider.model, parent_message_id: reuseUserMessageId, pending: true, streaming: provider.stream_enabled!==false&&provider.stream_enabled!==0 }); renderMessages();
-  const assistant = state.messages[state.messages.length - 1];
+  messages.push({ role: "assistant", content: "", reasoning: "", model: provider.model, parent_message_id: reuseUserMessageId, pending: true, streaming: provider.stream_enabled!==false&&provider.stream_enabled!==0 });if(state.current===conversationId)renderMessages();
+  const assistant = messages[messages.length - 1];
+  let presenter;
   try {
     const gameContext=reuseUserMessageId?"":await prepareChatGameContext(content);
-    const response = await fetch("/api/chat", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ conversation_id: state.current, content: content || "重新生成", attachments, provider_id: provider.id, persona_id: state.persona, reuse_user_message_id: reuseUserMessageId, local_time: localTimeContext(), game_context:gameContext }) });
+    const response = await fetch("/api/chat", { method: "POST",headers: { "Content-Type": "application/json" },signal:controller.signal,body: JSON.stringify({ conversation_id:conversationId,content: content || "重新生成",attachments,provider_id: provider.id,persona_id:personaId,reuse_user_message_id:reuseUserMessageId,local_time: localTimeContext(),game_context:gameContext,worldbook_ids:worldbookIds }) });
     if (!response.ok) throw new Error(`请求失败 ${response.status}`);
-    const reader=response.body.getReader(),decoder=new TextDecoder(),presenter=createStreamPresenter(assistant,assistant.streaming);let pending="";
-    while(true){const {value,done}=await reader.read();if(done)break;pending+=decoder.decode(value,{stream:true});const lines=pending.split("\n");pending=lines.pop();for(const line of lines){if(!line)continue;const event=JSON.parse(line);if(event.error)throw new Error(event.error);let structureUpdated=false;if(event.memory_sources){assistant.memory_sources=event.memory_sources;structureUpdated=true;}if(typeof event.delta==="string"&&event.delta!=="null")presenter.push(event.delta);if(typeof event.reasoning_delta==="string"&&event.reasoning_delta!=="null"){assistant.reasoning+=event.reasoning_delta;structureUpdated=true;}if(structureUpdated)updateStreamingMessage(assistant);if(event.done){await presenter.finish();assistant.pending=false;assistant.streaming=false;assistant.id=event.assistant_id;assistant.parent_message_id=event.user_id;const pendingUser=[...state.messages].reverse().find(m=>m.role==="user"&&!m.id);if(pendingUser)pendingUser.id=event.user_id;if(event.title){const conversation=state.conversations.find(c=>c.id===state.current);if(conversation)conversation.title=event.title;$("#titleButton").textContent=`${event.title}⌄`;renderHistory();}renderMessages();}}}
-  } catch (error) { assistant.pending=false;assistant.streaming=false;assistant.retry_content=content;assistant.content = `连接失败：${error.message}`; renderMessages(); }
-  state.busy = false; $("#send").disabled = !input.value.trim();
+    const reader=response.body.getReader(),decoder=new TextDecoder();presenter=createStreamPresenter(assistant,assistant.streaming,messages,conversationId);let pending="";
+    while(true){const {value,done}=await reader.read();if(done)break;pending+=decoder.decode(value,{stream:true});const lines=pending.split("\n");pending=lines.pop();for(const line of lines){if(!line)continue;const event=JSON.parse(line);if(event.error)throw new Error(event.error);let structureUpdated=false;if(event.memory_sources){assistant.memory_sources=event.memory_sources;structureUpdated=true;}if(typeof event.delta==="string"&&event.delta!=="null")presenter.push(event.delta);if(typeof event.reasoning_delta==="string"&&event.reasoning_delta!=="null"){assistant.reasoning+=event.reasoning_delta;structureUpdated=true;}if(structureUpdated)updateStreamingMessage(assistant,messages,conversationId);if(event.done){await presenter.finish();assistant.pending=false;assistant.streaming=false;assistant.id=event.assistant_id;assistant.parent_message_id=event.user_id;const pendingUser=[...messages].reverse().find(m=>m.role==="user"&&!m.id);if(pendingUser)pendingUser.id=event.user_id;if(event.title){const conversation=state.conversations.find(c=>c.id===conversationId);if(conversation)conversation.title=event.title;}if(state.current===conversationId){renderCurrentTitle();renderMessages();}renderHistory();}}}
+  } catch (error) {presenter?.cancel();assistant.pending=false;assistant.streaming=false;if(error.name==="AbortError"){if(!assistant.content)assistant.content="已停止生成";}else{assistant.retry_content=content;assistant.content=`连接失败：${error.message}`;}if(state.current===conversationId)renderMessages();}
+  finally{state.generating.delete(conversationId);state.generation_controllers.delete(conversationId);renderHistory();if(state.current===conversationId){renderCurrentTitle();updateComposerState();}}
 }
 
 function openSettings(tab = "providers") { $("#backdrop").hidden = false; $("#settingsPanel").classList.add("open"); $("#settingsPanel").setAttribute("aria-hidden", "false"); switchTab(tab); }
@@ -404,13 +429,13 @@ async function renameCurrentConversation() {
   const title = window.prompt("重命名对话", current?.title || "新对话");
   if (!title?.trim()) return;
   const saved = await api(`/api/conversations/${state.current}`, { method: "PATCH", body: JSON.stringify({ title: title.trim() }) });
-  current.title = saved.title; $("#titleButton").textContent = `${saved.title}⌄`; renderHistory();
+  current.title = saved.title;renderCurrentTitle();renderHistory();
 }
 
 function openConversationSwitcher(event) {
   event.stopPropagation();
   const recent = state.conversations.filter(item => !item.archived).slice(0, 30);
-  const items = `<button data-value="__new__"><strong>＋ 新对话</strong></button>${recent.map(item => `<button data-value="${item.id}" class="${item.id === state.current ? "active" : ""}"><strong>${escapeHtml(item.title)}</strong><small>${item.id === state.current ? "当前对话" : new Date(item.updated_at || item.created_at).toLocaleString("zh-CN")}</small></button>`).join("")}<button data-value="__rename__" ${state.current ? "" : "disabled"}>重命名当前对话</button>`;
+  const items = `<button data-value="__new__"><strong>＋ 新对话</strong></button>${recent.map(item => `<button data-value="${item.id}" class="${item.id === state.current ? "active" : ""}"><strong><span>${escapeHtml(item.title)}</span>${generationDot(item.id)}</strong><small>${item.id === state.current ? "当前对话" : new Date(item.updated_at || item.created_at).toLocaleString("zh-CN")}</small></button>`).join("")}<button data-value="__rename__" ${state.current ? "" : "disabled"}>重命名当前对话</button>`;
   showPopover(event.currentTarget, $("#conversationPopover"), items, async value => {
     if (value === "__new__") await newConversation();
     else if (value === "__rename__") await renameCurrentConversation();
@@ -478,11 +503,20 @@ function saveAppSettings() {
   }, 350);
 }
 
-$("#prompt").addEventListener("input", e => { e.target.style.height = "auto"; e.target.style.height = `${Math.min(e.target.scrollHeight, 180)}px`; $("#send").disabled = !e.target.value.trim() || state.busy; renderContextUsage(); });
+$("#prompt").addEventListener("input", e => { e.target.style.height = "auto"; e.target.style.height = `${Math.min(e.target.scrollHeight, 180)}px`;saveCurrentDraft();updateComposerState();renderContextUsage(); });
 $("#attachmentButton").onclick=event=>{event.stopPropagation();$("#attachmentMenu").hidden=!$("#attachmentMenu").hidden;};document.querySelectorAll("[data-attachment-source]").forEach(button=>button.onclick=()=>{const inputs={camera:$("#cameraInput"),images:$("#imageInput"),files:$("#fileInput")};$("#attachmentMenu").hidden=true;inputs[button.dataset.attachmentSource].click();});[$("#cameraInput"),$("#imageInput"),$("#fileInput")].forEach(input=>input.onchange=async event=>{await addAttachments(event.target.files);event.target.value="";$("#send").disabled=false;});
 $("#openGamesFromComposer").onclick=()=>{$("#attachmentMenu").hidden=true;openGameLibrary();};
+$("#openInstructionInjection").onclick=()=>{$("#attachmentMenu").hidden=true;openInstructionPicker();};
+$("#closeInstructionPicker").onclick=()=>{saveSelectedWorldbooks([...$("#instructionBookList").querySelectorAll('input:checked')].map(input=>input.value));$("#instructionPicker").hidden=true;};
+$("#instructionPicker").onclick=event=>{if(event.target===$("#instructionPicker"))$("#instructionPicker").hidden=true;};
+$("#addWorldbook").onclick=()=>openWorldbookForm();$("#cancelWorldbook").onclick=()=>$("#worldbookForm").hidden=true;$("#addWorldbookEntry").onclick=()=>openWorldbookEntryEditor();
+$("#exportWorldbooks").onclick=()=>{const blob=new Blob([JSON.stringify({format:"atherloom-worldbooks",version:1,worldbooks:state.worldbooks},null,2)],{type:"application/json"}),link=document.createElement("a");link.href=URL.createObjectURL(blob);link.download=`atherloom-worldbooks-${new Date().toISOString().slice(0,10)}.json`;link.click();URL.revokeObjectURL(link.href);};
+$("#importWorldbooks").onclick=()=>$("#worldbookImportFile").click();$("#worldbookImportFile").onchange=async event=>{const file=event.target.files?.[0];event.target.value="";if(!file)return;try{const bundle=JSON.parse(await file.text());if(bundle?.format!=="atherloom-worldbooks"||!Array.isArray(bundle.worldbooks))throw new Error("不是有效的 Atherloom 世界书文件");for(const book of bundle.worldbooks){const payload={name:String(book.name||"导入的世界书"),description:String(book.description||""),enabled:book.enabled!==false,entries:Array.isArray(book.entries)?book.entries:[]},saved=await api("/api/worldbooks",{method:"POST",body:JSON.stringify(payload)});state.worldbooks.unshift(saved);}renderWorldbooks();}catch(error){alert(`导入失败：${error.message}`);}};
+$("#worldbookForm").onsubmit=async event=>{event.preventDefault();const form=event.target,payload={name:form.elements.name.value.trim(),description:form.elements.description.value.trim(),enabled:form.elements.enabled.checked,entries:editingWorldbookEntries},id=form.dataset.editing,saved=await api(id?`/api/worldbooks/${id}`:"/api/worldbooks",{method:id?"PUT":"POST",body:JSON.stringify(payload)});if(id)Object.assign(state.worldbooks.find(book=>book.id===id),saved);else state.worldbooks.unshift(saved);form.hidden=true;renderWorldbooks();renderInjectionTray();};
+$("#cancelWorldbookEntry").onclick=()=>$("#worldbookEntryEditor").hidden=true;$("#worldbookEntryEditor").onclick=event=>{if(event.target===$("#worldbookEntryEditor"))$("#worldbookEntryEditor").hidden=true;};
+$("#worldbookEntryEditor form").onsubmit=event=>{event.preventDefault();const form=event.target,index=Number(form.dataset.entryIndex),entry={id:index>=0?editingWorldbookEntries[index].id:crypto.randomUUID(),name:form.elements.name.value.trim(),content:form.elements.content.value,enabled:form.elements.enabled.checked,constant:form.elements.constant.checked,keywords:form.elements.keywords.value.split("\n").map(item=>item.trim()).filter(Boolean),use_regex:form.elements.use_regex.checked,case_sensitive:form.elements.case_sensitive.checked,scan_depth:Number(form.elements.scan_depth.value||4),position:form.elements.position.value,role:form.elements.role.value,priority:Number(form.elements.priority.value||0)};if(index>=0)editingWorldbookEntries[index]=entry;else editingWorldbookEntries.push(entry);$("#worldbookEntryEditor").hidden=true;renderWorldbookEntries();};
 $("#prompt").addEventListener("keydown", e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendMessage(); } });
-$("#send").onclick = sendMessage; $("#newChat").onclick = newConversation;
+$("#send").onclick = ()=>currentBusy()?stopCurrentGeneration():sendMessage(); $("#newChat").onclick = newConversation;
 $("#titleButton").onclick = openConversationSwitcher;
 let searchTimer;
 $("#conversationSearch").oninput = event => { clearTimeout(searchTimer); searchTimer = setTimeout(async () => { const query = event.target.value.trim(); if (!query) { const fresh = await api("/api/bootstrap"); state.conversations = fresh.conversations; } else { state.conversations = await api(`/api/search?q=${encodeURIComponent(query)}`); } renderHistory(); }, 180); };
