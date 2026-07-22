@@ -210,6 +210,7 @@ class AppSettingsIn(BaseModel):
     message_density: str = Field(default="comfortable", pattern="^(compact|comfortable|relaxed)$")
     code_theme: str = Field(default="auto", pattern="^(auto|light|dark|contrast)$")
     memory_strategy: str = Field(default="hybrid", pattern="^(local_first|hybrid|remote_first)$")
+    stream_speed: str = Field(default="standard", pattern="^(slow|standard|fast)$")
 
 
 class MemoryIn(BaseModel):
@@ -284,7 +285,7 @@ PERSONA_CONFIG_DEFAULTS = {
     "memory_enabled": True, "history_enabled": True, "summary_frequency": 20,
     "quick_phrases": [], "custom_headers": {}, "custom_body": {}, "regex_rules": [],
     "tools": {"time": True, "clipboard": False, "tts": False, "ask_user": True, "calculator": True},
-    "mcp_servers": [], "provider_id": "", "stream_enabled": None,
+    "mcp_servers": [], "provider_id": "", "stream_enabled": None, "startup_chat": "resume",
 }
 
 
@@ -302,6 +303,7 @@ def normalize_persona_config(value: Any) -> dict[str, Any]:
         if not isinstance(config.get(key), list): config[key] = []
     for key in ("custom_headers", "custom_body"):
         if not isinstance(config.get(key), dict): config[key] = {}
+    if config.get("startup_chat") not in ("resume", "new"): config["startup_chat"] = "resume"
     return config
 
 
@@ -326,6 +328,7 @@ def bootstrap() -> dict[str, Any]:
         "message_density": settings_rows.get("message_density", "comfortable"),
         "code_theme": settings_rows.get("code_theme", "auto"),
         "memory_strategy": settings_rows.get("memory_strategy", "hybrid"),
+        "stream_speed": settings_rows.get("stream_speed", "standard"),
     }}
 
 
@@ -345,6 +348,7 @@ def save_settings(body: AppSettingsIn) -> dict[str, Any]:
             "message_density": body.message_density,
             "code_theme": body.code_theme,
             "memory_strategy": body.memory_strategy,
+            "stream_speed": body.stream_speed,
         }
         connection.executemany(
             "INSERT INTO app_settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
@@ -1014,8 +1018,9 @@ def load_chat_context(connection: sqlite3.Connection, body: ChatIn, cutoff: str 
     formatting_context = "界面支持 Markdown。你可以根据语义有节制地使用 **粗体**、*斜体*、标题、引用、列表与代码块；不要为了装饰而过度格式化。"
     tool_names = [name for name, enabled in persona_config["tools"].items() if enabled]
     tool_context = f"该人格启用的本地能力偏好：{', '.join(tool_names)}。只有宿主实际提供的能力才可调用。" if tool_names else ""
+    game_tool_context = "宿主提供云汀钓记、抓娃娃机和云纹老虎机游戏工具。用户要求你去玩时，宿主会在回复前执行工具并提供 <verified_game_result>。只有收到该结果才能声称自己玩过，并应自然讲述真实动作、收获与心里话；没有结果时不得虚构游戏经历。"
     game_context = f"<verified_game_result>\n{body.game_context}\n</verified_game_result>\n这是宿主刚刚真实执行的游戏结果。请以当前人格自然回应，可以主动谈起收获与心情，不要声称没有玩过。" if body.game_context else ""
-    system_parts = [part for part in (persona_prompt, conversation["summary"] if persona_config["history_enabled"] else "", time_context, question_context, formatting_context, tool_context, game_context) if part]
+    system_parts = [part for part in (persona_prompt, conversation["summary"] if persona_config["history_enabled"] else "", time_context, question_context, formatting_context, tool_context, game_tool_context, game_context) if part]
     if system_parts:
         messages.insert(0, {"role": "system", "content": "\n\n".join(system_parts)})
     return provider, persona_prompt, messages
