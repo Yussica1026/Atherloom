@@ -132,6 +132,17 @@ class LocalClientTests(unittest.TestCase):
         self.assertIn('<assistant_persona active="true">', messages[0]["content"])
         self.assertIn("你叫阿澄", messages[0]["content"])
 
+    def test_persona_can_be_edited_and_deleted_without_dangling_conversation(self):
+        persona = self.client.post("/api/personas", json={"name":"朋友","prompt":"你叫 Ara。"}).json()
+        conversation = self.client.post("/api/conversations", json={"persona_id":persona["id"]}).json()
+        updated = self.client.put(f"/api/personas/{persona['id']}", json={"name":"挚友","prompt":"你叫 Ara，是长期朋友。"}).json()
+        self.assertEqual(updated["id"], persona["id"])
+        self.assertIn("长期朋友", updated["prompt"])
+        self.assertEqual(self.client.delete(f"/api/personas/{persona['id']}").status_code, 200)
+        bootstrap = self.client.get("/api/bootstrap").json()
+        self.assertEqual(bootstrap["personas"], [])
+        self.assertIsNone(next(item for item in bootstrap["conversations"] if item["id"] == conversation["id"])["persona_id"])
+
     def test_high_frequency_entity_does_not_drown_the_topic(self):
         topics = ["健身操", "戒指", "早餐", "旅行", "天气", "电影", "咖啡", "散步", "工作", "游戏"]
         for index in range(30):
