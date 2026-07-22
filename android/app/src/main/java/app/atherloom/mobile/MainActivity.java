@@ -170,8 +170,9 @@ public class MainActivity extends Activity {
                 if (status >= 400) throw new Exception("HTTP " + status + " · " + response.substring(0, Math.min(300, response.length())));
                 JSONObject data = new JSONObject(response); String content;
                 if (protocol.equals("anthropic")) { StringBuilder text = new StringBuilder(); JSONArray blocks=data.optJSONArray("content"); if(blocks!=null)for(int i=0;i<blocks.length();i++)if("text".equals(blocks.getJSONObject(i).optString("type")))text.append(blocks.getJSONObject(i).optString("text")); content=text.toString(); }
-                else content=data.getJSONArray("choices").getJSONObject(0).getJSONObject("message").optString("content");
-                String reasoning = protocol.equals("anthropic") ? "" : data.getJSONArray("choices").getJSONObject(0).getJSONObject("message").optString("reasoning_content", data.getJSONArray("choices").getJSONObject(0).getJSONObject("message").optString("reasoning"));
+                else content=nullableString(data.getJSONArray("choices").getJSONObject(0).getJSONObject("message"), "content");
+                JSONObject responseMessage = protocol.equals("anthropic") ? null : data.getJSONArray("choices").getJSONObject(0).getJSONObject("message");
+                String reasoning = protocol.equals("anthropic") ? "" : nullableString(responseMessage, "reasoning_content"); if (reasoning.isEmpty()) reasoning=nullableString(responseMessage, "reasoning");
                 return new JSONObject().put("ok", true).put("content", content).put("reasoning", reasoning).put("model", provider.optString("model")).toString();
             } catch (Exception error) { return failure(error); } finally { if (connection != null) connection.disconnect(); }
         }
@@ -211,7 +212,7 @@ public class MainActivity extends Activity {
                                 if (delta != null && event.optString("type").equals("content_block_delta")) { if (!delta.optString("text").isEmpty()) output.put("delta", delta.optString("text")); if (!delta.optString("thinking").isEmpty()) output.put("reasoning_delta", delta.optString("thinking")); }
                             } else {
                                 JSONArray choices = event.optJSONArray("choices"); JSONObject delta = choices != null && choices.length() > 0 ? choices.getJSONObject(0).optJSONObject("delta") : null;
-                                if (delta != null) { if (!delta.optString("content").isEmpty()) output.put("delta", delta.optString("content")); String reasoning = delta.optString("reasoning_content", delta.optString("reasoning")); if (!reasoning.isEmpty()) output.put("reasoning_delta", reasoning); }
+                                if (delta != null) { String content=nullableString(delta,"content"); if (!content.isEmpty()) output.put("delta",content); String reasoning=nullableString(delta,"reasoning_content"); if(reasoning.isEmpty())reasoning=nullableString(delta,"reasoning"); if (!reasoning.isEmpty()) output.put("reasoning_delta", reasoning); }
                             }
                             if (output.length() > 0) emitStream(callbackId, output);
                         }
@@ -226,6 +227,10 @@ public class MainActivity extends Activity {
         private void emitStream(String callbackId, JSONObject event) {
             String script = "window.AtherloomNativeStream&&window.AtherloomNativeStream(" + JSONObject.quote(callbackId) + "," + JSONObject.quote(event.toString()) + ")";
             webView.post(() -> webView.evaluateJavascript(script, null));
+        }
+
+        private static String nullableString(JSONObject object, String key) {
+            return object == null || !object.has(key) || object.isNull(key) ? "" : object.optString(key, "");
         }
 
         private static String read(InputStream stream) throws Exception { if(stream==null)return ""; StringBuilder text=new StringBuilder(); try(BufferedReader reader=new BufferedReader(new InputStreamReader(stream,StandardCharsets.UTF_8))){String line;while((line=reader.readLine())!=null)text.append(line);} return text.toString(); }
