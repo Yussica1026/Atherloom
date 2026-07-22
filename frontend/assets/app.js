@@ -162,16 +162,24 @@ async function playGame(action, amount = 1, target = "") {
 async function playMiniGame(gameId,action,amount=1){try{const payload=await api(`/api/games/${gameId}/action${personaQuery()}`,{method:"POST",body:JSON.stringify({action,amount})});if(gameId==="claw_machine"){gameState.claw=payload.state;renderClaw();}else{gameState.slots=payload.state;renderSlots();}}catch(error){alert(error.message);}}
 async function aiPlayGame(turns){const provider=activeProvider(),name=activePersonaName();if(!provider){$("#gameLibrary").hidden=true;return openSettings("providers");}const buttons=[$("#aiPlayOne"),$("#aiPlayThree")],gameId=gameState.current;buttons.forEach(button=>button.disabled=true);let completed=0,spent=0,lastComment="";try{for(let turn=0;turn<turns;turn++){const remaining=30-spent;if(remaining<=0)break;$("#aiGameStatus").textContent=`${name} 正在决定第 ${turn+1}/${turns} 回合…`;const payload=await api(`/api/games/${gameId}/ai-turn`,{method:"POST",body:JSON.stringify({provider_id:provider.id,persona_id:state.persona,turns:1,max_spend:remaining}),timeout:45000});spent+=payload.spent||0;if(payload.decisions.length){completed++;lastComment=payload.decisions.at(-1).comment||lastComment;}if(gameId==="quiet_fishing"){gameState.fishing=payload.state;renderFishing();}else if(gameId==="claw_machine"){gameState.claw=payload.state;renderClaw();}else{gameState.slots=payload.state;renderSlots();}if(!payload.decisions.length)break;$("#aiGameStatus").textContent=`${name} 已完成 ${completed}/${turns} 回合，正在准备下一步…`;}$("#aiGameStatus").textContent=completed?`${name} 完成 ${completed} 步，花费 ${spent} 云贝。心里话：${lastComment||"专心操作中"}`:`${name} 因预算或局面限制没有执行动作。`;}catch(error){$("#aiGameStatus").textContent=`${completed?`已完成 ${completed} 步；`:""}${name} 游玩失败：${error.message}`;}finally{buttons.forEach(button=>button.disabled=false);}}
 
+function parseGameRequest(content){
+  const text=String(content||"").replace(/\s+/g,""),requested=/(?:你|请|帮我|能不能|可以|可不可以).{0,12}(?:玩|去玩|来玩|试试|钓|抓|转)|(?:玩|去玩|来玩|试试).{0,8}(?:游戏|小游戏|钓鱼|抓娃娃|老虎机)/.test(text);
+  if(!requested)return null;
+  const gameId=/(?:抓娃娃|娃娃机|下爪)/.test(text)?"claw_machine":/(?:老虎机|拉杆|转盘|摇奖)/.test(text)?"cloud_slots":/(?:钓鱼|抛竿|钓一竿|鱼塘)/.test(text)?"quiet_fishing":gameState.current||"quiet_fishing";
+  const turns=/(?:3|三|几)(?:次|步|回合|竿|局)/.test(text)?3:1;
+  return {gameId,turns};
+}
 async function prepareChatGameContext(content){
-  if(!/(?:你|请|帮我).{0,8}(?:去|来|帮我)?(?:钓鱼|钓一竿|抛竿)/.test(content))return "";
+  const request=parseGameRequest(content);if(!request)return "";
   const provider=activeProvider();if(!provider)return "";
-  const turns=/(?:3|三|几)(?:次|回合|竿)/.test(content)?3:1,name=activePersonaName();
+  const {gameId,turns}=request,name=activePersonaName(),gameNames={quiet_fishing:"云汀钓记",claw_machine:"抓娃娃机",cloud_slots:"云纹老虎机"};
   try{
-    const payload=await api("/api/games/quiet_fishing/ai-turn",{method:"POST",body:JSON.stringify({provider_id:provider.id,persona_id:state.persona,turns,max_spend:30}),timeout:50000});
-    gameState.fishing=payload.state;if(gameState.current==="quiet_fishing")renderFishing();
+    const payload=await api(`/api/games/${gameId}/ai-turn`,{method:"POST",body:JSON.stringify({provider_id:provider.id,persona_id:state.persona,turns,max_spend:30}),timeout:50000});
+    if(gameId==="quiet_fishing"){gameState.fishing=payload.state;if(gameState.current===gameId)renderFishing();}else if(gameId==="claw_machine"){gameState.claw=payload.state;if(gameState.current===gameId)renderClaw();}else{gameState.slots=payload.state;if(gameState.current===gameId)renderSlots();}
     const details=payload.decisions.flatMap(item=>[...(item.events||[]),item.comment?`心里话：${item.comment}`:""]).filter(Boolean);
-    return `${name} 刚刚真实完成了 ${payload.decisions.length} 个钓鱼回合。${details.join("；")}。当前鱼篓：${Object.entries(payload.state.catch||{}).map(([fish,count])=>`${fish}×${count}`).join("、")||"空"}；鱼饵 ${payload.state.bait}，云贝 ${payload.state.coins}。`;
-  }catch(error){return `${name} 刚刚尝试去钓鱼，但没有执行成功：${error.message}`;}
+    const stateSummary=gameId==="quiet_fishing"?`当前鱼篓：${Object.entries(payload.state.catch||{}).map(([fish,count])=>`${fish}×${count}`).join("、")||"空"}；鱼饵 ${payload.state.bait}，云贝 ${payload.state.coins}`:gameId==="claw_machine"?`当前收藏：${Object.entries(payload.state.inventory||{}).map(([prize,count])=>`${prize}×${count}`).join("、")||"空"}；云贝 ${payload.state.coins}`:`当前转轮：${(payload.state.reels||[]).join(" · ")}；云贝 ${payload.state.coins}`;
+    return `${name} 已通过宿主游戏工具真实游玩「${gameNames[gameId]}」${payload.decisions.length} 个回合。${details.join("；")}。${stateSummary}。这是已执行结果，不是想象或角色扮演。`;
+  }catch(error){return `${name} 已调用「${gameNames[gameId]}」游戏工具，但执行失败：${error.message}。请如实告诉用户失败原因，不要假装玩过。`;}
 }
 
 async function openGameLibrary() {
@@ -261,8 +269,8 @@ function renderSettings() {
   if ($("#emptyAddProvider")) $("#emptyAddProvider").onclick = () => { $("#providerForm").hidden = false; renderSettings(); };
 }
 
-function fillPersonaConfig(form,config={}){const tools=config.tools||{};form.elements.memory_enabled.checked=config.memory_enabled!==false;form.elements.history_enabled.checked=config.history_enabled!==false;form.elements.summary_frequency.value=config.summary_frequency||20;form.elements.quick_phrases.value=(config.quick_phrases||[]).join("\n");form.elements.persona_headers.value=JSON.stringify(config.custom_headers||{},null,2);form.elements.persona_body.value=JSON.stringify(config.custom_body||{},null,2);form.elements.regex_rules.value=JSON.stringify(config.regex_rules||[],null,2);form.elements.tool_time.checked=tools.time!==false;form.elements.tool_clipboard.checked=!!tools.clipboard;form.elements.tool_tts.checked=!!tools.tts;form.elements.tool_ask_user.checked=tools.ask_user!==false;form.elements.tool_calculator.checked=tools.calculator!==false;form.elements.mcp_servers.value=(config.mcp_servers||[]).join("\n");}
-function personaConfigFromForm(form){let custom_headers,custom_body,regex_rules;try{custom_headers=JSON.parse(form.elements.persona_headers.value||"{}");custom_body=JSON.parse(form.elements.persona_body.value||"{}");regex_rules=JSON.parse(form.elements.regex_rules.value||"[]");}catch(error){throw new Error(`人格高级配置 JSON 格式错误：${error.message}`);}if(!custom_headers||Array.isArray(custom_headers)||typeof custom_headers!=="object")throw new Error("自定义 Header 必须是 JSON 对象");if(!custom_body||Array.isArray(custom_body)||typeof custom_body!=="object")throw new Error("自定义 Body 必须是 JSON 对象");if(!Array.isArray(regex_rules))throw new Error("正则规则必须是 JSON 数组");return {memory_enabled:form.elements.memory_enabled.checked,history_enabled:form.elements.history_enabled.checked,summary_frequency:Number(form.elements.summary_frequency.value||20),quick_phrases:form.elements.quick_phrases.value.split("\n").map(item=>item.trim()).filter(Boolean),custom_headers,custom_body,regex_rules,tools:{time:form.elements.tool_time.checked,clipboard:form.elements.tool_clipboard.checked,tts:form.elements.tool_tts.checked,ask_user:form.elements.tool_ask_user.checked,calculator:form.elements.tool_calculator.checked},mcp_servers:form.elements.mcp_servers.value.split("\n").map(item=>item.trim()).filter(Boolean)};}
+function fillPersonaConfig(form,config={}){const tools=config.tools||{};form.elements.startup_chat.value=config.startup_chat==="new"?"new":"resume";form.elements.memory_enabled.checked=config.memory_enabled!==false;form.elements.history_enabled.checked=config.history_enabled!==false;form.elements.summary_frequency.value=config.summary_frequency||20;form.elements.quick_phrases.value=(config.quick_phrases||[]).join("\n");form.elements.persona_headers.value=JSON.stringify(config.custom_headers||{},null,2);form.elements.persona_body.value=JSON.stringify(config.custom_body||{},null,2);form.elements.regex_rules.value=JSON.stringify(config.regex_rules||[],null,2);form.elements.tool_time.checked=tools.time!==false;form.elements.tool_clipboard.checked=!!tools.clipboard;form.elements.tool_tts.checked=!!tools.tts;form.elements.tool_ask_user.checked=tools.ask_user!==false;form.elements.tool_calculator.checked=tools.calculator!==false;form.elements.mcp_servers.value=(config.mcp_servers||[]).join("\n");}
+function personaConfigFromForm(form){let custom_headers,custom_body,regex_rules;try{custom_headers=JSON.parse(form.elements.persona_headers.value||"{}");custom_body=JSON.parse(form.elements.persona_body.value||"{}");regex_rules=JSON.parse(form.elements.regex_rules.value||"[]");}catch(error){throw new Error(`人格高级配置 JSON 格式错误：${error.message}`);}if(!custom_headers||Array.isArray(custom_headers)||typeof custom_headers!=="object")throw new Error("自定义 Header 必须是 JSON 对象");if(!custom_body||Array.isArray(custom_body)||typeof custom_body!=="object")throw new Error("自定义 Body 必须是 JSON 对象");if(!Array.isArray(regex_rules))throw new Error("正则规则必须是 JSON 数组");return {startup_chat:form.elements.startup_chat.value,memory_enabled:form.elements.memory_enabled.checked,history_enabled:form.elements.history_enabled.checked,summary_frequency:Number(form.elements.summary_frequency.value||20),quick_phrases:form.elements.quick_phrases.value.split("\n").map(item=>item.trim()).filter(Boolean),custom_headers,custom_body,regex_rules,tools:{time:form.elements.tool_time.checked,clipboard:form.elements.tool_clipboard.checked,tts:form.elements.tool_tts.checked,ask_user:form.elements.tool_ask_user.checked,calculator:form.elements.tool_calculator.checked},mcp_servers:form.elements.mcp_servers.value.split("\n").map(item=>item.trim()).filter(Boolean)};}
 function resetPersonaForm(){const form=$("#personaForm");form.reset();fillPersonaConfig(form,{});delete form.dataset.editing;$("#savePersona").textContent="保存人格";$("#cancelPersonaEdit").hidden=true;}
 
 function updateProviderCacheUI() {
@@ -271,11 +279,13 @@ function updateProviderCacheUI() {
   $("#automaticCacheHint").hidden = explicit;
 }
 
+function startupConversationPlan(persona,conversations){const mode=persona?.config?.startup_chat==="new"?"new":"resume",recent=conversations.find(item=>(item.persona_id||null)===(persona?.id||null));return {mode,conversationId:recent?.id||null};}
+
 async function bootstrap() {
   Object.assign(state, await api("/api/bootstrap"));
   state.memories = await api("/api/memories");
   state.favorites = await api("/api/favorites");
-  state.provider = state.providers[0]?.id || null; state.persona = state.personas[0]?.id || null;
+  state.provider = state.providers[0]?.id || null;const storedPersona=localStorage.getItem("atherloom:last-persona");state.persona=state.personas.some(item=>item.id===storedPersona)?storedPersona:state.personas[0]?.id||null;
   $("#autoTitleMode").value = state.settings.auto_title_mode || "local";
   $("#summaryEnabled").checked = state.settings.summary_enabled;
   $("#summaryRounds").value = state.settings.summary_trigger_rounds;
@@ -286,11 +296,14 @@ async function bootstrap() {
   $("#fontScaleValue").textContent = `${state.settings.font_scale || 100}%`;
   $("#messageDensity").value = state.settings.message_density || "comfortable";
   $("#codeTheme").value = state.settings.code_theme || "auto";
+  $("#streamSpeed").value = state.settings.stream_speed || "standard";
   $("#proactiveQuestions").checked = !!state.settings.proactive_questions;
   $("#memoryStrategy").value = state.settings.memory_strategy || "hybrid";
   document.querySelectorAll("[data-permission]").forEach(select => select.value = state.settings.tool_permissions?.[select.dataset.permission] || "ask");
   applyAppearance();
   renderProfile(); renderTimeGreeting(); renderHistory(); renderSettings(); renderPickers();
+  const startup=startupConversationPlan(activePersona(),state.conversations);
+  if(startup.mode==="new"&&state.provider)await newConversation();else if(startup.conversationId)await openConversation(startup.conversationId);
 }
 
 function renderFavorites() {
@@ -310,12 +323,14 @@ function openVoiceCall(){if(window.AtherloomNative?.showNotice){window.Atherloom
 async function newConversation() {
   const conversation = await api("/api/conversations", { method: "POST", body: JSON.stringify({ provider_id: state.provider, persona_id: state.persona }) });
   state.conversations.unshift(conversation); state.current = conversation.id; state.messages = [];
+  if(state.persona)localStorage.setItem("atherloom:last-persona",state.persona);localStorage.setItem("atherloom:last-conversation",conversation.id);
   $("#titleButton").textContent = "新对话⌄"; renderHistory(); renderMessages();
 }
 
 async function openConversation(id) {
   state.current = id; const conversation = state.conversations.find(c => c.id === id);
   state.provider = conversation.provider_id || state.provider; state.persona = conversation.persona_id || state.persona;
+  if(state.persona)localStorage.setItem("atherloom:last-persona",state.persona);localStorage.setItem("atherloom:last-conversation",id);
   state.messages = await api(`/api/conversations/${id}/messages`);
   state.version_selection={};for(const message of state.messages)if(message.role==="assistant"&&message.parent_message_id&&message.selected){const versions=state.messages.filter(item=>item.role==="assistant"&&item.parent_message_id===message.parent_message_id);state.version_selection[message.parent_message_id]=versions.indexOf(message);}
   $("#titleButton").textContent = `${conversation.title}⌄`; renderHistory(); renderMessages(); renderPickers();
@@ -332,20 +347,22 @@ async function sendMessage() {
 
 let streamScrollFrame=0,streamScrollDue=0;
 function scheduleStreamingScroll(){const now=performance.now();if(streamScrollFrame||now<streamScrollDue)return;streamScrollFrame=requestAnimationFrame(()=>{streamScrollFrame=0;streamScrollDue=performance.now()+120;const area=$("#chatScroll");area.scrollTop=area.scrollHeight;});}
-function updateStreamingMessage(message, structuralChange = false) {
+function updateStreamingMessage(message) {
   const index=state.messages.indexOf(message),article=document.querySelector(`.message[data-index="${index}"]`);
-  if(structuralChange||!article){renderMessages();return;}
-  const bubble=article.querySelector(".bubble");if(bubble){if(message.role==="assistant"&&message.streaming){if(bubble.childNodes.length===1&&bubble.firstChild?.nodeType===Node.TEXT_NODE)bubble.firstChild.nodeValue=message.content;else bubble.replaceChildren(document.createTextNode(message.content));}else bubble.innerHTML=message.role==="assistant"?renderAssistantContent(message.content):escapeHtml(message.content);}
-  const reasoning=article.querySelector(".thinking div");if(reasoning)reasoning.textContent=message.reasoning;
+  if(!article){renderMessages();return;}
+  const body=article.querySelector(".message-body"),bubble=article.querySelector(".bubble");
+  if(message.memory_sources?.length){let sources=article.querySelector(".memory-sources");if(!sources){sources=document.createElement("div");sources.className="memory-sources";body.insertBefore(sources,body.firstChild);}sources.innerHTML=`本轮使用记忆：${message.memory_sources.map(source=>`<span>${escapeHtml(source.title)}</span>`).join("")}`;}
+  if(message.reasoning){let thinking=article.querySelector(".thinking");if(!thinking){thinking=document.createElement("details");thinking.className="thinking";thinking.open=true;thinking.innerHTML="<summary>思考过程</summary><div></div>";body.insertBefore(thinking,bubble);}const reasoning=thinking.querySelector("div");if(reasoning.textContent!==message.reasoning)reasoning.textContent=message.reasoning;}
+  if(bubble){if(message.role==="assistant"&&message.streaming){if(message.content){if(bubble.childNodes.length===1&&bubble.firstChild?.nodeType===Node.TEXT_NODE)bubble.firstChild.nodeValue=message.content;else bubble.replaceChildren(document.createTextNode(message.content));}}else bubble.innerHTML=message.role==="assistant"?renderAssistantContent(message.content):escapeHtml(message.content);}
   scheduleStreamingScroll();
 }
 
 function createStreamPresenter(message, animated) {
   let queue=[],timer=null,ended=false,resolveFinished;
   const finishTimer=()=>{if(timer){clearInterval(timer);timer=null;}if(resolveFinished){resolveFinished();resolveFinished=null;}};
-  const tick=()=>{if(!queue.length){if(ended)finishTimer();return;}const count=!animated?queue.length:queue.length>180?4:queue.length>48?3:queue.length>12?2:1,wasPending=message.pending;message.content+=queue.splice(0,count).join("");message.pending=false;updateStreamingMessage(message,wasPending);if(ended&&!queue.length)finishTimer();};
+  const tick=()=>{if(!queue.length){if(ended)finishTimer();return;}const count=!animated?queue.length:1;message.content+=queue.splice(0,count).join("");message.pending=false;updateStreamingMessage(message);if(ended&&!queue.length)finishTimer();};
   return {
-    push(text){if(!text)return;queue.push(...Array.from(text));if(!animated){tick();return;}if(!timer){tick();timer=setInterval(tick,34);}},
+    push(text){if(!text)return;queue.push(...Array.from(text));if(!animated){tick();return;}if(!timer){tick();const delay={slow:90,standard:55,fast:30}[state.settings.stream_speed]||55;timer=setInterval(tick,delay);}},
     finish(){ended=true;tick();if(!timer&&!queue.length)return Promise.resolve();return new Promise(resolve=>{resolveFinished=resolve;});}
   };
 }
@@ -362,7 +379,7 @@ async function generateReply(content, reuseUserMessageId = null, attachments = [
     const response = await fetch("/api/chat", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ conversation_id: state.current, content: content || "重新生成", attachments, provider_id: provider.id, persona_id: state.persona, reuse_user_message_id: reuseUserMessageId, local_time: localTimeContext(), game_context:gameContext }) });
     if (!response.ok) throw new Error(`请求失败 ${response.status}`);
     const reader=response.body.getReader(),decoder=new TextDecoder(),presenter=createStreamPresenter(assistant,assistant.streaming);let pending="";
-    while(true){const {value,done}=await reader.read();if(done)break;pending+=decoder.decode(value,{stream:true});const lines=pending.split("\n");pending=lines.pop();for(const line of lines){if(!line)continue;const event=JSON.parse(line);if(event.error)throw new Error(event.error);let structuralChange=false;if(event.memory_sources){structuralChange=!assistant.memory_sources?.length;assistant.memory_sources=event.memory_sources;}if(typeof event.delta==="string"&&event.delta!=="null")presenter.push(event.delta);if(typeof event.reasoning_delta==="string"&&event.reasoning_delta!=="null"){structuralChange=structuralChange||!assistant.reasoning;assistant.reasoning+=event.reasoning_delta;}if(structuralChange)updateStreamingMessage(assistant,true);if(event.done){await presenter.finish();assistant.pending=false;assistant.streaming=false;assistant.id=event.assistant_id;assistant.parent_message_id=event.user_id;const pendingUser=[...state.messages].reverse().find(m=>m.role==="user"&&!m.id);if(pendingUser)pendingUser.id=event.user_id;if(event.title){const conversation=state.conversations.find(c=>c.id===state.current);if(conversation)conversation.title=event.title;$("#titleButton").textContent=`${event.title}⌄`;renderHistory();}renderMessages();}}}
+    while(true){const {value,done}=await reader.read();if(done)break;pending+=decoder.decode(value,{stream:true});const lines=pending.split("\n");pending=lines.pop();for(const line of lines){if(!line)continue;const event=JSON.parse(line);if(event.error)throw new Error(event.error);let structureUpdated=false;if(event.memory_sources){assistant.memory_sources=event.memory_sources;structureUpdated=true;}if(typeof event.delta==="string"&&event.delta!=="null")presenter.push(event.delta);if(typeof event.reasoning_delta==="string"&&event.reasoning_delta!=="null"){assistant.reasoning+=event.reasoning_delta;structureUpdated=true;}if(structureUpdated)updateStreamingMessage(assistant);if(event.done){await presenter.finish();assistant.pending=false;assistant.streaming=false;assistant.id=event.assistant_id;assistant.parent_message_id=event.user_id;const pendingUser=[...state.messages].reverse().find(m=>m.role==="user"&&!m.id);if(pendingUser)pendingUser.id=event.user_id;if(event.title){const conversation=state.conversations.find(c=>c.id===state.current);if(conversation)conversation.title=event.title;$("#titleButton").textContent=`${event.title}⌄`;renderHistory();}renderMessages();}}}
   } catch (error) { assistant.pending=false;assistant.streaming=false;assistant.content = `连接失败：${error.message}`; renderMessages(); }
   state.busy = false; $("#send").disabled = !input.value.trim();
 }
@@ -450,6 +467,7 @@ function saveAppSettings() {
       message_density: $("#messageDensity").value,
       code_theme: $("#codeTheme").value,
       memory_strategy: $("#memoryStrategy").value,
+      stream_speed: $("#streamSpeed").value,
       tool_permissions
     }) });
     applyAppearance();
@@ -462,6 +480,7 @@ function saveAppSettings() {
 
 $("#prompt").addEventListener("input", e => { e.target.style.height = "auto"; e.target.style.height = `${Math.min(e.target.scrollHeight, 180)}px`; $("#send").disabled = !e.target.value.trim() || state.busy; renderContextUsage(); });
 $("#attachmentButton").onclick=event=>{event.stopPropagation();$("#attachmentMenu").hidden=!$("#attachmentMenu").hidden;};document.querySelectorAll("[data-attachment-source]").forEach(button=>button.onclick=()=>{const inputs={camera:$("#cameraInput"),images:$("#imageInput"),files:$("#fileInput")};$("#attachmentMenu").hidden=true;inputs[button.dataset.attachmentSource].click();});[$("#cameraInput"),$("#imageInput"),$("#fileInput")].forEach(input=>input.onchange=async event=>{await addAttachments(event.target.files);event.target.value="";$("#send").disabled=false;});
+$("#openGamesFromComposer").onclick=()=>{$("#attachmentMenu").hidden=true;openGameLibrary();};
 $("#prompt").addEventListener("keydown", e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendMessage(); } });
 $("#send").onclick = sendMessage; $("#newChat").onclick = newConversation;
 $("#titleButton").onclick = openConversationSwitcher;
@@ -475,6 +494,7 @@ $("#summaryPrompt").oninput = saveAppSettings;
 $("#displayName").oninput = saveAppSettings;
 $("#fontScale").oninput = event => { $("#fontScaleValue").textContent = `${event.target.value}%`; state.settings.font_scale = Number(event.target.value); applyAppearance(); saveAppSettings(); };
 $("#messageDensity").onchange = event => { state.settings.message_density = event.target.value; applyAppearance(); saveAppSettings(); };
+$("#streamSpeed").onchange=event=>{state.settings.stream_speed=event.target.value;saveAppSettings();};
 $("#codeTheme").onchange = event => { state.settings.code_theme = event.target.value; applyAppearance(); saveAppSettings(); };
 $("#memoryStrategy").onchange = saveAppSettings;
 $("#resetSummaryPrompt").onclick = () => { $("#summaryPrompt").value = $("#summaryPrompt").dataset.defaultPrompt; saveAppSettings(); };
@@ -523,7 +543,7 @@ let memorySearchTimer;
 $("#memorySearch").oninput = event => { clearTimeout(memorySearchTimer); memorySearchTimer = setTimeout(async () => { state.memories = await api(`/api/memories?q=${encodeURIComponent(event.target.value.trim())}`); renderSettings(); }, 180); };
 $("#memoryKindFilter").onchange = renderSettings;
 $("#modelPicker").onclick = e => { e.stopPropagation(); if (!state.providers.length) return openSettings("providers"); showPopover(e.currentTarget, $("#modelPopover"), state.providers.map(p => `<button data-value="${p.id}"><strong>${escapeHtml(p.name)}</strong><small>${escapeHtml(p.model)}</small></button>`).join(""), id => { state.provider = id; renderPickers(); }); };
-$("#personaPicker").onclick = e => { e.stopPropagation(); showPopover(e.currentTarget, $("#personaPopover"), `<button data-value="">默认人格</button>` + state.personas.map(p => `<button data-value="${p.id}">${escapeHtml(p.name)}</button>`).join(""), id => { state.persona = id || null; renderPickers(); }); };
+$("#personaPicker").onclick = e => { e.stopPropagation(); showPopover(e.currentTarget, $("#personaPopover"), `<button data-value="">默认人格</button>` + state.personas.map(p => `<button data-value="${p.id}">${escapeHtml(p.name)}</button>`).join(""), id => { state.persona = id || null;if(state.persona)localStorage.setItem("atherloom:last-persona",state.persona);else localStorage.removeItem("atherloom:last-persona");renderPickers(); }); };
 $("#quickPhraseButton").onclick=e=>{e.stopPropagation();const phrases=activePersona()?.config?.quick_phrases||[];showPopover(e.currentTarget,$("#quickPhrasePopover"),phrases.map((phrase,index)=>`<button data-value="${index}">${escapeHtml(phrase)}</button>`).join(""),index=>{const input=$("#prompt"),phrase=phrases[Number(index)];input.value=`${input.value}${input.value&&!/\s$/.test(input.value)?"\n":""}${phrase||""}`;input.dispatchEvent(new Event("input"));input.focus();});};
 document.addEventListener("click", event => { if (!event.target.closest(".popover")) closePopovers(); if(!event.target.closest("#attachmentMenu")&&!event.target.closest("#attachmentButton"))$("#attachmentMenu").hidden=true; });
 document.addEventListener("keydown", event => { if (event.key === "Escape") closePopovers(); });

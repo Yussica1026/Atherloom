@@ -104,12 +104,15 @@ class LocalClientTests(unittest.TestCase):
             "font_scale": 115,
             "message_density": "relaxed",
             "code_theme": "contrast",
+            "stream_speed": "slow",
         }).json()
         self.assertEqual(saved["font_scale"], 115)
         self.assertEqual(saved["message_density"], "relaxed")
         self.assertEqual(saved["code_theme"], "contrast")
+        self.assertEqual(saved["stream_speed"], "slow")
         loaded = self.client.get("/api/bootstrap").json()["settings"]
         self.assertEqual(loaded["font_scale"], 115)
+        self.assertEqual(loaded["stream_speed"], "slow")
 
     def test_proactive_question_setting_is_persisted(self):
         saved = self.client.put("/api/settings", json={"proactive_questions": True}).json()
@@ -166,10 +169,11 @@ class LocalClientTests(unittest.TestCase):
         self.assertIsNone(next(item for item in bootstrap["conversations"] if item["id"] == conversation["id"])["persona_id"])
 
     def test_persona_workspace_config_is_persisted(self):
-        config = {"memory_enabled": False, "history_enabled": False, "summary_frequency": 5, "quick_phrases": ["继续说"], "custom_headers": {"X-Mode": "friend"}, "custom_body": {"seed": 7}, "regex_rules": [{"pattern": "A", "replacement": "B"}], "tools": {"time": True, "calculator": False}, "mcp_servers": ["memory"]}
+        config = {"startup_chat": "new", "memory_enabled": False, "history_enabled": False, "summary_frequency": 5, "quick_phrases": ["继续说"], "custom_headers": {"X-Mode": "friend"}, "custom_body": {"seed": 7}, "regex_rules": [{"pattern": "A", "replacement": "B"}], "tools": {"time": True, "calculator": False}, "mcp_servers": ["memory"]}
         persona = self.client.post("/api/personas", json={"name": "工作台", "prompt": "保持温柔", "config": config}).json()
         self.assertFalse(persona["config"]["memory_enabled"])
         self.assertEqual(persona["config"]["quick_phrases"], ["继续说"])
+        self.assertEqual(persona["config"]["startup_chat"], "new")
         loaded = next(item for item in self.client.get("/api/bootstrap").json()["personas"] if item["id"] == persona["id"])
         self.assertEqual(loaded["config"]["custom_headers"]["X-Mode"], "friend")
         self.assertFalse(loaded["config"]["tools"]["calculator"])
@@ -275,6 +279,8 @@ class LocalClientTests(unittest.TestCase):
             _, _, messages = app_module.load_chat_context(connection, body)
         self.assertIn("verified_game_result", messages[0]["content"])
         self.assertIn("Ara 钓到了银尾鲫", messages[0]["content"])
+        self.assertIn("游戏工具", messages[0]["content"])
+        self.assertIn("不得虚构游戏经历", messages[0]["content"])
 
 
 if __name__ == "__main__":

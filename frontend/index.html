@@ -13,7 +13,7 @@
   <title>Atherloom</title>
   <link rel="manifest" href="manifest.json">
   <link rel="icon" href="assets/app-icon.svg" type="image/svg+xml">
-  <link rel="stylesheet" href="assets/app.css?v=0426">
+  <link rel="stylesheet" href="assets/app.css?v=0429">
   <script>document.documentElement.dataset.launchMode=performance.getEntriesByType("navigation")[0]?.type==="reload"?"refresh":"full";</script>
 </head>
 <body>
@@ -82,7 +82,7 @@
             <button class="send-button" id="send" disabled aria-label="发送">↑</button>
           </div>
           <div class="attachment-tray" id="attachmentTray" hidden></div>
-          <div class="attachment-menu" id="attachmentMenu" hidden><button type="button" data-attachment-source="camera">拍照</button><button type="button" data-attachment-source="images">选择图片</button><button type="button" data-attachment-source="files">选择文件</button></div>
+          <div class="attachment-menu" id="attachmentMenu" hidden><button type="button" id="openGamesFromComposer">打开游戏库</button><button type="button" data-attachment-source="camera">拍照</button><button type="button" data-attachment-source="images">选择图片</button><button type="button" data-attachment-source="files">选择文件</button></div>
           <input id="cameraInput" type="file" accept="image/*" capture="environment" hidden><input id="imageInput" type="file" accept="image/*" multiple hidden><input id="fileInput" type="file" multiple hidden>
         </div>
       </section>
@@ -178,7 +178,7 @@
           <form id="personaForm" class="edit-card visible">
             <label>人格名称<input name="name" required placeholder="例如：私人助手"></label>
             <nav class="persona-tabs" aria-label="人格功能"><button type="button" class="active" data-persona-tab="prompt">提示词</button><button type="button" data-persona-tab="memory">记忆</button><button type="button" data-persona-tab="phrases">快捷短语</button><button type="button" data-persona-tab="request">自定义请求</button><button type="button" data-persona-tab="regex">正则替换</button><button type="button" data-persona-tab="tools">本地工具</button><button type="button" data-persona-tab="mcp">MCP</button></nav>
-            <section class="persona-pane active" data-persona-pane="prompt"><label>系统指令<textarea name="prompt" rows="12" placeholder="身份、关系、说话方式、做事边界……"></textarea></label></section>
+            <section class="persona-pane active" data-persona-pane="prompt"><div class="setting-row"><div><strong>打开时进入</strong><small>这个人格下次出现时，从新对话开始或继续上次聊天</small></div><select name="startup_chat"><option value="resume">继续上次对话</option><option value="new">自动新建对话</option></select></div><label>系统指令<textarea name="prompt" rows="12" placeholder="身份、关系、说话方式、做事边界……"></textarea></label></section>
             <section class="persona-pane" data-persona-pane="memory"><div class="setting-row"><div><strong>使用记忆</strong><small>允许该人格检索已确认的长期记忆</small></div><label class="switch"><input name="memory_enabled" type="checkbox" checked><span></span></label></div><div class="setting-row"><div><strong>参考历史聊天记录</strong><small>关闭后只读取当前消息与人格提示词</small></div><label class="switch"><input name="history_enabled" type="checkbox" checked><span></span></label></div><label>摘要更新频率（消息条数）<input name="summary_frequency" type="number" min="1" max="200" value="20"></label></section>
             <section class="persona-pane" data-persona-pane="phrases"><label>快捷短语<textarea name="quick_phrases" rows="10" placeholder="每行一条，例如：\n继续说下去\n帮我整理成清单"></textarea><small class="muted">保存后可作为该人格的常用输入短语。</small></label></section>
             <section class="persona-pane" data-persona-pane="request"><label>自定义 Header（JSON）<textarea name="persona_headers" rows="7">{}</textarea></label><label>自定义 Body（JSON）<textarea name="persona_body" rows="9">{}</textarea></label><p class="privacy-note">只允许合法 JSON；模型、消息、API Key 等核心字段仍由线路安全管理。</p></section>
@@ -248,6 +248,7 @@
           <div class="setting-row"><div><strong>主题</strong><small>跟随系统或手动选择</small></div><select id="themeSelect"><option value="system">跟随系统</option><option value="light">浅色</option><option value="dark">深色</option></select></div>
           <div class="setting-row"><div><strong>字体大小</strong><small id="fontScaleValue">100%</small></div><input id="fontScale" type="range" min="85" max="130" step="5" value="100"></div>
           <div class="setting-row"><div><strong>消息密度</strong><small>调整消息之间的留白</small></div><select id="messageDensity"><option value="compact">紧凑</option><option value="comfortable">舒适</option><option value="relaxed">宽松</option></select></div>
+          <div class="setting-row"><div><strong>流式出字速度</strong><small>流式回复始终逐字显示；非流式回复保持一次显示全文</small></div><select id="streamSpeed"><option value="slow">慢速 · 约 90ms/字</option><option value="standard">标准 · 约 55ms/字</option><option value="fast">快速 · 约 30ms/字</option></select></div>
           <div class="setting-row"><div><strong>代码高亮主题</strong><small>为代码块单独选择显示方案</small></div><select id="codeTheme"><option value="auto">跟随主题</option><option value="light">浅色</option><option value="dark">深色</option><option value="contrast">高对比度</option></select></div>
         </section>
 
@@ -271,11 +272,11 @@
   <div class="popover conversation-popover" id="conversationPopover" hidden></div>
   <div class="message-menu-backdrop" id="messageMenu" hidden><section class="message-menu" role="dialog" aria-label="消息操作"><button type="button" id="branchMessage">创建分支</button><button type="button" id="editMessage">修改内容</button><button type="button" class="danger" id="deleteMessageVersion">删除本版本</button><button type="button" class="danger" id="deleteAllMessageVersions">删除全部版本</button><button type="button" id="closeMessageMenu">取消</button></section></div>
   <div class="message-menu-backdrop" id="messageEditor" hidden><form class="message-editor" role="dialog" aria-label="修改消息"><h3>修改内容</h3><textarea id="messageEditContent" rows="7" required></textarea><div class="form-actions"><button type="button" class="ghost" id="cancelMessageEdit">取消</button><button class="primary">保存修改</button></div></form></div>
-  <script src="assets/standalone.js?v=0426"></script>
-  <script src="assets/app.js?v=0426" defer></script>
+  <script src="assets/standalone.js?v=0429"></script>
+  <script src="assets/app.js?v=0429" defer></script>
   <script>
     if ('serviceWorker' in navigator) {
-      navigator.serviceWorker.register('service-worker.js?v=36', { updateViaCache: 'none' }).then(registration => registration.update());
+      navigator.serviceWorker.register('service-worker.js?v=37', { updateViaCache: 'none' }).then(registration => registration.update());
       navigator.serviceWorker.addEventListener('controllerchange', () => {
         if (!sessionStorage.getItem('atherloom:sw-reloaded-v36')) {
           sessionStorage.setItem('atherloom:sw-reloaded-v36', '1');

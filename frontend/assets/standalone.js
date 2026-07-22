@@ -80,7 +80,7 @@
   const defaultSlots=()=>({coins:100,turn:0,reels:["✦","◌","◇"],journal:[]});
   const aiGameActions={quiet_fishing:[{action:"cast",amount:1},{action:"buy_bait",amount:5},{action:"sell_all",amount:1},{action:"travel",target:"willow_bay",amount:1},{action:"travel",target:"mist_lake",amount:1},{action:"travel",target:"cloud_coast",amount:1}],claw_machine:[{action:"move_left",amount:1},{action:"move_right",amount:1},{action:"grab",amount:1}],cloud_slots:[{action:"spin",amount:1}]};
   const fallbackAiGameAction=(gameId,state,budget)=>{if(gameId==="quiet_fishing"){if(state.bait>0)return {action:"cast",amount:1};if(Object.keys(state.catch||{}).length)return {action:"sell_all",amount:1};if(budget>=25&&state.coins>=25)return {action:"buy_bait",amount:5};}if(gameId==="claw_machine")return budget>=10&&state.coins>=10?{action:"grab",amount:1}:{action:"move_right",amount:1};if(gameId==="cloud_slots"&&budget>=5&&state.coins>=5)return {action:"spin",amount:1};return null;};
-  const settings = () => read("settings", { auto_title_mode:"local",summary_enabled:true,summary_trigger_rounds:24,summary_prompt:"请忠实总结较早对话。",default_summary_prompt:"请忠实总结较早对话。",display_name:"",proactive_questions:false,tool_permissions:{web_search:"allow",memory_read:"allow",memory_write:"ask",diary_write:"ask",delete:"ask"},font_scale:100,message_density:"comfortable",code_theme:"auto",memory_strategy:"hybrid" });
+  const settings = () => read("settings", { auto_title_mode:"local",summary_enabled:true,summary_trigger_rounds:24,summary_prompt:"请忠实总结较早对话。",default_summary_prompt:"请忠实总结较早对话。",display_name:"",proactive_questions:false,tool_permissions:{web_search:"allow",memory_read:"allow",memory_write:"ask",diary_write:"ask",delete:"ask"},font_scale:100,message_density:"comfortable",code_theme:"auto",memory_strategy:"hybrid",stream_speed:"standard" });
   window.fetch = async (input, options = {}) => {
     const url = new URL(typeof input === "string" ? input : input.url, location.href);
     if (!url.pathname.startsWith("/api/")) return originalFetch(input, options);
@@ -157,8 +157,9 @@
       const questionContext=settings().proactive_questions?'用户允许你在合适时主动提问、自然追问或发起新话题。需要用户选择时，先自然地说一句引导语，再在回复末尾严格输出 <questions>[{"question":"问题","options":["选项一","选项二","选项三"]}]</questions>；可包含 1 至 4 个问题，每题 2 至 5 个简短选项，不要在标签外重复选项。用户明确要求你提问时必须使用此格式。不要机械地每轮都提问。':"除非完成当前请求确实缺少必要信息，否则不要主动反问或发起问卷；优先直接回应用户。";
       const formattingContext="界面支持 Markdown。你可以根据语义有节制地使用 **粗体**、*斜体*、标题、引用、列表与代码块；不要为了装饰而过度格式化。";
       const enabledTools=Object.entries(personaConfig.tools||{}).filter(([,enabled])=>enabled).map(([name])=>name),toolContext=enabledTools.length?`该人格启用的本地能力偏好：${enabledTools.join(", ")}。只有宿主实际提供的能力才可调用。`:"";
+      const gameToolContext="宿主提供云汀钓记、抓娃娃机和云纹老虎机游戏工具。用户要求你去玩时，宿主会在回复前执行工具并提供 <verified_game_result>。只有收到该结果才能声称自己玩过，并应自然讲述真实动作、收获与心里话；没有结果时不得虚构游戏经历。";
       const gameContext=body.game_context?`<verified_game_result>\n${body.game_context}\n</verified_game_result>\n这是宿主刚刚真实执行的游戏结果。请以当前人格自然回应，可以主动谈起收获与心情，不要声称没有玩过。`:"";
-      const prompt=[personaContext,memoryContext,`当前时间：${new Date().toLocaleString("zh-CN",{hour12:false})}`,questionContext,formattingContext,toolContext,gameContext].filter(Boolean).join("\n\n");
+      const prompt=[personaContext,memoryContext,`当前时间：${new Date().toLocaleString("zh-CN",{hour12:false})}`,questionContext,formattingContext,toolContext,gameToolContext,gameContext].filter(Boolean).join("\n\n");
       try {
         const provider=providers().find(item=>item.id===body.provider_id);const sourceMessages=personaConfig.history_enabled===false?[user]:effectiveMessages(body.conversation_id,history),rawMessages=sourceMessages.filter(item=>item.role==="user"||item.role==="assistant").map(item=>({role:item.role,content:item.content,attachments:item.attachments||[]}));
         const request={provider_id:body.provider_id,system:prompt,messages:native?formatMessages(rawMessages,provider?.protocol||"openai"):rawMessages};
