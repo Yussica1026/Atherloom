@@ -444,6 +444,26 @@ def save_persona(body: PersonaIn) -> dict[str, Any]:
     return {"id": persona_id, "name": body.name, "prompt": body.prompt, "created_at": created}
 
 
+@app.put("/api/personas/{persona_id}")
+def update_persona(persona_id: str, body: PersonaIn) -> dict[str, Any]:
+    with closing(db()) as connection:
+        existing = connection.execute("SELECT * FROM personas WHERE id=?", (persona_id,)).fetchone()
+        if not existing:
+            raise HTTPException(404, "人格不存在")
+        connection.execute("UPDATE personas SET name=?,prompt=? WHERE id=?", (body.name, body.prompt, persona_id))
+        connection.commit()
+    return {"id": persona_id, "name": body.name, "prompt": body.prompt, "created_at": existing["created_at"]}
+
+
+@app.delete("/api/personas/{persona_id}")
+def delete_persona(persona_id: str) -> dict[str, bool]:
+    with closing(db()) as connection:
+        connection.execute("UPDATE conversations SET persona_id=NULL WHERE persona_id=?", (persona_id,))
+        connection.execute("DELETE FROM personas WHERE id=?", (persona_id,))
+        connection.commit()
+    return {"ok": True}
+
+
 @app.post("/api/conversations")
 def create_conversation(body: ConversationIn) -> dict[str, Any]:
     conversation_id = str(uuid.uuid4())

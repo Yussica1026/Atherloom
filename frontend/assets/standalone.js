@@ -117,6 +117,9 @@
     }
     if (url.pathname === "/api/providers/test" && method === "POST") return json({message:"格式检查通过。保存线路后发送一条消息即可验证网关与模型。"});
     if (url.pathname === "/api/personas" && method === "POST") { const item={...body,id:uid(),created_at:new Date().toISOString()}; write("personas",[...read("personas",[]),item]); return json(item); }
+    const personaItem=url.pathname.match(/^\/api\/personas\/([^/]+)$/);
+    if(personaItem&&method==="PUT"){const id=decodeURIComponent(personaItem[1]),all=read("personas",[]),item=all.find(row=>row.id===id);if(!item)return json({detail:"人格不存在"},404);Object.assign(item,body);write("personas",all);return json(item);}
+    if(personaItem&&method==="DELETE"){const id=decodeURIComponent(personaItem[1]);write("personas",read("personas",[]).filter(item=>item.id!==id));write("conversations",read("conversations",[]).map(item=>item.persona_id===id?{...item,persona_id:null}:item));return json({ok:true});}
     if (url.pathname === "/api/conversations" && method === "POST") { const item={...body,id:uid(),title:"新对话",summary:"",pinned:0,starred:0,archived:0,created_at:new Date().toISOString(),updated_at:new Date().toISOString()}; write("conversations",[item,...read("conversations",[])]); return json(item); }
     const branchConversation=url.pathname.match(/^\/api\/conversations\/([^/]+)\/branch\/([^/]+)$/);
     if(branchConversation&&method==="POST"){
