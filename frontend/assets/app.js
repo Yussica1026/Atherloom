@@ -318,9 +318,9 @@ function updateStreamingMessage(message, structuralChange = false) {
 function createStreamPresenter(message, animated) {
   let queue=[],timer=null,ended=false,resolveFinished;
   const finishTimer=()=>{if(timer){clearInterval(timer);timer=null;}if(resolveFinished){resolveFinished();resolveFinished=null;}};
-  const tick=()=>{if(!queue.length){if(ended)finishTimer();return;}if(animated&&!ended&&queue.length<3)return;const count=!animated?queue.length:ended?Math.min(60,queue.length):Math.min(24,Math.max(4,Math.ceil(queue.length/6))),wasPending=message.pending;message.content+=queue.splice(0,count).join("");message.pending=false;updateStreamingMessage(message,wasPending);if(ended&&!queue.length)finishTimer();};
+  const tick=()=>{if(!queue.length){if(ended)finishTimer();return;}const count=!animated?queue.length:queue.length>180?4:queue.length>48?3:queue.length>12?2:1,wasPending=message.pending;message.content+=queue.splice(0,count).join("");message.pending=false;updateStreamingMessage(message,wasPending);if(ended&&!queue.length)finishTimer();};
   return {
-    push(text){if(!text)return;queue.push(...Array.from(text));if(!animated){tick();return;}if(!timer)timer=setInterval(tick,45);},
+    push(text){if(!text)return;queue.push(...Array.from(text));if(!animated){tick();return;}if(!timer){tick();timer=setInterval(tick,34);}},
     finish(){ended=true;tick();if(!timer&&!queue.length)return Promise.resolve();return new Promise(resolve=>{resolveFinished=resolve;});}
   };
 }

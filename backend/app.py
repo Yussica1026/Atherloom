@@ -851,13 +851,35 @@ def parse_ai_game_choice(text: str, game_id: str) -> tuple[dict[str, Any], str]:
     try:
         payload = json.loads(text[text.index("{"):text.rindex("}") + 1])
     except (ValueError, json.JSONDecodeError):
-        raise HTTPException(502, "模型没有返回可执行的游戏动作")
+        lowered = text.lower()
+        aliases = {
+            "quiet_fishing": [("sell_all", ("sell_all", "出售", "卖掉")), ("buy_bait", ("buy_bait", "买鱼饵", "购买鱼饵")), ("cast", ("cast", "抛竿", "甩一竿", "钓鱼"))],
+            "claw_machine": [("move_left", ("move_left", "向左", "左移")), ("move_right", ("move_right", "向右", "右移")), ("grab", ("grab", "抓取", "下爪", "抓娃娃"))],
+            "cloud_slots": [("spin", ("spin", "转动", "拉杆", "老虎机"))],
+        }
+        action = next((name for name, words in aliases.get(game_id, []) if any(word in lowered for word in words)), "")
+        if not action:
+            raise HTTPException(502, "模型没有返回可执行的游戏动作")
+        payload = {"action": action, "comment": text.strip()[:160]}
     candidate = {"action": str(payload.get("action", "")), "amount": int(payload.get("amount", 1) or 1), "target": str(payload.get("target", ""))}
     for allowed in AI_GAME_ACTIONS.get(game_id, []):
         if candidate["action"] == allowed["action"] and ("target" not in allowed or candidate["target"] == allowed["target"]):
             candidate["amount"] = allowed.get("amount", 1)
             return candidate, str(payload.get("comment", "")).strip()[:160]
     raise HTTPException(422, "模型选择了白名单之外的动作")
+
+
+def fallback_ai_game_choice(game_id: str, state: dict[str, Any], remaining: int) -> tuple[dict[str, Any], str]:
+    if game_id == "quiet_fishing":
+        if state.get("bait", 0) > 0: return {"action": "cast", "amount": 1}, "先抛一竿，看看水面会回应什么。"
+        if state.get("catch"): return {"action": "sell_all", "amount": 1}, "先出售渔获，补充下一步所需的云贝。"
+        if remaining >= 25 and state.get("coins", 0) >= 25: return {"action": "buy_bait", "amount": 5}, "先补充鱼饵，再继续垂钓。"
+    if game_id == "claw_machine":
+        if remaining >= 10 and state.get("coins", 0) >= 10: return {"action": "grab", "amount": 1}, "就从当前位置下爪试试。"
+        return {"action": "move_right", "amount": 1}, "先移动爪子观察目标。"
+    if game_id == "cloud_slots" and remaining >= 5 and state.get("coins", 0) >= 5:
+        return {"action": "spin", "amount": 1}, "轻轻转动一次。"
+    raise HTTPException(409, "当前局面没有可安全执行的游戏动作")
 
 
 @app.post("/api/games/{game_id}/ai-turn")
@@ -881,7 +903,12 @@ async def ai_game_turn(game_id: str, body: AiGameTurnIn) -> dict[str, Any]:
             response = await client.post(provider_endpoint(provider["base_url"], provider["protocol"]), headers=headers, json=payload)
             if response.status_code >= 400: raise HTTPException(502, f"游戏 AI 请求失败：{response.status_code}")
             data = response.json(); text = "".join(block.get("text", "") for block in data.get("content", []) if block.get("type") == "text") if provider["protocol"] == "anthropic" else data.get("choices", [{}])[0].get("message", {}).get("content", "")
-            choice, comment = parse_ai_game_choice(text, game_id); cost = game_action_cost(game_id, choice, current)
+            try:
+                choice, comment = parse_ai_game_choice(text, game_id)
+            except HTTPException as error:
+                if error.status_code not in (422, 502): raise
+                choice, comment = fallback_ai_game_choice(game_id, current, remaining)
+            cost = game_action_cost(game_id, choice, current)
             if cost > remaining: break
             result = game_action(game_id, GameActionIn(**choice), body.persona_id); remaining -= cost
             if comment:

@@ -249,6 +249,14 @@ class LocalClientTests(unittest.TestCase):
         with self.assertRaises(Exception):
             app_module.parse_ai_game_choice('{"action":"delete_save"}', "claw_machine")
 
+    def test_ai_game_plain_text_and_fallback_still_produce_safe_actions(self):
+        choice, comment = app_module.parse_ai_game_choice("我想先抛竿看看水面。", "quiet_fishing")
+        self.assertEqual(choice["action"], "cast")
+        self.assertIn("抛竿", comment)
+        fallback, fallback_comment = app_module.fallback_ai_game_choice("quiet_fishing", {"bait": 3, "coins": 0, "catch": {}}, 0)
+        self.assertEqual(fallback, {"action": "cast", "amount": 1})
+        self.assertTrue(fallback_comment)
+
     def test_device_local_time_is_injected_into_chat_context(self):
         provider = self.client.post("/api/providers", json={"name": "时间测试", "protocol": "openai", "base_url": "https://example.com/v1", "api_key": "test", "model": "test-model"}).json()
         conversation = self.client.post("/api/conversations", json={"provider_id": provider["id"]}).json()
