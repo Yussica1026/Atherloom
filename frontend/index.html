@@ -13,7 +13,7 @@
   <title>Atherloom</title>
   <link rel="manifest" href="manifest.json">
   <link rel="icon" href="assets/app-icon.svg" type="image/svg+xml">
-  <link rel="stylesheet" href="assets/app.css?v=0411">
+  <link rel="stylesheet" href="assets/app.css?v=0412">
 </head>
 <body>
   <div id="app" class="app-shell">
@@ -248,14 +248,14 @@
   <div class="popover" id="personaPopover" hidden></div>
   <div class="popover conversation-popover" id="conversationPopover" hidden></div>
   <div class="message-menu-backdrop" id="messageMenu" hidden><section class="message-menu" role="dialog" aria-label="消息操作"><button type="button" id="branchMessage">创建分支</button><button type="button" class="danger" id="deleteMessageVersion">删除本版本</button><button type="button" id="closeMessageMenu">取消</button></section></div>
-  <script src="assets/standalone.js?v=0411"></script>
-  <script src="assets/app.js?v=0411" defer></script>
+  <script src="assets/standalone.js?v=0412"></script>
+  <script src="assets/app.js?v=0412" defer></script>
   <script>
     if ('serviceWorker' in navigator) {
-      navigator.serviceWorker.register('service-worker.js?v=24', { updateViaCache: 'none' }).then(registration => registration.update());
+      navigator.serviceWorker.register('service-worker.js?v=25', { updateViaCache: 'none' }).then(registration => registration.update());
       navigator.serviceWorker.addEventListener('controllerchange', () => {
-        if (!sessionStorage.getItem('atherloom:sw-reloaded-v24')) {
-          sessionStorage.setItem('atherloom:sw-reloaded-v24', '1');
+        if (!sessionStorage.getItem('atherloom:sw-reloaded-v25')) {
+          sessionStorage.setItem('atherloom:sw-reloaded-v25', '1');
           location.reload();
         }
       });

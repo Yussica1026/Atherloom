@@ -280,6 +280,14 @@ async function sendMessage() {
   await generateReply(visibleContent,null,attachments);
 }
 
+function updateStreamingMessage(message, structuralChange = false) {
+  const index=state.messages.indexOf(message),article=document.querySelector(`.message[data-index="${index}"]`);
+  if(structuralChange||!article){renderMessages();return;}
+  const bubble=article.querySelector(".bubble");if(bubble)bubble.textContent=message.content;
+  const reasoning=article.querySelector(".thinking div");if(reasoning)reasoning.textContent=message.reasoning;
+  $("#chatScroll").scrollTop=$("#chatScroll").scrollHeight;
+}
+
 async function generateReply(content, reuseUserMessageId = null, attachments = []) {
   const input = $("#prompt"); const provider = activeProvider();
   if (!provider) return openSettings("providers");
@@ -291,7 +299,7 @@ async function generateReply(content, reuseUserMessageId = null, attachments = [
     const response = await fetch("/api/chat", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ conversation_id: state.current, content: content || "重新生成", attachments, provider_id: provider.id, persona_id: state.persona, reuse_user_message_id: reuseUserMessageId, local_time: localTimeContext() }) });
     if (!response.ok) throw new Error(`请求失败 ${response.status}`);
     const reader = response.body.getReader(); const decoder = new TextDecoder(); let pending = "";
-    while (true) { const { value, done } = await reader.read(); if (done) break; pending += decoder.decode(value, { stream: true }); const lines = pending.split("\n"); pending = lines.pop(); for (const line of lines) { if (!line) continue; const event = JSON.parse(line); if (event.error) throw new Error(event.error); if (event.memory_sources) assistant.memory_sources = event.memory_sources; if (event.delta) assistant.content += event.delta; if (event.reasoning_delta) assistant.reasoning += event.reasoning_delta; if (event.done) { assistant.id = event.assistant_id; assistant.parent_message_id = event.user_id; const pendingUser = [...state.messages].reverse().find(m => m.role === "user" && !m.id); if (pendingUser) pendingUser.id = event.user_id; if (event.title) { const conversation = state.conversations.find(c => c.id === state.current); if (conversation) conversation.title = event.title; $("#titleButton").textContent = `${event.title}⌄`; renderHistory(); } } renderMessages(); } }
+    while (true) { const { value, done } = await reader.read(); if (done) break; pending += decoder.decode(value, { stream: true }); const lines = pending.split("\n"); pending = lines.pop(); for (const line of lines) { if (!line) continue; const event = JSON.parse(line); if (event.error) throw new Error(event.error); let structuralChange=false;if(event.memory_sources){structuralChange=!assistant.memory_sources?.length;assistant.memory_sources=event.memory_sources;}if(typeof event.delta==="string"&&event.delta!=="null")assistant.content+=event.delta;if(typeof event.reasoning_delta==="string"&&event.reasoning_delta!=="null"){structuralChange=structuralChange||!assistant.reasoning;assistant.reasoning+=event.reasoning_delta;}if(event.done){assistant.id=event.assistant_id;assistant.parent_message_id=event.user_id;const pendingUser=[...state.messages].reverse().find(m=>m.role==="user"&&!m.id);if(pendingUser)pendingUser.id=event.user_id;if(event.title){const conversation=state.conversations.find(c=>c.id===state.current);if(conversation)conversation.title=event.title;$("#titleButton").textContent=`${event.title}⌄`;renderHistory();}renderMessages();}else updateStreamingMessage(assistant,structuralChange); } }
   } catch (error) { assistant.content = `连接失败：${error.message}`; renderMessages(); }
   state.busy = false; $("#send").disabled = !input.value.trim();
 }
