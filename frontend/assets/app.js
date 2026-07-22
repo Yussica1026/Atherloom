@@ -1,14 +1,30 @@
 const $ = (s) => document.querySelector(s);
 const state = { providers: [], personas: [], conversations: [], memories: [], favorites: [], attachments: [], version_selection: {}, settings: { auto_title_mode: "local", tool_permissions: {} }, current: null, provider: null, persona: null, messages: [], busy: false };
 const gameState = { catalog: [], current: null, fishing: null, claw: null, slots: null, waters: {} };
+function dismissLaunchScreen(){const screen=$("#launchScreen");if(!screen||screen.classList.contains("dismissed"))return;screen.classList.add("dismissed");setTimeout(()=>screen.remove(),320);}
+if($("#launchScreen")){const refresh=document.documentElement.dataset.launchMode==="refresh",delay=matchMedia("(prefers-reduced-motion: reduce)").matches?180:refresh?430:1250;$("#launchScreen").onclick=dismissLaunchScreen;setTimeout(dismissLaunchScreen,delay);}
 
 async function api(path, options = {}) {
-  const response = await fetch(path, { headers: { "Content-Type": "application/json", ...(options.headers || {}) }, ...options });
+  const { timeout, ...fetchOptions } = options;
+  const controller = timeout ? new AbortController() : null;
+  const timer = controller ? setTimeout(() => controller.abort(), timeout) : null;
+  let response;
+  try { response = await fetch(path, { headers: { "Content-Type": "application/json", ...(fetchOptions.headers || {}) }, ...fetchOptions, signal: fetchOptions.signal || controller?.signal }); }
+  catch (error) { if (error.name === "AbortError") throw new Error("等待 AI 超时，请检查线路后重试"); throw error; }
+  finally { if (timer) clearTimeout(timer); }
   if (!response.ok) throw new Error((await response.json().catch(() => ({}))).detail || `请求失败 ${response.status}`);
   return response.json();
 }
 
 function escapeHtml(value) { const div = document.createElement("div"); div.textContent = value; return div.innerHTML; }
+function renderMarkdown(value) {
+  const codeBlocks=[];
+  let text=String(value||"").replace(/```(?:[\w-]+)?\n?([\s\S]*?)```/g,(_,code)=>`\u0000BLOCK${codeBlocks.push(`<pre><code>${escapeHtml(code.replace(/\n$/, ""))}</code></pre>`)-1}\u0000`);
+  text=escapeHtml(text).replace(/`([^`\n]+)`/g,"<code>$1</code>").replace(/\*\*([^*\n]+)\*\*/g,"<strong>$1</strong>").replace(/__([^_\n]+)__/g,"<strong>$1</strong>").replace(/~~([^~\n]+)~~/g,"<del>$1</del>").replace(/(^|[^*])\*([^*\n]+)\*/g,"$1<em>$2</em>").replace(/(^|[^_])_([^_\n]+)_/g,"$1<em>$2</em>");
+  const lines=text.split("\n"),html=[];let list=null;
+  const closeList=()=>{if(list){html.push(`</${list}>`);list=null;}};
+  for(const line of lines){const block=line.match(/^\u0000BLOCK(\d+)\u0000$/);if(block){closeList();html.push(codeBlocks[Number(block[1])]);continue;}const heading=line.match(/^(#{1,4})\s+(.+)$/);if(heading){closeList();const level=heading[1].length;html.push(`<h${level}>${heading[2]}</h${level}>`);continue;}const item=line.match(/^\s*([-*+] |\d+\. )(.+)$/);if(item){const type=/\d/.test(item[1])?"ol":"ul";if(list!==type){closeList();list=type;html.push(`<${type}>`);}html.push(`<li>${item[2]}</li>`);continue;}closeList();if(/^\s*---+\s*$/.test(line)){html.push("<hr>");continue;}if(line.startsWith("&gt; ")){html.push(`<blockquote>${line.slice(5)}</blockquote>`);continue;}if(line.trim())html.push(`<p>${line}</p>`);else html.push("");}closeList();return html.join("\n");
+}
 function activeProvider() { return state.providers.find(p => p.id === state.provider) || state.providers[0]; }
 function activePersona() { return state.personas.find(p => p.id === state.persona); }
 function localTimeContext(now = new Date()) { return now.toLocaleString("zh-CN", { year: "numeric", month: "long", day: "numeric", weekday: "long", hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false, timeZoneName: "short" }); }
@@ -142,7 +158,7 @@ async function playGame(action, amount = 1, target = "") {
   } catch (error) { alert(error.message); }
 }
 async function playMiniGame(gameId,action,amount=1){try{const payload=await api(`/api/games/${gameId}/action${personaQuery()}`,{method:"POST",body:JSON.stringify({action,amount})});if(gameId==="claw_machine"){gameState.claw=payload.state;renderClaw();}else{gameState.slots=payload.state;renderSlots();}}catch(error){alert(error.message);}}
-async function aiPlayGame(turns){const provider=activeProvider();if(!provider){$("#gameLibrary").hidden=true;return openSettings("providers");}const buttons=[$("#aiPlayOne"),$("#aiPlayThree")];buttons.forEach(button=>button.disabled=true);$("#aiGameStatus").textContent="当前人格正在观察局面并决定…";try{const payload=await api(`/api/games/${gameState.current}/ai-turn`,{method:"POST",body:JSON.stringify({provider_id:provider.id,persona_id:state.persona,turns,max_spend:30})});if(gameState.current==="quiet_fishing"){gameState.fishing=payload.state;renderFishing();}else if(gameState.current==="claw_machine"){gameState.claw=payload.state;renderClaw();}else{gameState.slots=payload.state;renderSlots();}$("#aiGameStatus").textContent=payload.decisions.length?`AI 完成 ${payload.decisions.length} 步，花费 ${payload.spent} 云贝。最近想法：${payload.decisions.at(-1).comment||"专心操作中"}`:"AI 因预算或局面限制没有执行动作。";}catch(error){$("#aiGameStatus").textContent=`AI 游玩失败：${error.message}`;}finally{buttons.forEach(button=>button.disabled=false);}}
+async function aiPlayGame(turns){const provider=activeProvider();if(!provider){$("#gameLibrary").hidden=true;return openSettings("providers");}const buttons=[$("#aiPlayOne"),$("#aiPlayThree")],gameId=gameState.current;buttons.forEach(button=>button.disabled=true);let completed=0,spent=0,lastComment="";try{for(let turn=0;turn<turns;turn++){const remaining=30-spent;if(remaining<=0)break;$("#aiGameStatus").textContent=`当前人格正在决定第 ${turn+1}/${turns} 回合…`;const payload=await api(`/api/games/${gameId}/ai-turn`,{method:"POST",body:JSON.stringify({provider_id:provider.id,persona_id:state.persona,turns:1,max_spend:remaining}),timeout:45000});spent+=payload.spent||0;if(payload.decisions.length){completed++;lastComment=payload.decisions.at(-1).comment||lastComment;}if(gameId==="quiet_fishing"){gameState.fishing=payload.state;renderFishing();}else if(gameId==="claw_machine"){gameState.claw=payload.state;renderClaw();}else{gameState.slots=payload.state;renderSlots();}if(!payload.decisions.length)break;$("#aiGameStatus").textContent=`已完成 ${completed}/${turns} 回合，正在准备下一步…`;}$("#aiGameStatus").textContent=completed?`AI 完成 ${completed} 步，花费 ${spent} 云贝。最近想法：${lastComment||"专心操作中"}`:"AI 因预算或局面限制没有执行动作。";}catch(error){$("#aiGameStatus").textContent=`${completed?`已完成 ${completed} 步；`:""}AI 游玩失败：${error.message}`;}finally{buttons.forEach(button=>button.disabled=false);}}
 
 async function openGameLibrary() {
   $("#gameLibrary").hidden = false;
@@ -167,8 +183,8 @@ function visibleMessageVersions() {
 function renderMessages() {
   $("#welcome").hidden = state.messages.length > 0;
   $("#messages").innerHTML = visibleMessageVersions().map(m => { const index=state.messages.indexOf(m); return `<article class="message ${m.role}" data-index="${index}">
-    <div class="message-body">${m.memory_sources?.length ? `<div class="memory-sources">本轮使用记忆：${m.memory_sources.map(source => `<span>${escapeHtml(source.title)}</span>`).join("")}</div>` : ""}${m.reasoning ? `<details class="thinking"><summary>思考过程</summary><div>${escapeHtml(m.reasoning)}</div></details>` : ""}<div class="bubble">${escapeHtml(m.content)}</div></div>
-    <div class="message-actions"><button data-action="copy">复制</button>${m.id ? `<button data-action="favorite">${state.favorites.some(f => f.source_message_id === m.id && f.owners?.includes("user")) ? "★ 已珍藏" : "☆ 珍藏"}</button>` : ""}${m.role === "assistant" && m.parent_message_id ? `<button data-action="regenerate">重新 Roll</button>` : ""}${m.id ? `<button data-action="more" aria-label="更多消息操作">•••</button>` : ""}</div>
+    <div class="message-body">${m.memory_sources?.length ? `<div class="memory-sources">本轮使用记忆：${m.memory_sources.map(source => `<span>${escapeHtml(source.title)}</span>`).join("")}</div>` : ""}${m.reasoning ? `<details class="thinking"><summary>思考过程</summary><div>${escapeHtml(m.reasoning)}</div></details>` : ""}<div class="bubble">${m.pending && !m.content ? `<span class="response-waiting"><i></i>正在生成</span>` : m.role === "assistant" ? renderMarkdown(m.content) : escapeHtml(m.content)}</div></div>
+    ${m.pending ? "" : `<div class="message-actions"><button data-action="copy">复制</button>${m.id ? `<button data-action="favorite">${state.favorites.some(f => f.source_message_id === m.id && f.owners?.includes("user")) ? "★ 已珍藏" : "☆ 珍藏"}</button>` : ""}${m.role === "assistant" && m.parent_message_id ? `<button data-action="regenerate">重新 Roll</button>` : ""}${m.id ? `<button data-action="more" aria-label="更多消息操作">•••</button>` : ""}</div>`}
     ${m.role === "assistant" && m._version_count > 1 ? `<div class="version-switcher"><button data-action="version-prev" ${m._version_index === 0 ? "disabled" : ""}>‹</button><span>${m._version_index + 1} / ${m._version_count}</span><button data-action="version-next" ${m._version_index === m._version_count - 1 ? "disabled" : ""}>›</button></div>` : ""}
     ${m.role === "assistant" && m.model ? `<div class="message-meta">${escapeHtml(m.model)}</div>` : ""}</article>`; }).join("");
   document.querySelectorAll(".message [data-action]").forEach(button => button.onclick = () => handleMessageAction(button.closest(".message"), button.dataset.action));
@@ -239,6 +255,7 @@ async function bootstrap() {
   $("#fontScaleValue").textContent = `${state.settings.font_scale || 100}%`;
   $("#messageDensity").value = state.settings.message_density || "comfortable";
   $("#codeTheme").value = state.settings.code_theme || "auto";
+  $("#proactiveQuestions").checked = !!state.settings.proactive_questions;
   $("#memoryStrategy").value = state.settings.memory_strategy || "hybrid";
   document.querySelectorAll("[data-permission]").forEach(select => select.value = state.settings.tool_permissions?.[select.dataset.permission] || "ask");
   applyAppearance();
@@ -285,9 +302,19 @@ async function sendMessage() {
 function updateStreamingMessage(message, structuralChange = false) {
   const index=state.messages.indexOf(message),article=document.querySelector(`.message[data-index="${index}"]`);
   if(structuralChange||!article){renderMessages();return;}
-  const bubble=article.querySelector(".bubble");if(bubble)bubble.textContent=message.content;
+  const bubble=article.querySelector(".bubble");if(bubble)bubble.innerHTML=message.role==="assistant"?renderMarkdown(message.content):escapeHtml(message.content);
   const reasoning=article.querySelector(".thinking div");if(reasoning)reasoning.textContent=message.reasoning;
   $("#chatScroll").scrollTop=$("#chatScroll").scrollHeight;
+}
+
+function createStreamPresenter(message, animated) {
+  let queue=[],timer=null,ended=false,resolveFinished;
+  const finishTimer=()=>{if(timer){clearInterval(timer);timer=null;}if(resolveFinished){resolveFinished();resolveFinished=null;}};
+  const tick=()=>{if(!queue.length){if(ended)finishTimer();return;}if(animated&&!ended&&queue.length<3)return;const count=animated?Math.min(6,queue.length):queue.length,wasPending=message.pending;message.content+=queue.splice(0,count).join("");message.pending=false;updateStreamingMessage(message,wasPending);if(ended&&!queue.length)finishTimer();};
+  return {
+    push(text){if(!text)return;queue.push(...Array.from(text));if(!animated){tick();return;}if(!timer)timer=setInterval(tick,55);},
+    finish(){ended=true;tick();if(!timer&&!queue.length)return Promise.resolve();return new Promise(resolve=>{resolveFinished=resolve;});}
+  };
 }
 
 async function generateReply(content, reuseUserMessageId = null, attachments = []) {
@@ -295,14 +322,14 @@ async function generateReply(content, reuseUserMessageId = null, attachments = [
   if (!provider) return openSettings("providers");
   state.busy = true;
   if(reuseUserMessageId)delete state.version_selection[reuseUserMessageId];
-  state.messages.push({ role: "assistant", content: "", reasoning: "", model: provider.model, parent_message_id: reuseUserMessageId }); renderMessages();
+  state.messages.push({ role: "assistant", content: "", reasoning: "", model: provider.model, parent_message_id: reuseUserMessageId, pending: true }); renderMessages();
   const assistant = state.messages[state.messages.length - 1];
   try {
     const response = await fetch("/api/chat", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ conversation_id: state.current, content: content || "重新生成", attachments, provider_id: provider.id, persona_id: state.persona, reuse_user_message_id: reuseUserMessageId, local_time: localTimeContext() }) });
     if (!response.ok) throw new Error(`请求失败 ${response.status}`);
-    const reader = response.body.getReader(); const decoder = new TextDecoder(); let pending = "";
-    while (true) { const { value, done } = await reader.read(); if (done) break; pending += decoder.decode(value, { stream: true }); const lines = pending.split("\n"); pending = lines.pop(); for (const line of lines) { if (!line) continue; const event = JSON.parse(line); if (event.error) throw new Error(event.error); let structuralChange=false;if(event.memory_sources){structuralChange=!assistant.memory_sources?.length;assistant.memory_sources=event.memory_sources;}if(typeof event.delta==="string"&&event.delta!=="null")assistant.content+=event.delta;if(typeof event.reasoning_delta==="string"&&event.reasoning_delta!=="null"){structuralChange=structuralChange||!assistant.reasoning;assistant.reasoning+=event.reasoning_delta;}if(event.done){assistant.id=event.assistant_id;assistant.parent_message_id=event.user_id;const pendingUser=[...state.messages].reverse().find(m=>m.role==="user"&&!m.id);if(pendingUser)pendingUser.id=event.user_id;if(event.title){const conversation=state.conversations.find(c=>c.id===state.current);if(conversation)conversation.title=event.title;$("#titleButton").textContent=`${event.title}⌄`;renderHistory();}renderMessages();}else updateStreamingMessage(assistant,structuralChange); } }
-  } catch (error) { assistant.content = `连接失败：${error.message}`; renderMessages(); }
+    const reader=response.body.getReader(),decoder=new TextDecoder(),presenter=createStreamPresenter(assistant,provider.stream_enabled!==false&&provider.stream_enabled!==0);let pending="";
+    while(true){const {value,done}=await reader.read();if(done)break;pending+=decoder.decode(value,{stream:true});const lines=pending.split("\n");pending=lines.pop();for(const line of lines){if(!line)continue;const event=JSON.parse(line);if(event.error)throw new Error(event.error);let structuralChange=false;if(event.memory_sources){structuralChange=!assistant.memory_sources?.length;assistant.memory_sources=event.memory_sources;}if(typeof event.delta==="string"&&event.delta!=="null")presenter.push(event.delta);if(typeof event.reasoning_delta==="string"&&event.reasoning_delta!=="null"){structuralChange=structuralChange||!assistant.reasoning;assistant.reasoning+=event.reasoning_delta;}if(structuralChange)updateStreamingMessage(assistant,true);if(event.done){await presenter.finish();assistant.pending=false;assistant.id=event.assistant_id;assistant.parent_message_id=event.user_id;const pendingUser=[...state.messages].reverse().find(m=>m.role==="user"&&!m.id);if(pendingUser)pendingUser.id=event.user_id;if(event.title){const conversation=state.conversations.find(c=>c.id===state.current);if(conversation)conversation.title=event.title;$("#titleButton").textContent=`${event.title}⌄`;renderHistory();}renderMessages();}}}
+  } catch (error) { assistant.pending=false;assistant.content = `连接失败：${error.message}`; renderMessages(); }
   state.busy = false; $("#send").disabled = !input.value.trim();
 }
 
@@ -384,6 +411,7 @@ function saveAppSettings() {
       summary_trigger_rounds: Number($("#summaryRounds").value),
       summary_prompt: $("#summaryPrompt").value,
       display_name: $("#displayName").value.trim(),
+      proactive_questions: $("#proactiveQuestions").checked,
       font_scale: Number($("#fontScale").value),
       message_density: $("#messageDensity").value,
       code_theme: $("#codeTheme").value,
@@ -407,6 +435,7 @@ let searchTimer;
 $("#conversationSearch").oninput = event => { clearTimeout(searchTimer); searchTimer = setTimeout(async () => { const query = event.target.value.trim(); if (!query) { const fresh = await api("/api/bootstrap"); state.conversations = fresh.conversations; } else { state.conversations = await api(`/api/search?q=${encodeURIComponent(query)}`); } renderHistory(); }, 180); };
 $("#autoTitleMode").onchange = saveAppSettings;
 $("#summaryEnabled").onchange = saveAppSettings;
+$("#proactiveQuestions").onchange = saveAppSettings;
 $("#summaryRounds").oninput = event => { $("#summaryRoundsValue").textContent = `${event.target.value} 轮`; saveAppSettings(); };
 $("#summaryPrompt").oninput = saveAppSettings;
 $("#displayName").oninput = saveAppSettings;
