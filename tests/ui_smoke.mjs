@@ -23,7 +23,7 @@ await check("top bar keeps only call action", `!!document.querySelector('#openCa
 await check("call action uses a visible non-emoji icon", `getComputedStyle(document.querySelector('#openCall')).display !== 'none' && !!document.querySelector('#openCall svg')`);
 await check("persona picker remains visible on compact phone", `getComputedStyle(document.querySelector('#personaPicker')).display !== 'none'`);
 await check("welcome mark uses themeable SVG", `!!document.querySelector('.sun-mark svg') && getComputedStyle(document.querySelector('.sun-mark')).color === 'rgb(201, 100, 66)'`);
-await check("versioned service worker updater is present", `document.documentElement.innerHTML.includes('service-worker.js?v=25') && document.documentElement.innerHTML.includes("updateViaCache: 'none'")`);
+await check("versioned service worker updater is present", `document.documentElement.innerHTML.includes('service-worker.js?v=26') && document.documentElement.innerHTML.includes("updateViaCache: 'none'")`);
 await check("welcome and composer helper copy stay minimal", `!document.querySelector('#welcome p') && !document.querySelector('#prompt').hasAttribute('placeholder') && !document.querySelector('.disclaimer')`);
 await check("morning greeting follows local time", `renderTimeGreeting(new Date(2026,6,19,8,0)) === '早上好，今天想聊些什么？'`);
 await check("afternoon greeting follows local time", `renderTimeGreeting(new Date(2026,6,19,16,0)) === '下午好，想聊些什么？'`);
@@ -75,4 +75,7 @@ await check("Android PDF is safely blocked", `(async()=>{window.AtherloomNative=
 await evaluate(`document.querySelector('#closeMedia').click(); document.querySelector('#openCinema').click()`); await wait(100);
 await check("cinema room opens", `!document.querySelector('#mediaSpace').hidden && !document.querySelector('#cinemaRoom').hidden`);
 await evaluate(`document.querySelector('#closeMedia').click()`);
+await command("Page.navigate", { url: `http://127.0.0.1:8876/?standalone=1&branch-smoke=${Date.now()}` });
+await wait(900);
+await check("Standalone branch creates and opens a copied conversation", `(async()=>{const sourceId='branch-source',userId='branch-user',assistantId='branch-assistant',now=new Date().toISOString();localStorage.setItem('atherloom:conversations',JSON.stringify([{id:sourceId,title:'原对话',provider_id:null,persona_id:null,summary:'',created_at:now,updated_at:now,pinned:0,starred:0,archived:0}]));localStorage.setItem('atherloom:messages:'+sourceId,JSON.stringify([{id:userId,role:'user',content:'分支起点',created_at:now},{id:assistantId,role:'assistant',content:'分支回答',parent_message_id:userId,created_at:now}]));const response=await fetch('/api/conversations/'+sourceId+'/branch/'+assistantId,{method:'POST',body:'{}'}),conversation=await response.json(),copied=JSON.parse(localStorage.getItem('atherloom:messages:'+conversation.id)||'[]');return response.ok&&conversation.id!==sourceId&&conversation.title==='原对话 · 分支'&&copied.length===2&&copied[0].id!==userId&&copied[1].parent_message_id===copied[0].id})()`);
 socket.close();
