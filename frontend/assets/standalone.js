@@ -118,6 +118,17 @@
     if (url.pathname === "/api/providers/test" && method === "POST") return json({message:"格式检查通过。保存线路后发送一条消息即可验证网关与模型。"});
     if (url.pathname === "/api/personas" && method === "POST") { const item={...body,id:uid(),created_at:new Date().toISOString()}; write("personas",[...read("personas",[]),item]); return json(item); }
     if (url.pathname === "/api/conversations" && method === "POST") { const item={...body,id:uid(),title:"新对话",summary:"",pinned:0,starred:0,archived:0,created_at:new Date().toISOString(),updated_at:new Date().toISOString()}; write("conversations",[item,...read("conversations",[])]); return json(item); }
+    const branchConversation=url.pathname.match(/^\/api\/conversations\/([^/]+)\/branch\/([^/]+)$/);
+    if(branchConversation&&method==="POST"){
+      const sourceId=decodeURIComponent(branchConversation[1]),pivotId=decodeURIComponent(branchConversation[2]),allConversations=read("conversations",[]),source=allConversations.find(item=>item.id===sourceId),sourceMessages=messages(sourceId),pivotIndex=sourceMessages.findIndex(item=>item.id===pivotId);
+      if(!source||pivotIndex<0)return json({detail:"找不到要分支的消息"},404);
+      const created=new Date().toISOString(),newId=uid(),idMap=new Map(),copied=sourceMessages.slice(0,pivotIndex+1).map(item=>{const id=uid();idMap.set(item.id,id);return {...item,id,conversation_id:newId};});
+      copied.forEach(item=>{if(item.parent_message_id)item.parent_message_id=idMap.get(item.parent_message_id)||null;});
+      const conversation={...source,id:newId,title:`${source.title} · 分支`,created_at:created,updated_at:created,pinned:0,starred:0,archived:0};
+      write("conversations",[conversation,...allConversations]);saveMessages(newId,copied);
+      const selected={};for(const item of copied)if(item.role==="assistant"&&item.parent_message_id)selected[item.parent_message_id]=item.id;write(`versions:${newId}`,selected);
+      return json(conversation);
+    }
     const conversationMessages=url.pathname.match(/^\/api\/conversations\/([^/]+)\/messages$/);
     if(conversationMessages && method==="GET"){const conversationId=decodeURIComponent(conversationMessages[1]),selected=read(`versions:${conversationId}`,{});return json(messages(conversationId).map(item=>({...item,selected:item.role==="assistant"&&selected[item.parent_message_id]===item.id})));}
     const conversationState=url.pathname.match(/^\/api\/conversations\/([^/]+)\/state$/);
