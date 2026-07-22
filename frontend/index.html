@@ -13,9 +13,20 @@
   <title>Atherloom</title>
   <link rel="manifest" href="manifest.json">
   <link rel="icon" href="assets/app-icon.svg" type="image/svg+xml">
-  <link rel="stylesheet" href="assets/app.css?v=0414">
+  <link rel="stylesheet" href="assets/app.css?v=0418">
+  <script>document.documentElement.dataset.launchMode=performance.getEntriesByType("navigation")[0]?.type==="reload"?"refresh":"full";</script>
 </head>
 <body>
+  <div class="launch-screen" id="launchScreen" role="status" aria-label="Atherloom 正在启动">
+    <svg class="launch-mark" viewBox="0 0 512 512" aria-hidden="true">
+      <rect width="512" height="512" rx="112" class="launch-tile"/>
+      <path pathLength="1" d="M111 377C151 290 190 200 240 117c8-14 25-14 34 0 50 83 89 173 129 260" class="launch-a launch-stroke"/>
+      <path pathLength="1" d="M141 324c73-3 158-24 230-84" class="launch-sweep launch-stroke"/>
+      <path pathLength="1" d="M237 148c20 64 47 114 91 153" class="launch-cut launch-stroke"/>
+      <path d="M352 142c7 38 17 48 55 55-38 7-48 17-55 55-7-38-17-48-55-55 38-7 48-17 55-55Z" class="launch-star"/>
+      <circle cx="420" cy="154" r="7" class="launch-spark spark-one"/><circle cx="399" cy="128" r="4" class="launch-spark spark-two"/>
+    </svg>
+  </div>
   <div id="app" class="app-shell">
     <aside class="sidebar" id="sidebar">
       <div class="sidebar-top">
@@ -161,6 +172,7 @@
 
         <section class="tab" id="tab-personas">
           <div class="section-heading"><div><h3>人格指令</h3><p>为不同助手保存独立身份、关系和边界。</p></div></div>
+          <div class="setting-row"><div><strong>允许助手主动提问</strong><small>开启后，助手可以自然追问、发起话题或给出选项；关闭后会尽量直接回答。</small></div><label class="switch"><input id="proactiveQuestions" type="checkbox"><span></span></label></div>
           <form id="personaForm" class="edit-card visible">
             <label>人格名称<input name="name" required placeholder="例如：私人助手"></label>
             <label>系统指令<textarea name="prompt" rows="12" placeholder="身份、关系、说话方式、做事边界……"></textarea></label>
@@ -248,14 +260,14 @@
   <div class="popover" id="personaPopover" hidden></div>
   <div class="popover conversation-popover" id="conversationPopover" hidden></div>
   <div class="message-menu-backdrop" id="messageMenu" hidden><section class="message-menu" role="dialog" aria-label="消息操作"><button type="button" id="branchMessage">创建分支</button><button type="button" class="danger" id="deleteMessageVersion">删除本版本</button><button type="button" id="closeMessageMenu">取消</button></section></div>
-  <script src="assets/standalone.js?v=0414"></script>
-  <script src="assets/app.js?v=0414" defer></script>
+  <script src="assets/standalone.js?v=0418"></script>
+  <script src="assets/app.js?v=0418" defer></script>
   <script>
     if ('serviceWorker' in navigator) {
-      navigator.serviceWorker.register('service-worker.js?v=27', { updateViaCache: 'none' }).then(registration => registration.update());
+      navigator.serviceWorker.register('service-worker.js?v=31', { updateViaCache: 'none' }).then(registration => registration.update());
       navigator.serviceWorker.addEventListener('controllerchange', () => {
-        if (!sessionStorage.getItem('atherloom:sw-reloaded-v27')) {
-          sessionStorage.setItem('atherloom:sw-reloaded-v27', '1');
+        if (!sessionStorage.getItem('atherloom:sw-reloaded-v31')) {
+          sessionStorage.setItem('atherloom:sw-reloaded-v31', '1');
           location.reload();
         }
       });

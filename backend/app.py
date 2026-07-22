@@ -192,6 +192,7 @@ class AppSettingsIn(BaseModel):
     summary_trigger_rounds: int = Field(default=24, ge=4, le=200)
     summary_prompt: str = Field(default=DEFAULT_SUMMARY_PROMPT, min_length=20, max_length=10000)
     display_name: str = Field(default="", max_length=40)
+    proactive_questions: bool = False
     tool_permissions: dict[str, str] = Field(default_factory=lambda: {
         "web_search": "allow", "memory_read": "allow", "memory_write": "ask",
         "diary_write": "ask", "delete": "ask"
@@ -284,6 +285,7 @@ def bootstrap() -> dict[str, Any]:
         "summary_prompt": settings_rows.get("summary_prompt", DEFAULT_SUMMARY_PROMPT),
         "default_summary_prompt": DEFAULT_SUMMARY_PROMPT,
         "display_name": settings_rows.get("display_name", ""),
+        "proactive_questions": settings_rows.get("proactive_questions", "false") == "true",
         "tool_permissions": json.loads(settings_rows.get("tool_permissions", '{"web_search":"allow","memory_read":"allow","memory_write":"ask","diary_write":"ask","delete":"ask"}')),
         "font_scale": int(settings_rows.get("font_scale", "100")),
         "message_density": settings_rows.get("message_density", "comfortable"),
@@ -302,6 +304,7 @@ def save_settings(body: AppSettingsIn) -> dict[str, Any]:
             "summary_trigger_rounds": str(body.summary_trigger_rounds),
             "summary_prompt": body.summary_prompt,
             "display_name": body.display_name,
+            "proactive_questions": "true" if body.proactive_questions else "false",
             "tool_permissions": json.dumps(body.tool_permissions, ensure_ascii=False),
             "font_scale": str(body.font_scale),
             "message_density": body.message_density,
@@ -797,7 +800,7 @@ async def ai_game_turn(game_id: str, body: AiGameTurnIn) -> dict[str, Any]:
         persona = connection.execute("SELECT prompt FROM personas WHERE id=?", (body.persona_id,)).fetchone() if body.persona_id else None
     if not provider: raise HTTPException(404, "API 线路不存在")
     decisions, remaining = [], body.max_spend
-    async with httpx.AsyncClient(timeout=90) as client:
+    async with httpx.AsyncClient(timeout=35) as client:
         for _ in range(body.turns):
             with closing(db()) as connection: current = load_game(connection, game_id, body.persona_id)
             instruction = f"""你正在 Atherloom 中玩游戏 {game_id}。\n当前状态：{json.dumps(current, ensure_ascii=False)}\n允许动作：{json.dumps(AI_GAME_ACTIONS[game_id], ensure_ascii=False)}\n剩余可花云贝预算：{remaining}。\n只返回一个 JSON 对象：{{\"action\":\"白名单动作\",\"amount\":1,\"target\":\"需要时填写\",\"comment\":\"一句当轮想法\"}}。不要输出 Markdown。"""
@@ -903,7 +906,11 @@ def load_chat_context(connection: sqlite3.Connection, body: ChatIn, cutoff: str 
     query += " ORDER BY created_at"
     messages = [{"role": row["role"], "content": row["content"]} for row in connection.execute(query, params)]
     time_context = f"当前本地时间（由用户设备提供）：{body.local_time}" if body.local_time else ""
-    system_parts = [part for part in (persona_prompt, conversation["summary"], time_context) if part]
+    proactive_row = connection.execute("SELECT value FROM app_settings WHERE key='proactive_questions'").fetchone()
+    proactive_questions = proactive_row and proactive_row["value"] == "true"
+    question_context = ("用户允许你在合适时主动提问、自然追问、发起新话题或提供清晰的编号选项；不要机械地每轮都提问。" if proactive_questions else "除非完成当前请求确实缺少必要信息，否则不要主动反问或发起问卷；优先直接回应用户。")
+    formatting_context = "界面支持 Markdown。你可以根据语义有节制地使用 **粗体**、*斜体*、标题、引用、列表与代码块；不要为了装饰而过度格式化。"
+    system_parts = [part for part in (persona_prompt, conversation["summary"], time_context, question_context, formatting_context) if part]
     if system_parts:
         messages.insert(0, {"role": "system", "content": "\n\n".join(system_parts)})
     return provider, persona_prompt, messages

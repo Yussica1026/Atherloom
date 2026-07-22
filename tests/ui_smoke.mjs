@@ -23,7 +23,9 @@ await check("top bar keeps only call action", `!!document.querySelector('#openCa
 await check("call action uses a visible non-emoji icon", `getComputedStyle(document.querySelector('#openCall')).display !== 'none' && !!document.querySelector('#openCall svg')`);
 await check("persona picker remains visible on compact phone", `getComputedStyle(document.querySelector('#personaPicker')).display !== 'none'`);
 await check("welcome mark uses themeable SVG", `!!document.querySelector('.sun-mark svg') && getComputedStyle(document.querySelector('.sun-mark')).color === 'rgb(201, 100, 66)'`);
-await check("versioned service worker updater is present", `document.documentElement.innerHTML.includes('service-worker.js?v=27') && document.documentElement.innerHTML.includes("updateViaCache: 'none'")`);
+await check("launch screen uses the A stroke and star sequence", `!!document.querySelector('#launchScreen .launch-a') && !!document.querySelector('#launchScreen .launch-sweep') && !!document.querySelector('#launchScreen .launch-star')`);
+await check("launch screen can be skipped", `typeof dismissLaunchScreen === 'function' && document.querySelector('#launchScreen').onclick === dismissLaunchScreen`);
+await check("versioned service worker updater is present", `document.documentElement.innerHTML.includes('service-worker.js?v=31') && document.documentElement.innerHTML.includes("updateViaCache: 'none'")`);
 await check("welcome and composer helper copy stay minimal", `!document.querySelector('#welcome p') && !document.querySelector('#prompt').hasAttribute('placeholder') && !document.querySelector('.disclaimer')`);
 await check("morning greeting follows local time", `renderTimeGreeting(new Date(2026,6,19,8,0)) === '早上好，今天想聊些什么？'`);
 await check("afternoon greeting follows local time", `renderTimeGreeting(new Date(2026,6,19,16,0)) === '下午好，想聊些什么？'`);
@@ -54,6 +56,10 @@ await check("Roll versions stay in one message position", `(()=>{window.__smokeM
 await check("message actions remain visible", `getComputedStyle(document.querySelector('.message-actions')).opacity==='1'`);
 await check("short user bubble stays right aligned", `(()=>{const bubble=document.querySelector('.message.user .bubble').getBoundingClientRect(),area=document.querySelector('#messages').getBoundingClientRect();return bubble.right>area.left+area.width*.8})()`);
 await check("streaming updates reuse the current message DOM", `(()=>{const message=visibleMessageVersions().find(item=>item.role==='assistant');const article=document.querySelector('.message.assistant');message.content='第一段';updateStreamingMessage(message);message.content+='第二段';updateStreamingMessage(message);return article===document.querySelector('.message.assistant')&&article.querySelector('.bubble').textContent==='第一段第二段'&&!article.textContent.includes('nullnull')})()`);
+await check("non-streaming wait state is immediately visible", `(()=>{const original=state.messages;state.messages=[{role:'assistant',content:'',reasoning:'',pending:true}];renderMessages();const ok=!!document.querySelector('.response-waiting')&&!document.querySelector('.message-actions');state.messages=original;renderMessages();return ok})()`);
+await check("streaming presenter reveals short phrases then completes", `(async()=>{const original=state.messages,message={role:'assistant',content:'',reasoning:'',pending:true};state.messages=[message];renderMessages();const presenter=createStreamPresenter(message,true),full='一二三四五六七八九十甲乙丙丁戊己庚辛';presenter.push(full);await new Promise(resolve=>setTimeout(resolve,70));const partial=message.content.length>0&&message.content.length<full.length;await presenter.finish();const ok=partial&&message.content===full&&!message.pending;state.messages=original;renderMessages();return ok})()`);
+await check("assistant Markdown renders emphasis without allowing HTML", `(()=>{const html=renderMarkdown('**加粗** 和 *斜体* <img src=x onerror=alert(1)>');return html.includes('<strong>加粗</strong>')&&html.includes('<em>斜体</em>')&&!html.includes('<img')})()`);
+await check("proactive question control is available", `!!document.querySelector('#proactiveQuestions')`);
 await check("message menu offers delete current version", `!!document.querySelector('#deleteMessageVersion') && document.querySelector('#deleteMessageVersion').textContent.includes('删除本版本')`);
 await evaluate(`state.messages=window.__smokeMessages;state.version_selection=window.__smokeVersions;delete window.__smokeMessages;delete window.__smokeVersions;renderMessages()`);
   await evaluate(`document.querySelector('#settingsPanel [data-close]').click()`); await wait(100);
@@ -69,6 +75,7 @@ await check("claw machine opens", `document.querySelector('#clawStage').hidden =
 await evaluate(`document.querySelector('[data-game-id="cloud_slots"]').click()`); await wait(300);
 await check("slots open", `document.querySelector('#slotsStage').hidden === false`);
 await check("AI game controls enabled", `!document.querySelector('#aiGameControls').hidden && !document.querySelector('#aiPlayOne').disabled && !document.querySelector('#aiPlayThree').disabled`);
+await check("AI game play advances one recoverable turn at a time", `aiPlayGame.toString().includes('turns:1') && aiPlayGame.toString().includes('timeout:45000') && aiPlayGame.toString().includes('已完成')`);
 await evaluate(`document.querySelector('#closeGames').click(); document.querySelector('#openReading').click()`); await wait(100);
 await check("reading room opens", `!document.querySelector('#mediaSpace').hidden && !document.querySelector('#readingRoom').hidden`);
 await check("small text book opens without blocking", `(async()=>{await openLocalBook(new File([['第一章','你好'].join(String.fromCharCode(10))], 'test.txt', {type:'text/plain'}));return document.querySelector('#bookReader pre')?.textContent.includes('第一章') && document.querySelector('#bookStatus').textContent.includes('本地文件')})()`);

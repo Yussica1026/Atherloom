@@ -94,6 +94,11 @@ class LocalClientTests(unittest.TestCase):
         loaded = self.client.get("/api/bootstrap").json()["settings"]
         self.assertEqual(loaded["font_scale"], 115)
 
+    def test_proactive_question_setting_is_persisted(self):
+        saved = self.client.put("/api/settings", json={"proactive_questions": True}).json()
+        self.assertTrue(saved["proactive_questions"])
+        self.assertTrue(self.client.get("/api/bootstrap").json()["settings"]["proactive_questions"])
+
     def test_conversation_can_be_pinned_starred_and_archived(self):
         created = self.client.post("/api/conversations", json={"title": "测试会话"}).json()
         saved = self.client.patch(

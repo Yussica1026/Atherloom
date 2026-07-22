@@ -76,7 +76,7 @@
   const defaultClaw=()=>({coins:100,turn:0,position:2,prizes:["云朵兔","星星熊","橘子猫","月亮狗","小海豹"],inventory:{},journal:[]});
   const defaultSlots=()=>({coins:100,turn:0,reels:["✦","◌","◇"],journal:[]});
   const aiGameActions={quiet_fishing:[{action:"cast",amount:1},{action:"buy_bait",amount:5},{action:"sell_all",amount:1},{action:"travel",target:"willow_bay",amount:1},{action:"travel",target:"mist_lake",amount:1},{action:"travel",target:"cloud_coast",amount:1}],claw_machine:[{action:"move_left",amount:1},{action:"move_right",amount:1},{action:"grab",amount:1}],cloud_slots:[{action:"spin",amount:1}]};
-  const settings = () => read("settings", { auto_title_mode:"local",summary_enabled:true,summary_trigger_rounds:24,summary_prompt:"请忠实总结较早对话。",default_summary_prompt:"请忠实总结较早对话。",display_name:"",tool_permissions:{web_search:"allow",memory_read:"allow",memory_write:"ask",diary_write:"ask",delete:"ask"},font_scale:100,message_density:"comfortable",code_theme:"auto",memory_strategy:"hybrid" });
+  const settings = () => read("settings", { auto_title_mode:"local",summary_enabled:true,summary_trigger_rounds:24,summary_prompt:"请忠实总结较早对话。",default_summary_prompt:"请忠实总结较早对话。",display_name:"",proactive_questions:false,tool_permissions:{web_search:"allow",memory_read:"allow",memory_write:"ask",diary_write:"ask",delete:"ask"},font_scale:100,message_density:"comfortable",code_theme:"auto",memory_strategy:"hybrid" });
   window.fetch = async (input, options = {}) => {
     const url = new URL(typeof input === "string" ? input : input.url, location.href);
     if (!url.pathname.startsWith("/api/")) return originalFetch(input, options);
@@ -147,7 +147,9 @@
       const persona=read("personas",[]).find(item=>item.id===body.persona_id),memorySources=relevantMemories(body.content);
       const personaContext=persona?.prompt?.trim()?`<assistant_persona active="true">\n${persona.prompt}\n</assistant_persona>`:"";
       const memoryContext=memorySources.length?`<relevant_memories>\n${memorySources.map(item=>`[memory:${item.id}] ${item.title}\n${item.content}`).join("\n\n")}\n</relevant_memories>`:"";
-      const prompt=[personaContext,memoryContext,`当前时间：${new Date().toLocaleString("zh-CN",{hour12:false})}`].filter(Boolean).join("\n\n");
+      const questionContext=settings().proactive_questions?"用户允许你在合适时主动提问、自然追问、发起新话题或提供清晰的编号选项；不要机械地每轮都提问。":"除非完成当前请求确实缺少必要信息，否则不要主动反问或发起问卷；优先直接回应用户。";
+      const formattingContext="界面支持 Markdown。你可以根据语义有节制地使用 **粗体**、*斜体*、标题、引用、列表与代码块；不要为了装饰而过度格式化。";
+      const prompt=[personaContext,memoryContext,`当前时间：${new Date().toLocaleString("zh-CN",{hour12:false})}`,questionContext,formattingContext].filter(Boolean).join("\n\n");
       try {
         const provider=providers().find(item=>item.id===body.provider_id);const rawMessages=effectiveMessages(body.conversation_id,history).filter(item=>item.role==="user"||item.role==="assistant").map(item=>({role:item.role,content:item.content,attachments:item.attachments||[]}));
         const request={provider_id:body.provider_id,system:prompt,messages:native?formatMessages(rawMessages,provider?.protocol||"openai"):rawMessages};
