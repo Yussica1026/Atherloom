@@ -57,6 +57,15 @@ class LocalClientTests(unittest.TestCase):
         self.assertTrue(payload["has_api_key"])
         self.assertNotIn("api_key", payload)
 
+    def test_provider_can_be_edited_without_erasing_key(self):
+        created = self.client.post("/api/providers", json={"name":"DS","protocol":"deepseek","base_url":"https://api.deepseek.com","api_key":"secret","model":"flash"}).json()
+        updated = self.client.put(f"/api/providers/{created['id']}", json={"name":"DS Pro","protocol":"deepseek","base_url":"https://api.deepseek.com","api_key":"","model":"pro","temperature":0.3,"top_p":0.8,"max_tokens":8192,"stream_enabled":False}).json()
+        self.assertEqual(updated["model"], "pro")
+        self.assertEqual(updated["temperature"], 0.3)
+        self.assertEqual(updated["max_tokens"], 8192)
+        self.assertTrue(updated["has_api_key"])
+        self.assertFalse(updated["stream_enabled"])
+
     def test_provider_endpoint_avoids_duplicate_v1(self):
         self.assertEqual(app_module.provider_endpoint("https://api.anthropic.com", "anthropic"), "https://api.anthropic.com/v1/messages")
         self.assertEqual(app_module.provider_endpoint("https://proxy.example/v1", "anthropic"), "https://proxy.example/v1/messages")
@@ -106,6 +115,22 @@ class LocalClientTests(unittest.TestCase):
         self.assertEqual(results[0]["id"], memory["id"])
         trashed = self.client.patch(f"/api/memories/{memory['id']}/state", json={"trash": True}).json()
         self.assertTrue(trashed["trashed"])
+
+    def test_recent_memory_is_available_when_greeting_has_no_keywords(self):
+        memory = self.client.post("/api/memories", json={"title": "重要关系", "content": "用户把阿澄视为长期陪伴者", "kind": "relationship"}).json()
+        with app_module.closing(app_module.db()) as connection:
+            results = app_module.retrieve_memories(connection, "你好")
+        self.assertEqual(results[0]["id"], memory["id"])
+
+    def test_selected_persona_is_explicitly_injected_into_chat_context(self):
+        provider = self.client.post("/api/providers", json={"name":"DS","protocol":"deepseek","base_url":"https://api.deepseek.com","model":"chat"}).json()
+        persona = self.client.post("/api/personas", json={"name":"阿澄","prompt":"你叫阿澄，记得自己的名字。"}).json()
+        conversation = self.client.post("/api/conversations", json={"provider_id":provider["id"],"persona_id":persona["id"]}).json()
+        body = app_module.ChatIn(conversation_id=conversation["id"], content="你是谁", provider_id=provider["id"], persona_id=persona["id"])
+        with app_module.closing(app_module.db()) as connection:
+            _, _, messages = app_module.load_chat_context(connection, body)
+        self.assertIn('<assistant_persona active="true">', messages[0]["content"])
+        self.assertIn("你叫阿澄", messages[0]["content"])
 
     def test_high_frequency_entity_does_not_drown_the_topic(self):
         topics = ["健身操", "戒指", "早餐", "旅行", "天气", "电影", "咖啡", "散步", "工作", "游戏"]

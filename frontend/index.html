@@ -13,7 +13,7 @@
   <title>Atherloom</title>
   <link rel="manifest" href="manifest.json">
   <link rel="icon" href="assets/app-icon.svg" type="image/svg+xml">
-  <link rel="stylesheet" href="assets/app.css?v=0408">
+  <link rel="stylesheet" href="assets/app.css?v=0411">
 </head>
 <body>
   <div id="app" class="app-shell">
@@ -145,9 +145,14 @@
             <label>官方或反代 Base URL<input name="base_url" required placeholder="https://proxy.example.com/v1"></label>
             <label>API Key<span class="secret-field"><input name="api_key" type="password" autocomplete="new-password"><button type="button" id="pasteApiKey" aria-label="从剪贴板粘贴 API Key">粘贴</button><button type="button" id="toggleApiKey" aria-label="显示或隐藏 API Key">◉</button></span></label>
             <label>模型 ID<span class="model-field"><input name="model" required placeholder="可手填，也可从线路拉取"><button type="button" id="fetchModels">拉取模型</button></span><select id="providerModelSelect" class="model-choice" aria-label="选择已拉取的模型" hidden></select></label>
+            <label>温度 Temperature<input name="temperature" type="number" min="0" max="2" step="0.1" value="0.7"><small class="muted">越低越稳定；部分推理模型可能忽略此项。</small></label>
+            <label>Top P<input name="top_p" type="number" min="0" max="1" step="0.05" value="1"></label>
+            <label>最大输出 Tokens<input name="max_tokens" type="number" min="1" max="200000" step="1" value="4096"></label>
             <label>自定义请求头（JSON）<textarea name="custom_headers" rows="4" placeholder='{"X-Custom-Header":"value"}'>{}</textarea></label>
             <label class="check-label" id="promptCacheControl"><input name="prompt_cache" type="checkbox" checked> 启用 Anthropic 显式提示词缓存</label>
             <label class="check-label"><input name="thinking_enabled" type="checkbox" checked> 显示模型返回的思考过程（线路支持时）</label>
+            <label class="check-label"><input name="stream_enabled" type="checkbox" checked> 流式输出<small class="muted">开启后，回复会边生成边显示。</small></label>
+            <label class="check-label"><input name="enabled" type="checkbox" checked> 启用这条线路</label>
             <p class="cache-hint" id="automaticCacheHint" hidden>此供应商的缓存由 API 服务自动处理，无需手动开关。</p>
             <div class="form-actions"><button type="button" class="ghost" id="cancelProvider">取消</button><button type="button" class="ghost" id="testProvider">测试连接</button><button class="primary">保存线路</button></div>
             <p class="connection-state" id="connectionState"></p>
@@ -243,14 +248,14 @@
   <div class="popover" id="personaPopover" hidden></div>
   <div class="popover conversation-popover" id="conversationPopover" hidden></div>
   <div class="message-menu-backdrop" id="messageMenu" hidden><section class="message-menu" role="dialog" aria-label="消息操作"><button type="button" id="branchMessage">创建分支</button><button type="button" class="danger" id="deleteMessageVersion">删除本版本</button><button type="button" id="closeMessageMenu">取消</button></section></div>
-  <script src="assets/standalone.js?v=0408"></script>
-  <script src="assets/app.js?v=0408" defer></script>
+  <script src="assets/standalone.js?v=0411"></script>
+  <script src="assets/app.js?v=0411" defer></script>
   <script>
     if ('serviceWorker' in navigator) {
-      navigator.serviceWorker.register('service-worker.js?v=21', { updateViaCache: 'none' }).then(registration => registration.update());
+      navigator.serviceWorker.register('service-worker.js?v=24', { updateViaCache: 'none' }).then(registration => registration.update());
       navigator.serviceWorker.addEventListener('controllerchange', () => {
-        if (!sessionStorage.getItem('atherloom:sw-reloaded-v21')) {
-          sessionStorage.setItem('atherloom:sw-reloaded-v21', '1');
+        if (!sessionStorage.getItem('atherloom:sw-reloaded-v24')) {
+          sessionStorage.setItem('atherloom:sw-reloaded-v24', '1');
           location.reload();
         }
       });

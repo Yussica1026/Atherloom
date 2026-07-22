@@ -57,7 +57,7 @@ public class MainActivity extends Activity {
         webView.getSettings().setJavaScriptEnabled(true);
         webView.getSettings().setDomStorageEnabled(true);
         webView.getSettings().setMediaPlaybackRequiresUserGesture(false);
-        webView.addJavascriptInterface(new NativeBridge(this), "AtherloomNative");
+        webView.addJavascriptInterface(new NativeBridge(this, webView), "AtherloomNative");
         webView.setWebViewClient(new WebViewClient() {
             @Override public WebResourceResponse shouldInterceptRequest(WebView view, WebResourceRequest request) { return loader.shouldInterceptRequest(request.getUrl()); }
             @Override public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest request) {
@@ -83,8 +83,10 @@ public class MainActivity extends Activity {
     static class NativeBridge {
         private final SharedPreferences secrets;
         private final Context context;
-        NativeBridge(Context context) {
+        private final WebView webView;
+        NativeBridge(Context context, WebView webView) {
             this.context = context;
+            this.webView = webView;
             try {
                 MasterKey key = new MasterKey.Builder(context).setKeyScheme(MasterKey.KeyScheme.AES256_GCM).build();
                 secrets = EncryptedSharedPreferences.create(context, "atherloom_secrets", key,
@@ -97,6 +99,7 @@ public class MainActivity extends Activity {
             try {
                 JSONObject provider = new JSONObject(raw);
                 String id = provider.optString("id"); if (id.isEmpty()) id = java.util.UUID.randomUUID().toString();
+                if (provider.optString("api_key").isEmpty()) { JSONObject existing = new JSONObject(secrets.getString("provider:" + id, "{}")); if (!existing.optString("api_key").isEmpty()) provider.put("api_key", existing.optString("api_key")); }
                 provider.put("id", id); secrets.edit().putString("provider:" + id, provider.toString()).apply();
                 boolean hasKey = !provider.optString("api_key").isEmpty();
                 provider.remove("api_key"); provider.put("has_api_key", hasKey); return provider.toString();
@@ -151,7 +154,9 @@ public class MainActivity extends Activity {
                 String protocol = provider.optString("protocol", "openai");
                 String base = provider.getString("base_url").replaceAll("/+$", "");
                 String endpoint = protocol.equals("anthropic") ? (base.endsWith("/v1") ? base + "/messages" : base + "/v1/messages") : (base.endsWith("/chat/completions") ? base : base + "/chat/completions");
-                JSONObject payload = new JSONObject(); payload.put("model", provider.getString("model")); payload.put("max_tokens", 4096); payload.put("messages", request.getJSONArray("messages"));
+                JSONArray requestMessages = request.getJSONArray("messages");
+                if (!protocol.equals("anthropic") && !request.optString("system").isEmpty()) { JSONArray withSystem = new JSONArray(); withSystem.put(new JSONObject().put("role", "system").put("content", request.getString("system"))); for (int i=0;i<requestMessages.length();i++) withSystem.put(requestMessages.get(i)); requestMessages=withSystem; }
+                JSONObject payload = new JSONObject(); payload.put("model", provider.getString("model")); payload.put("max_tokens", provider.optInt("max_tokens", 4096)); payload.put("temperature", provider.optDouble("temperature", 0.7)); payload.put("top_p", provider.optDouble("top_p", 1.0)); payload.put("messages", requestMessages);
                 if (protocol.equals("anthropic") && request.has("system")) payload.put("system", request.getString("system"));
                 if ((protocol.equals("deepseek") || protocol.equals("glm")) && provider.optBoolean("thinking_enabled", true)) payload.put("thinking", new JSONObject().put("type", "enabled"));
                 connection = (HttpURLConnection)new URL(endpoint).openConnection(); connection.setRequestMethod("POST"); connection.setConnectTimeout(25000); connection.setReadTimeout(180000); connection.setDoOutput(true); connection.setRequestProperty("Content-Type", "application/json");
@@ -169,6 +174,58 @@ public class MainActivity extends Activity {
                 String reasoning = protocol.equals("anthropic") ? "" : data.getJSONArray("choices").getJSONObject(0).getJSONObject("message").optString("reasoning_content", data.getJSONArray("choices").getJSONObject(0).getJSONObject("message").optString("reasoning"));
                 return new JSONObject().put("ok", true).put("content", content).put("reasoning", reasoning).put("model", provider.optString("model")).toString();
             } catch (Exception error) { return failure(error); } finally { if (connection != null) connection.disconnect(); }
+        }
+
+        @JavascriptInterface public void chatStream(String raw, String callbackId) {
+            new Thread(() -> {
+                HttpURLConnection connection = null;
+                try {
+                    JSONObject request = new JSONObject(raw);
+                    JSONObject provider = new JSONObject(secrets.getString("provider:" + request.getString("provider_id"), "{}"));
+                    if (!provider.has("base_url")) throw new Exception("API 线路不存在");
+                    String protocol = provider.optString("protocol", "openai");
+                    String base = provider.getString("base_url").replaceAll("/+$", "");
+                    String endpoint = protocol.equals("anthropic") ? (base.endsWith("/v1") ? base + "/messages" : base + "/v1/messages") : (base.endsWith("/chat/completions") ? base : base + "/chat/completions");
+                    JSONArray requestMessages = request.getJSONArray("messages");
+                    if (!protocol.equals("anthropic") && !request.optString("system").isEmpty()) { JSONArray withSystem = new JSONArray(); withSystem.put(new JSONObject().put("role", "system").put("content", request.getString("system"))); for (int i=0;i<requestMessages.length();i++) withSystem.put(requestMessages.get(i)); requestMessages=withSystem; }
+                    JSONObject payload = new JSONObject(); payload.put("model", provider.getString("model")); payload.put("max_tokens", provider.optInt("max_tokens", 4096)); payload.put("temperature", provider.optDouble("temperature", 0.7)); payload.put("top_p", provider.optDouble("top_p", 1.0)); payload.put("stream", true); payload.put("messages", requestMessages);
+                    if (protocol.equals("anthropic") && request.has("system")) payload.put("system", request.getString("system"));
+                    if ((protocol.equals("deepseek") || protocol.equals("glm")) && provider.optBoolean("thinking_enabled", true)) payload.put("thinking", new JSONObject().put("type", "enabled"));
+                    connection = (HttpURLConnection)new URL(endpoint).openConnection(); connection.setRequestMethod("POST"); connection.setConnectTimeout(25000); connection.setReadTimeout(180000); connection.setDoOutput(true); connection.setRequestProperty("Content-Type", "application/json");
+                    String apiKey = provider.optString("api_key");
+                    if (protocol.equals("anthropic")) { connection.setRequestProperty("x-api-key", apiKey); connection.setRequestProperty("anthropic-version", "2023-06-01"); }
+                    else connection.setRequestProperty("Authorization", "Bearer " + apiKey);
+                    JSONObject custom = new JSONObject(provider.optString("custom_headers", "{}"));
+                    for (Iterator<String> keys = custom.keys(); keys.hasNext();) { String header = keys.next(); connection.setRequestProperty(header, custom.getString(header)); }
+                    try (OutputStream output = connection.getOutputStream()) { output.write(payload.toString().getBytes(StandardCharsets.UTF_8)); }
+                    int status = connection.getResponseCode();
+                    if (status >= 400) { String response = read(connection.getErrorStream()); throw new Exception("HTTP " + status + " · " + response.substring(0, Math.min(300, response.length()))); }
+                    try (BufferedReader reader = new BufferedReader(new InputStreamReader(connection.getInputStream(), StandardCharsets.UTF_8))) {
+                        String line;
+                        while ((line = reader.readLine()) != null) {
+                            if (!line.startsWith("data:")) continue;
+                            String rawEvent = line.substring(5).trim(); if (rawEvent.isEmpty() || rawEvent.equals("[DONE]")) continue;
+                            JSONObject event = new JSONObject(rawEvent), output = new JSONObject();
+                            if (protocol.equals("anthropic")) {
+                                JSONObject delta = event.optJSONObject("delta");
+                                if (delta != null && event.optString("type").equals("content_block_delta")) { if (!delta.optString("text").isEmpty()) output.put("delta", delta.optString("text")); if (!delta.optString("thinking").isEmpty()) output.put("reasoning_delta", delta.optString("thinking")); }
+                            } else {
+                                JSONArray choices = event.optJSONArray("choices"); JSONObject delta = choices != null && choices.length() > 0 ? choices.getJSONObject(0).optJSONObject("delta") : null;
+                                if (delta != null) { if (!delta.optString("content").isEmpty()) output.put("delta", delta.optString("content")); String reasoning = delta.optString("reasoning_content", delta.optString("reasoning")); if (!reasoning.isEmpty()) output.put("reasoning_delta", reasoning); }
+                            }
+                            if (output.length() > 0) emitStream(callbackId, output);
+                        }
+                    }
+                    emitStream(callbackId, new JSONObject().put("done", true).put("model", provider.optString("model")));
+                } catch (Exception error) {
+                    try { emitStream(callbackId, new JSONObject().put("error", error.getMessage())); } catch (Exception ignored) {}
+                } finally { if (connection != null) connection.disconnect(); }
+            }).start();
+        }
+
+        private void emitStream(String callbackId, JSONObject event) {
+            String script = "window.AtherloomNativeStream&&window.AtherloomNativeStream(" + JSONObject.quote(callbackId) + "," + JSONObject.quote(event.toString()) + ")";
+            webView.post(() -> webView.evaluateJavascript(script, null));
         }
 
         private static String read(InputStream stream) throws Exception { if(stream==null)return ""; StringBuilder text=new StringBuilder(); try(BufferedReader reader=new BufferedReader(new InputStreamReader(stream,StandardCharsets.UTF_8))){String line;while((line=reader.readLine())!=null)text.append(line);} return text.toString(); }
