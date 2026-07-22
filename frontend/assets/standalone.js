@@ -8,6 +8,12 @@
   const ndjson = value => Promise.resolve(new Response(value.map(item => JSON.stringify(item)).join("\n") + "\n", { headers: { "Content-Type": "application/x-ndjson; charset=utf-8" } }));
   const uid = () => crypto.randomUUID?.() || `${Date.now()}-${Math.random()}`;
   const native = window.AtherloomNative;
+  const nativeStreams = new Map();
+  window.AtherloomNativeStream = (id, raw) => { const callback=nativeStreams.get(id); if(callback)callback(JSON.parse(raw)); };
+  const nativeStreamResponse = (request, transform) => {
+    const id=uid(),encoder=new TextEncoder();
+    return new Response(new ReadableStream({start(controller){nativeStreams.set(id,event=>{for(const item of transform(event))controller.enqueue(encoder.encode(`${JSON.stringify(item)}\n`));if(event.done||event.error){nativeStreams.delete(id);controller.close();}});native.chatStream(JSON.stringify(request),id);},cancel(){nativeStreams.delete(id);}}),{headers:{"Content-Type":"application/x-ndjson; charset=utf-8"}});
+  };
   const nativeResult = (method, payload) => {
     if (!native?.[method]) throw new Error("当前安装包缺少原生安全桥接，请更新 Atherloom");
     const result = JSON.parse(payload === undefined ? native[method]() : native[method](typeof payload === "string" ? payload : JSON.stringify(payload)));
@@ -29,16 +35,34 @@
     const endpoint=anthropic?(base.endsWith("/v1")?`${base}/messages`:`${base}/v1/messages`):(base.endsWith("/chat/completions")?base:`${base}/chat/completions`);
     const headers={"Content-Type":"application/json",...(JSON.parse(provider.custom_headers||"{}"))};
     if(anthropic){headers["x-api-key"]=provider.api_key;headers["anthropic-version"]="2023-06-01";}else headers.Authorization=`Bearer ${provider.api_key}`;
-    const payload={model:provider.model,max_tokens:4096,messages:formatMessages(request.messages,provider.protocol)};if(anthropic&&request.system)payload.system=request.system;
+    const payload={model:provider.model,max_tokens:Number(provider.max_tokens||4096),temperature:Number(provider.temperature??.7),top_p:Number(provider.top_p??1),messages:formatMessages(request.messages,provider.protocol)};if(anthropic&&request.system)payload.system=request.system;
     const response=await originalFetch(endpoint,{method:"POST",headers,body:JSON.stringify(payload)});
     const data=await response.json().catch(()=>({}));if(!response.ok)throw new Error(`HTTP ${response.status} · ${data.error?.message||data.message||"网关请求失败"}`);
     const content=anthropic?(data.content||[]).filter(block=>block.type==="text").map(block=>block.text).join(""):data.choices?.[0]?.message?.content;
     return {ok:true,content:content||"",model:provider.model};
   };
+  const webStreamResponse = (request, provider, transform) => {
+    const encoder=new TextEncoder();
+    return new Response(new ReadableStream({async start(controller){try{
+      const anthropic=provider.protocol==="anthropic",base=provider.base_url.replace(/\/+$/,""),endpoint=anthropic?(base.endsWith("/v1")?`${base}/messages`:`${base}/v1/messages`):(base.endsWith("/chat/completions")?base:`${base}/chat/completions`),headers={"Content-Type":"application/json",...(JSON.parse(provider.custom_headers||"{}"))};
+      if(anthropic){headers["x-api-key"]=provider.api_key;headers["anthropic-version"]="2023-06-01";}else headers.Authorization=`Bearer ${provider.api_key}`;
+      const payload={model:provider.model,max_tokens:Number(provider.max_tokens||4096),temperature:Number(provider.temperature??.7),top_p:Number(provider.top_p??1),stream:true,messages:formatMessages(request.messages,provider.protocol)};if(anthropic&&request.system)payload.system=request.system;if((provider.protocol==="deepseek"||provider.protocol==="glm")&&provider.thinking_enabled!==false)payload.thinking={type:"enabled"};
+      const response=await originalFetch(endpoint,{method:"POST",headers,body:JSON.stringify(payload)});if(!response.ok)throw new Error(`HTTP ${response.status} · ${(await response.text()).slice(0,300)}`);
+      const reader=response.body.getReader(),decoder=new TextDecoder();let pending="";
+      while(true){const {value,done}=await reader.read();if(done)break;pending+=decoder.decode(value,{stream:true});const lines=pending.split("\n");pending=lines.pop();for(const line of lines){if(!line.startsWith("data:"))continue;const raw=line.slice(5).trim();if(!raw||raw==="[DONE]")continue;const data=JSON.parse(raw);let event;if(anthropic){const delta=data.delta||{};event={delta:data.type==="content_block_delta"?(delta.text||""):"",reasoning_delta:delta.thinking||""};}else{const delta=data.choices?.[0]?.delta||{};event={delta:delta.content||"",reasoning_delta:delta.reasoning_content||delta.reasoning||""};}if(event.delta||event.reasoning_delta)for(const item of transform(event))controller.enqueue(encoder.encode(`${JSON.stringify(item)}\n`));}}
+      for(const item of transform({done:true}))controller.enqueue(encoder.encode(`${JSON.stringify(item)}\n`));controller.close();
+    }catch(error){controller.enqueue(encoder.encode(`${JSON.stringify({error:error.message})}\n`));controller.close();}}}),{headers:{"Content-Type":"application/x-ndjson; charset=utf-8"}});
+  };
   const formatMessages=(items,protocol)=>items.map(item=>{if(item.role!=="user"||!item.attachments?.length)return {role:item.role,content:item.content};const anthropic=protocol==="anthropic";if(anthropic){const blocks=[{type:"text",text:item.content}];for(const file of item.attachments){if(file.kind==="image")blocks.push({type:"image",source:{type:"base64",media_type:file.mime,data:file.data.split(",")[1]}});else if(file.kind==="pdf")blocks.push({type:"document",source:{type:"base64",media_type:"application/pdf",data:file.data.split(",")[1]}});else if(file.text)blocks.push({type:"text",text:`文件：${file.name}\n${file.text}`});}return {role:item.role,content:blocks};}const parts=[{type:"text",text:item.content}];for(const file of item.attachments){if(file.kind==="image")parts.push({type:"image_url",image_url:{url:file.data}});else if(file.text)parts.push({type:"text",text:`文件：${file.name}\n${file.text}`});else parts.push({type:"text",text:`[已选择文件 ${file.name}，当前兼容线路不支持直接传输此格式]`});}return {role:item.role,content:parts};});
   const messages = conversationId => read(`messages:${conversationId}`, []);
   const saveMessages = (conversationId, items) => write(`messages:${conversationId}`, items);
   const effectiveMessages = (conversationId,all=messages(conversationId)) => {const chosen=read(`versions:${conversationId}`,{}),seen=new Set();return all.filter(item=>{if(item.role!=="assistant"||!item.parent_message_id)return true;if(seen.has(item.parent_message_id))return false;seen.add(item.parent_message_id);const versions=all.filter(row=>row.role==="assistant"&&row.parent_message_id===item.parent_message_id),selected=versions.find(row=>row.id===chosen[item.parent_message_id])||versions.at(-1);return item===selected;});};
+  const relevantMemories = query => {
+    if((settings().tool_permissions||{}).memory_read==="deny")return [];
+    const rows=read("memories",[]).filter(item=>!item.trash&&!item.archived),clean=String(query||"").toLowerCase().replace(/\s+/g,""),terms=new Set();for(let i=0;i<clean.length-1;i++)terms.add(clean.slice(i,i+2));
+    const scored=rows.map(item=>{const text=`${item.title||""}${item.content||""}`.toLowerCase().replace(/\s+/g,""),hits=[...terms].filter(term=>text.includes(term)).length;return {item,score:hits+(item.starred?4:0)};}).filter(row=>row.score>0).sort((a,b)=>b.score-a.score).map(row=>row.item);
+    return (scored.length?scored:rows.sort((a,b)=>String(b.updated_at||"").localeCompare(String(a.updated_at||""))).slice(0,3)).slice(0,6);
+  };
   const updateConversation = (id, changes) => {
     const all = read("conversations", []), item = all.find(row => row.id === id);
     if (!item) return null;
@@ -80,6 +104,8 @@
       if (native) return json(nativeResult("saveProvider", body));
       const item={...body,id:uid(),has_api_key:!!body.api_key}; write("providers",[...read("providers",[]),item]); return json(publicProvider(item));
     }
+    const updateProvider=url.pathname.match(/^\/api\/providers\/([^/]+)$/);
+    if(updateProvider&&method==="PUT"){const id=decodeURIComponent(updateProvider[1]);body.id=id;if(native)return json(nativeResult("saveProvider",body));const all=read("providers",[]),existing=all.find(item=>item.id===id);if(!existing)return json({detail:"API 线路不存在"},404);Object.assign(existing,{...body,api_key:body.api_key||existing.api_key});write("providers",all);return json(publicProvider(existing));}
     if (url.pathname === "/api/providers/models" && method === "POST") return json({models:native?nativeResult("listModels",body):await webModels(body)});
     if(url.pathname==="/api/messages/selection"&&method==="PATCH"){const selected=read(`versions:${body.conversation_id}`,{});selected[body.parent_message_id]=body.assistant_message_id;write(`versions:${body.conversation_id}`,selected);return json({ok:true});}
     const deleteMessage=url.pathname.match(/^\/api\/messages\/([^/]+)$/);
@@ -104,18 +130,26 @@
       let user;
       if(body.reuse_user_message_id) user=history.find(item=>item.id===body.reuse_user_message_id);
       if(!user){user={id:uid(),role:"user",content:body.content,attachments:body.attachments||[],created_at:now};history.push(user);}
-      const persona=read("personas",[]).find(item=>item.id===body.persona_id);
-      const prompt=[persona?.prompt,`当前时间：${new Date().toLocaleString("zh-CN",{hour12:false})}`].filter(Boolean).join("\n\n");
+      const persona=read("personas",[]).find(item=>item.id===body.persona_id),memorySources=relevantMemories(body.content);
+      const personaContext=persona?.prompt?.trim()?`<assistant_persona active="true">\n${persona.prompt}\n</assistant_persona>`:"";
+      const memoryContext=memorySources.length?`<relevant_memories>\n${memorySources.map(item=>`[memory:${item.id}] ${item.title}\n${item.content}`).join("\n\n")}\n</relevant_memories>`:"";
+      const prompt=[personaContext,memoryContext,`当前时间：${new Date().toLocaleString("zh-CN",{hour12:false})}`].filter(Boolean).join("\n\n");
       try {
         const provider=providers().find(item=>item.id===body.provider_id);const rawMessages=effectiveMessages(body.conversation_id,history).filter(item=>item.role==="user"||item.role==="assistant").map(item=>({role:item.role,content:item.content,attachments:item.attachments||[]}));
         const request={provider_id:body.provider_id,system:prompt,messages:native?formatMessages(rawMessages,provider?.protocol||"openai"):rawMessages};
+        let sentMemorySources=false;
+        const persistStreamEvent=(()=>{const assistant={id:uid(),role:"assistant",content:"",reasoning:"",model:provider?.model||"",parent_message_id:user.id,created_at:new Date().toISOString()};return event=>{const output=[];if(!sentMemorySources&&memorySources.length){sentMemorySources=true;output.push({memory_sources:memorySources.map(item=>({id:item.id,title:item.title,kind:item.kind}))});}if(event.delta)assistant.content+=event.delta;if(event.reasoning_delta)assistant.reasoning+=event.reasoning_delta;if(event.error){saveMessages(body.conversation_id,history);return [...output,event];}if(!event.done)return [...output,event];history.push(assistant);saveMessages(body.conversation_id,history);const selected=read(`versions:${body.conversation_id}`,{});selected[user.id]=assistant.id;write(`versions:${body.conversation_id}`,selected);const conversation=read("conversations",[]).find(item=>item.id===body.conversation_id);let title="";if(conversation?.title==="新对话"){title=(user.content||"新对话").replace(/\s+/g," ").slice(0,24);updateConversation(body.conversation_id,{title});}return [...output,{done:true,assistant_id:assistant.id,user_id:user.id,title}];};})();
+        if(native&&provider?.stream_enabled!==false&&provider?.stream_enabled!==0){
+          return nativeStreamResponse(request,persistStreamEvent);
+        }
+        if(!native&&provider?.stream_enabled!==false&&provider?.stream_enabled!==0)return webStreamResponse(request,read("providers",[]).find(item=>item.id===body.provider_id),persistStreamEvent);
         const result=native?nativeResult("chat",request):await webChat(request);
         const assistant={id:uid(),role:"assistant",content:result.content||"",model:result.model||"",parent_message_id:user.id,created_at:new Date().toISOString()};
         history.push(assistant);saveMessages(body.conversation_id,history);
         const selected=read(`versions:${body.conversation_id}`,{});selected[user.id]=assistant.id;write(`versions:${body.conversation_id}`,selected);
         const conversation=read("conversations",[]).find(item=>item.id===body.conversation_id);let title="";
         if(conversation?.title==="新对话"){title=(user.content||"新对话").replace(/\s+/g," ").slice(0,24);updateConversation(body.conversation_id,{title});}
-        return ndjson([{reasoning_delta:result.reasoning||"",delta:assistant.content},{done:true,assistant_id:assistant.id,user_id:user.id,title}]);
+        return ndjson([...(memorySources.length?[{memory_sources:memorySources.map(item=>({id:item.id,title:item.title,kind:item.kind}))}]:[]),{reasoning_delta:result.reasoning||"",delta:assistant.content},{done:true,assistant_id:assistant.id,user_id:user.id,title}]);
       } catch(error) { saveMessages(body.conversation_id,history); return ndjson([{error:error.message}]); }
     }
     if (url.pathname === "/api/games") return json([{id:"quiet_fishing",name:"云汀钓记",icon:"◌",status:"playable",description:"离线也能保存进度的原创钓鱼游戏。"},{id:"claw_machine",name:"抓娃娃机",icon:"◇",status:"playable",description:"移动爪子、选择目标并收集娃娃。"},{id:"cloud_slots",name:"云纹老虎机",icon:"✦",status:"playable",description:"只使用本地云贝的确定性三轴小游戏。"}]);

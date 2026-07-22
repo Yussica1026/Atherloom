@@ -44,7 +44,8 @@ def init_db() -> None:
               id TEXT PRIMARY KEY, name TEXT NOT NULL, protocol TEXT NOT NULL,
               base_url TEXT NOT NULL, api_key TEXT NOT NULL DEFAULT '', model TEXT NOT NULL,
               enabled INTEGER NOT NULL DEFAULT 1, custom_headers TEXT NOT NULL DEFAULT '{}',
-              prompt_cache INTEGER NOT NULL DEFAULT 1, thinking_enabled INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL
+              prompt_cache INTEGER NOT NULL DEFAULT 1, thinking_enabled INTEGER NOT NULL DEFAULT 1,
+              stream_enabled INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL
             );
             CREATE TABLE IF NOT EXISTS personas (
               id TEXT PRIMARY KEY, name TEXT NOT NULL, prompt TEXT NOT NULL,
@@ -114,6 +115,14 @@ def init_db() -> None:
             connection.execute("ALTER TABLE providers ADD COLUMN prompt_cache INTEGER NOT NULL DEFAULT 1")
         if "thinking_enabled" not in columns:
             connection.execute("ALTER TABLE providers ADD COLUMN thinking_enabled INTEGER NOT NULL DEFAULT 1")
+        if "stream_enabled" not in columns:
+            connection.execute("ALTER TABLE providers ADD COLUMN stream_enabled INTEGER NOT NULL DEFAULT 1")
+        if "temperature" not in columns:
+            connection.execute("ALTER TABLE providers ADD COLUMN temperature REAL NOT NULL DEFAULT 0.7")
+        if "top_p" not in columns:
+            connection.execute("ALTER TABLE providers ADD COLUMN top_p REAL NOT NULL DEFAULT 1.0")
+        if "max_tokens" not in columns:
+            connection.execute("ALTER TABLE providers ADD COLUMN max_tokens INTEGER NOT NULL DEFAULT 4096")
         message_columns = {row["name"] for row in connection.execute("PRAGMA table_info(messages)")}
         if "reasoning" not in message_columns:
             connection.execute("ALTER TABLE messages ADD COLUMN reasoning TEXT NOT NULL DEFAULT ''")
@@ -136,6 +145,10 @@ class ProviderIn(BaseModel):
     custom_headers: str = "{}"
     prompt_cache: bool = True
     thinking_enabled: bool = True
+    stream_enabled: bool = True
+    temperature: float = Field(default=0.7, ge=0, le=2)
+    top_p: float = Field(default=1.0, ge=0, le=1)
+    max_tokens: int = Field(default=4096, ge=1, le=200000)
 
 
 class ProviderProbe(BaseModel):
@@ -251,6 +264,7 @@ def masked_provider(row: sqlite3.Row) -> dict[str, Any]:
     item["enabled"] = bool(item["enabled"])
     item["prompt_cache"] = bool(item["prompt_cache"])
     item["thinking_enabled"] = bool(item["thinking_enabled"])
+    item["stream_enabled"] = bool(item["stream_enabled"])
     item["has_api_key"] = bool(item.pop("api_key"))
     return item
 
@@ -390,9 +404,23 @@ def save_provider(body: ProviderIn) -> dict[str, Any]:
         protocol = "glm"
     with closing(db()) as connection:
         connection.execute(
-            "INSERT INTO providers(id,name,protocol,base_url,api_key,model,enabled,custom_headers,prompt_cache,thinking_enabled,created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (provider_id, body.name, protocol, body.base_url.rstrip("/"), body.api_key, body.model, int(body.enabled), body.custom_headers, int(body.prompt_cache), int(body.thinking_enabled), now_iso()),
+            "INSERT INTO providers(id,name,protocol,base_url,api_key,model,enabled,custom_headers,prompt_cache,thinking_enabled,stream_enabled,temperature,top_p,max_tokens,created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (provider_id, body.name, protocol, body.base_url.rstrip("/"), body.api_key, body.model, int(body.enabled), body.custom_headers, int(body.prompt_cache), int(body.thinking_enabled), int(body.stream_enabled), body.temperature, body.top_p, body.max_tokens, now_iso()),
         )
+        connection.commit()
+        row = connection.execute("SELECT * FROM providers WHERE id=?", (provider_id,)).fetchone()
+    return masked_provider(row)
+
+
+@app.put("/api/providers/{provider_id}")
+def update_provider(provider_id: str, body: ProviderIn) -> dict[str, Any]:
+    with closing(db()) as connection:
+        existing = connection.execute("SELECT * FROM providers WHERE id=?", (provider_id,)).fetchone()
+        if not existing:
+            raise HTTPException(404, "API 线路不存在")
+        api_key = body.api_key or existing["api_key"]
+        connection.execute("""UPDATE providers SET name=?,protocol=?,base_url=?,api_key=?,model=?,enabled=?,custom_headers=?,prompt_cache=?,thinking_enabled=?,stream_enabled=?,temperature=?,top_p=?,max_tokens=? WHERE id=?""",
+            (body.name, body.protocol, body.base_url.rstrip("/"), api_key, body.model, int(body.enabled), body.custom_headers, int(body.prompt_cache), int(body.thinking_enabled), int(body.stream_enabled), body.temperature, body.top_p, body.max_tokens, provider_id))
         connection.commit()
         row = connection.execute("SELECT * FROM providers WHERE id=?", (provider_id,)).fetchone()
     return masked_provider(row)
@@ -837,7 +865,7 @@ def load_chat_context(connection: sqlite3.Connection, body: ChatIn, cutoff: str 
     persona_prompt = ""
     if body.persona_id:
         persona = connection.execute("SELECT * FROM personas WHERE id=?", (body.persona_id,)).fetchone()
-        persona_prompt = persona["prompt"] if persona else ""
+        persona_prompt = f"<assistant_persona active=\"true\">\n{persona['prompt']}\n</assistant_persona>" if persona and persona["prompt"].strip() else ""
     conversation = connection.execute("SELECT * FROM conversations WHERE id=?", (body.conversation_id,)).fetchone()
     if not conversation:
         raise HTTPException(404, "会话不存在")
@@ -1034,6 +1062,13 @@ def retrieve_memories(connection: sqlite3.Connection, query: str, limit: int = 6
             pass
         ranked.append({"score": score, "row": row, "terms": set(terms), "matched": matched})
     ranked.sort(key=lambda item: item["score"], reverse=True)
+    ranked_ids = {item["row"]["id"] for item in ranked}
+    for row, terms in zip(rows, documents):
+        if row["starred"] and row["id"] not in ranked_ids:
+            ranked.append({"score": .32, "row": row, "terms": set(terms), "matched": []})
+    if not ranked:
+        recent = sorted(zip(rows, documents), key=lambda item: item[0]["updated_at"], reverse=True)[:min(3, limit)]
+        ranked = [{"score": .08, "row": row, "terms": set(terms), "matched": []} for row, terms in recent]
 
     selected = []
     used_chars = 0
@@ -1129,13 +1164,13 @@ async def chat(body: ChatIn) -> StreamingResponse:
                             break
                 if provider["protocol"] == "anthropic":
                     system = "\n\n".join(m["content"] for m in provider_messages if m["role"] == "system")
-                    payload = {"model": provider["model"], "max_tokens": 4096, "stream": True, "messages": [m for m in provider_messages if m["role"] != "system"]}
+                    payload = {"model": provider["model"], "max_tokens": provider["max_tokens"], "temperature": provider["temperature"], "top_p": provider["top_p"], "stream": bool(provider["stream_enabled"]), "messages": [m for m in provider_messages if m["role"] != "system"]}
                     if system:
                         payload["system"] = [{"type": "text", "text": system, **({"cache_control": {"type": "ephemeral"}} if provider["prompt_cache"] else {})}]
                     headers = {"x-api-key": provider["api_key"], "anthropic-version": "2023-06-01", "content-type": "application/json"}
                     url = provider_endpoint(provider["base_url"], "anthropic")
                 else:
-                    payload = {"model": provider["model"], "stream": True, "messages": provider_messages}
+                    payload = {"model": provider["model"], "max_tokens": provider["max_tokens"], "temperature": provider["temperature"], "top_p": provider["top_p"], "stream": bool(provider["stream_enabled"]), "messages": provider_messages}
                     if provider["protocol"] in ("deepseek", "glm") and provider["thinking_enabled"]:
                         payload["thinking"] = {"type": "enabled"}
                     headers = {"Authorization": f"Bearer {provider['api_key']}", "content-type": "application/json"}
@@ -1153,30 +1188,44 @@ async def chat(body: ChatIn) -> StreamingResponse:
                         detail = (await response.aread()).decode("utf-8", "replace")[:500]
                         yield json.dumps({"error": f"API {response.status_code}: {detail}"}, ensure_ascii=False) + "\n"
                         return
-                    async for line in response.aiter_lines():
-                        if not line.startswith("data:"):
-                            continue
-                        raw = line[5:].strip()
-                        if not raw or raw == "[DONE]":
-                            continue
-                        try:
-                            event = json.loads(raw)
-                            if provider["protocol"] == "anthropic":
-                                event_delta = event.get("delta", {})
-                                delta = event_delta.get("text", "") if event.get("type") == "content_block_delta" else ""
-                                reasoning_delta = event_delta.get("thinking", "")
-                            else:
-                                choice_delta = event.get("choices", [{}])[0].get("delta", {})
-                                delta = choice_delta.get("content") or ""
-                                reasoning_delta = choice_delta.get("reasoning_content") or choice_delta.get("reasoning") or ""
-                        except (json.JSONDecodeError, IndexError, TypeError):
-                            continue
-                        if delta:
-                            full += delta
-                            yield json.dumps({"delta": delta}, ensure_ascii=False) + "\n"
-                        if reasoning_delta:
-                            reasoning += reasoning_delta
-                            yield json.dumps({"reasoning_delta": reasoning_delta}, ensure_ascii=False) + "\n"
+                    if not provider["stream_enabled"]:
+                        data = json.loads((await response.aread()).decode("utf-8", "replace"))
+                        if provider["protocol"] == "anthropic":
+                            full = "".join(block.get("text", "") for block in data.get("content", []) if block.get("type") == "text")
+                            reasoning = "".join(block.get("thinking", "") for block in data.get("content", []) if block.get("type") == "thinking")
+                        else:
+                            message = data.get("choices", [{}])[0].get("message", {})
+                            full = message.get("content") or ""
+                            reasoning = message.get("reasoning_content") or message.get("reasoning") or ""
+                        if reasoning:
+                            yield json.dumps({"reasoning_delta": reasoning}, ensure_ascii=False) + "\n"
+                        if full:
+                            yield json.dumps({"delta": full}, ensure_ascii=False) + "\n"
+                    else:
+                        async for line in response.aiter_lines():
+                            if not line.startswith("data:"):
+                                continue
+                            raw = line[5:].strip()
+                            if not raw or raw == "[DONE]":
+                                continue
+                            try:
+                                event = json.loads(raw)
+                                if provider["protocol"] == "anthropic":
+                                    event_delta = event.get("delta", {})
+                                    delta = event_delta.get("text", "") if event.get("type") == "content_block_delta" else ""
+                                    reasoning_delta = event_delta.get("thinking", "")
+                                else:
+                                    choice_delta = event.get("choices", [{}])[0].get("delta", {})
+                                    delta = choice_delta.get("content") or ""
+                                    reasoning_delta = choice_delta.get("reasoning_content") or choice_delta.get("reasoning") or ""
+                            except (json.JSONDecodeError, IndexError, TypeError):
+                                continue
+                            if delta:
+                                full += delta
+                                yield json.dumps({"delta": delta}, ensure_ascii=False) + "\n"
+                            if reasoning_delta:
+                                reasoning += reasoning_delta
+                                yield json.dumps({"reasoning_delta": reasoning_delta}, ensure_ascii=False) + "\n"
             if full:
                 assistant_id = str(uuid.uuid4())
                 generated_title = None
