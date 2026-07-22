@@ -24,6 +24,19 @@ class LocalClientTests(unittest.TestCase):
         payload = self.client.get("/api/bootstrap").json()
         self.assertEqual(payload["personas"], [])
 
+    def test_worldbook_crud_and_selected_instruction_injection(self):
+        provider = self.client.post("/api/providers", json={"name":"测试","protocol":"openai","base_url":"https://example.com/v1","model":"m"}).json()
+        conversation = self.client.post("/api/conversations", json={"provider_id":provider["id"]}).json()
+        book = self.client.post("/api/worldbooks", json={"name":"共同规则","description":"跨人格复用","entries":[{"name":"常驻规则","content":"始终使用简洁中文。","constant":True,"position":"system_after"},{"name":"旅行设定","content":"旅行发生在云海城。","keywords":["旅行"],"scan_depth":4,"position":"system_after"}]}).json()
+        self.assertEqual(self.client.get("/api/bootstrap").json()["worldbooks"][0]["name"], "共同规则")
+        with app_module.closing(app_module.db()) as connection:
+            connection.execute("INSERT INTO messages VALUES (?, ?, 'user', '我想去旅行', NULL, NULL, ?, '', NULL)",(str(uuid.uuid4()),conversation["id"],app_module.now_iso()));connection.commit()
+            body=app_module.ChatIn(conversation_id=conversation["id"],content="我想去旅行",provider_id=provider["id"],worldbook_ids=[book["id"]])
+            _,_,messages=app_module.load_chat_context(connection,body)
+            system=messages[0]["content"]
+            self.assertIn("始终使用简洁中文",system);self.assertIn("旅行发生在云海城",system)
+            body.worldbook_ids=[];_,_,plain=app_module.load_chat_context(connection,body);self.assertNotIn("旅行发生在云海城",plain[0]["content"])
+
     def test_model_ids_are_normalized_and_deduplicated(self):
         payload = {"data": [{"id": "glm-5"}, {"id": "deepseek-chat"}, {"id": "glm-5"}, "custom-model", {}]}
         self.assertEqual(app_module.extract_model_ids(payload), ["custom-model", "deepseek-chat", "glm-5"])
@@ -259,7 +272,7 @@ class LocalClientTests(unittest.TestCase):
         self.assertIn("抛竿", comment)
         fallback, fallback_comment = app_module.fallback_ai_game_choice("quiet_fishing", {"bait": 3, "coins": 0, "catch": {}}, 0)
         self.assertEqual(fallback, {"action": "cast", "amount": 1})
-        self.assertTrue(fallback_comment)
+        self.assertEqual(fallback_comment, "")
 
     def test_device_local_time_is_injected_into_chat_context(self):
         provider = self.client.post("/api/providers", json={"name": "时间测试", "protocol": "openai", "base_url": "https://example.com/v1", "api_key": "test", "model": "test-model"}).json()
