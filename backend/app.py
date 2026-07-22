@@ -234,6 +234,7 @@ class ChatIn(BaseModel):
     reuse_user_message_id: str | None = None
     attachments: list[dict[str, Any]] = Field(default_factory=list, max_length=8)
     local_time: str = Field(default="", max_length=80)
+    game_context: str = Field(default="", max_length=2400)
 
 
 class MotivationEventIn(BaseModel):
@@ -887,7 +888,8 @@ async def ai_game_turn(game_id: str, body: AiGameTurnIn) -> dict[str, Any]:
     if game_id not in AI_GAME_ACTIONS: raise HTTPException(404, "游戏尚未开放 AI 游玩")
     with closing(db()) as connection:
         provider = connection.execute("SELECT * FROM providers WHERE id=? AND enabled=1", (body.provider_id,)).fetchone()
-        persona = connection.execute("SELECT prompt FROM personas WHERE id=?", (body.persona_id,)).fetchone() if body.persona_id else None
+        persona = connection.execute("SELECT name, prompt FROM personas WHERE id=?", (body.persona_id,)).fetchone() if body.persona_id else None
+        persona_name = persona["name"] if persona else "当前人格"
     if not provider: raise HTTPException(404, "API 线路不存在")
     decisions, remaining = [], body.max_spend
     async with httpx.AsyncClient(timeout=35) as client:
@@ -913,7 +915,7 @@ async def ai_game_turn(game_id: str, body: AiGameTurnIn) -> dict[str, Any]:
             result = game_action(game_id, GameActionIn(**choice), body.persona_id); remaining -= cost
             if comment:
                 with closing(db()) as connection:
-                    state = load_game(connection, game_id, body.persona_id); state["journal"] = (state.get("journal", []) + [f"AI：{comment}"])[-30:]; save_game(connection, game_id, body.persona_id, state); connection.commit(); result["state"] = state
+                    state = load_game(connection, game_id, body.persona_id); state["journal"] = (state.get("journal", []) + [f"{persona_name} · 心里话：{comment}"])[-30:]; save_game(connection, game_id, body.persona_id, state); connection.commit(); result["state"] = state
             decisions.append({"choice": choice, "comment": comment, "events": result["events"]})
     with closing(db()) as connection: final_state = load_game(connection, game_id, body.persona_id)
     return {"state": final_state, "decisions": decisions, "spent": body.max_spend - remaining}
@@ -1008,11 +1010,12 @@ def load_chat_context(connection: sqlite3.Connection, body: ChatIn, cutoff: str 
     time_context = f"当前本地时间（由用户设备提供）：{body.local_time}" if body.local_time else ""
     proactive_row = connection.execute("SELECT value FROM app_settings WHERE key='proactive_questions'").fetchone()
     proactive_questions = proactive_row and proactive_row["value"] == "true"
-    question_context = ("用户允许你在合适时主动提问、自然追问、发起新话题或提供清晰的编号选项；不要机械地每轮都提问。" if proactive_questions else "除非完成当前请求确实缺少必要信息，否则不要主动反问或发起问卷；优先直接回应用户。")
+    question_context = ("用户允许你在合适时主动提问、自然追问或发起新话题。需要用户选择时，先自然地说一句引导语，再在回复末尾严格输出 <questions>[{\"question\":\"问题\",\"options\":[\"选项一\",\"选项二\",\"选项三\"]}]</questions>；可包含 1 至 4 个问题，每题 2 至 5 个简短选项，不要在标签外重复选项。用户明确要求你提问时必须使用此格式。不要机械地每轮都提问。" if proactive_questions else "除非完成当前请求确实缺少必要信息，否则不要主动反问或发起问卷；优先直接回应用户。")
     formatting_context = "界面支持 Markdown。你可以根据语义有节制地使用 **粗体**、*斜体*、标题、引用、列表与代码块；不要为了装饰而过度格式化。"
     tool_names = [name for name, enabled in persona_config["tools"].items() if enabled]
     tool_context = f"该人格启用的本地能力偏好：{', '.join(tool_names)}。只有宿主实际提供的能力才可调用。" if tool_names else ""
-    system_parts = [part for part in (persona_prompt, conversation["summary"] if persona_config["history_enabled"] else "", time_context, question_context, formatting_context, tool_context) if part]
+    game_context = f"<verified_game_result>\n{body.game_context}\n</verified_game_result>\n这是宿主刚刚真实执行的游戏结果。请以当前人格自然回应，可以主动谈起收获与心情，不要声称没有玩过。" if body.game_context else ""
+    system_parts = [part for part in (persona_prompt, conversation["summary"] if persona_config["history_enabled"] else "", time_context, question_context, formatting_context, tool_context, game_context) if part]
     if system_parts:
         messages.insert(0, {"role": "system", "content": "\n\n".join(system_parts)})
     return provider, persona_prompt, messages

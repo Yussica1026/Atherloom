@@ -13,7 +13,7 @@
   <title>Atherloom</title>
   <link rel="manifest" href="manifest.json">
   <link rel="icon" href="assets/app-icon.svg" type="image/svg+xml">
-  <link rel="stylesheet" href="assets/app.css?v=0424">
+  <link rel="stylesheet" href="assets/app.css?v=0426">
   <script>document.documentElement.dataset.launchMode=performance.getEntriesByType("navigation")[0]?.type==="reload"?"refresh":"full";</script>
 </head>
 <body>
@@ -114,7 +114,7 @@
           <div class="game-actions"><button class="primary" data-slot-amount="1">转一次 · 5 云贝</button><button class="ghost" data-slot-amount="5">连续五次</button></div>
           <div class="game-columns"><div><h4>规则</h4><p class="muted">三个相同得 40 云贝，两个相同得 10 云贝。仅使用本地游戏云贝。</p></div><div><h4>最近结果</h4><div id="slotJournal" class="game-journal"></div></div></div>
         </section>
-        <div class="ai-playbar" id="aiGameControls" hidden><div><strong>交给当前人格</strong><small id="aiGameStatus">AI 会读取局面，只能执行白名单动作；单次预算最多 30 云贝。</small></div><div class="game-actions"><button class="ghost" id="aiPlayOne">玩一步</button><button class="primary" id="aiPlayThree">连续玩 3 回合</button></div></div>
+        <div class="ai-playbar" id="aiGameControls" hidden><div><strong id="aiGameTitle">交给当前人格</strong><small id="aiGameStatus">当前人格会读取局面，只能执行白名单动作；单次预算最多 30 云贝。</small></div><div class="game-actions"><button class="ghost" id="aiPlayOne">玩一步</button><button class="primary" id="aiPlayThree">连续玩 3 回合</button></div></div>
       </main>
     </div>
   </section>
@@ -152,6 +152,7 @@
           <div class="section-heading"><div><h3>API 与网关</h3><p>添加多条线路，并在聊天中随时切换。</p></div><button class="primary small" id="addProvider">添加线路</button></div>
           <div id="providerList" class="stack-list"></div>
           <form id="providerForm" class="edit-card" hidden>
+            <div id="providerEditState" class="edit-state" hidden></div>
             <label>显示名称<input name="name" required placeholder="例如：主线路"></label>
             <label>供应商 / 协议<select name="protocol" id="providerProtocol"><option value="openai">OpenAI 兼容</option><option value="anthropic">Anthropic Messages</option><option value="deepseek">DeepSeek</option><option value="glm">智谱 GLM</option></select></label>
             <label>官方或反代 Base URL<input name="base_url" required placeholder="https://proxy.example.com/v1"></label>
@@ -270,8 +271,8 @@
   <div class="popover conversation-popover" id="conversationPopover" hidden></div>
   <div class="message-menu-backdrop" id="messageMenu" hidden><section class="message-menu" role="dialog" aria-label="消息操作"><button type="button" id="branchMessage">创建分支</button><button type="button" id="editMessage">修改内容</button><button type="button" class="danger" id="deleteMessageVersion">删除本版本</button><button type="button" class="danger" id="deleteAllMessageVersions">删除全部版本</button><button type="button" id="closeMessageMenu">取消</button></section></div>
   <div class="message-menu-backdrop" id="messageEditor" hidden><form class="message-editor" role="dialog" aria-label="修改消息"><h3>修改内容</h3><textarea id="messageEditContent" rows="7" required></textarea><div class="form-actions"><button type="button" class="ghost" id="cancelMessageEdit">取消</button><button class="primary">保存修改</button></div></form></div>
-  <script src="assets/standalone.js?v=0424"></script>
-  <script src="assets/app.js?v=0424" defer></script>
+  <script src="assets/standalone.js?v=0426"></script>
+  <script src="assets/app.js?v=0426" defer></script>
   <script>
     if ('serviceWorker' in navigator) {
       navigator.serviceWorker.register('service-worker.js?v=36', { updateViaCache: 'none' }).then(registration => registration.update());

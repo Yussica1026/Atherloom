@@ -267,6 +267,15 @@ class LocalClientTests(unittest.TestCase):
         self.assertIn("2026年7月19日", messages[0]["content"])
         self.assertIn("由用户设备提供", messages[0]["content"])
 
+    def test_verified_game_result_is_injected_into_chat_context(self):
+        provider = self.client.post("/api/providers", json={"name": "游戏测试", "protocol": "openai", "base_url": "https://example.com/v1", "api_key": "test", "model": "test-model"}).json()
+        conversation = self.client.post("/api/conversations", json={"provider_id": provider["id"]}).json()
+        body = app_module.ChatIn(conversation_id=conversation["id"], content="你去钓鱼", provider_id=provider["id"], game_context="Ara 钓到了银尾鲫，心里很开心。")
+        with app_module.closing(app_module.db()) as connection:
+            _, _, messages = app_module.load_chat_context(connection, body)
+        self.assertIn("verified_game_result", messages[0]["content"])
+        self.assertIn("Ara 钓到了银尾鲫", messages[0]["content"])
+
 
 if __name__ == "__main__":
     unittest.main()
