@@ -13,7 +13,7 @@
   <title>Atherloom</title>
   <link rel="manifest" href="manifest.json">
   <link rel="icon" href="assets/app-icon.svg" type="image/svg+xml">
-  <link rel="stylesheet" href="assets/app.css?v=0429">
+  <link rel="stylesheet" href="assets/app.css?v=0430">
   <script>document.documentElement.dataset.launchMode=performance.getEntriesByType("navigation")[0]?.type==="reload"?"refresh":"full";</script>
 </head>
 <body>
@@ -272,14 +272,14 @@
   <div class="popover conversation-popover" id="conversationPopover" hidden></div>
   <div class="message-menu-backdrop" id="messageMenu" hidden><section class="message-menu" role="dialog" aria-label="消息操作"><button type="button" id="branchMessage">创建分支</button><button type="button" id="editMessage">修改内容</button><button type="button" class="danger" id="deleteMessageVersion">删除本版本</button><button type="button" class="danger" id="deleteAllMessageVersions">删除全部版本</button><button type="button" id="closeMessageMenu">取消</button></section></div>
   <div class="message-menu-backdrop" id="messageEditor" hidden><form class="message-editor" role="dialog" aria-label="修改消息"><h3>修改内容</h3><textarea id="messageEditContent" rows="7" required></textarea><div class="form-actions"><button type="button" class="ghost" id="cancelMessageEdit">取消</button><button class="primary">保存修改</button></div></form></div>
-  <script src="assets/standalone.js?v=0429"></script>
-  <script src="assets/app.js?v=0429" defer></script>
+  <script src="assets/standalone.js?v=0430"></script>
+  <script src="assets/app.js?v=0430" defer></script>
   <script>
     if ('serviceWorker' in navigator) {
-      navigator.serviceWorker.register('service-worker.js?v=37', { updateViaCache: 'none' }).then(registration => registration.update());
+      navigator.serviceWorker.register('service-worker.js?v=38', { updateViaCache: 'none' }).then(registration => registration.update());
       navigator.serviceWorker.addEventListener('controllerchange', () => {
-        if (!sessionStorage.getItem('atherloom:sw-reloaded-v36')) {
-          sessionStorage.setItem('atherloom:sw-reloaded-v36', '1');
+        if (!sessionStorage.getItem('atherloom:sw-reloaded-v38')) {
+          sessionStorage.setItem('atherloom:sw-reloaded-v38', '1');
           location.reload();
         }
       });
