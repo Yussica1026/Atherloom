@@ -46,6 +46,23 @@ class LocalClientTests(unittest.TestCase):
         self.assertNotIn(first_id, [row["id"] for row in remaining])
         self.assertIn(second_id, [row["id"] for row in remaining])
 
+    def test_messages_can_be_edited_and_all_answer_versions_deleted(self):
+        conversation_id, user_id = str(uuid.uuid4()), str(uuid.uuid4())
+        first_id, second_id = str(uuid.uuid4()), str(uuid.uuid4())
+        with app_module.closing(app_module.db()) as connection:
+            connection.execute("INSERT INTO conversations VALUES (?, '消息操作', NULL, NULL, '', ?, ?, 0, 0, 0)", (conversation_id, app_module.now_iso(), app_module.now_iso()))
+            connection.execute("INSERT INTO messages VALUES (?, ?, 'user', '旧问题', NULL, NULL, ?, '', NULL)", (user_id, conversation_id, "2026-07-22T11:00:00"))
+            connection.execute("INSERT INTO messages VALUES (?, ?, 'assistant', '第一版', NULL, 'm', ?, '', ?)", (first_id, conversation_id, "2026-07-22T11:00:01", user_id))
+            connection.execute("INSERT INTO messages VALUES (?, ?, 'assistant', '第二版', NULL, 'm', ?, '', ?)", (second_id, conversation_id, "2026-07-22T11:00:02", user_id))
+            connection.commit()
+        edited = self.client.patch(f"/api/messages/{user_id}", json={"content": "修改后的问题"})
+        self.assertEqual(edited.status_code, 200)
+        self.assertEqual(edited.json()["content"], "修改后的问题")
+        deleted = self.client.delete(f"/api/messages/{first_id}/versions")
+        self.assertEqual(set(deleted.json()["deleted"]), {first_id, second_id})
+        remaining = self.client.get(f"/api/conversations/{conversation_id}/messages").json()
+        self.assertEqual([row["id"] for row in remaining], [user_id])
+
     def test_provider_is_saved_but_key_is_masked(self):
         response = self.client.post("/api/providers", json={
             "name": "测试反代", "protocol": "openai",
@@ -147,6 +164,15 @@ class LocalClientTests(unittest.TestCase):
         bootstrap = self.client.get("/api/bootstrap").json()
         self.assertEqual(bootstrap["personas"], [])
         self.assertIsNone(next(item for item in bootstrap["conversations"] if item["id"] == conversation["id"])["persona_id"])
+
+    def test_persona_workspace_config_is_persisted(self):
+        config = {"memory_enabled": False, "history_enabled": False, "summary_frequency": 5, "quick_phrases": ["继续说"], "custom_headers": {"X-Mode": "friend"}, "custom_body": {"seed": 7}, "regex_rules": [{"pattern": "A", "replacement": "B"}], "tools": {"time": True, "calculator": False}, "mcp_servers": ["memory"]}
+        persona = self.client.post("/api/personas", json={"name": "工作台", "prompt": "保持温柔", "config": config}).json()
+        self.assertFalse(persona["config"]["memory_enabled"])
+        self.assertEqual(persona["config"]["quick_phrases"], ["继续说"])
+        loaded = next(item for item in self.client.get("/api/bootstrap").json()["personas"] if item["id"] == persona["id"])
+        self.assertEqual(loaded["config"]["custom_headers"]["X-Mode"], "friend")
+        self.assertFalse(loaded["config"]["tools"]["calculator"])
 
     def test_high_frequency_entity_does_not_drown_the_topic(self):
         topics = ["健身操", "戒指", "早餐", "旅行", "天气", "电影", "咖啡", "散步", "工作", "游戏"]

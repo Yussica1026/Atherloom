@@ -51,6 +51,10 @@ def init_db() -> None:
               id TEXT PRIMARY KEY, name TEXT NOT NULL, prompt TEXT NOT NULL,
               created_at TEXT NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS persona_configs (
+              persona_id TEXT PRIMARY KEY, config_json TEXT NOT NULL DEFAULT '{}',
+              updated_at TEXT NOT NULL
+            );
             CREATE TABLE IF NOT EXISTS conversations (
               id TEXT PRIMARY KEY, title TEXT NOT NULL, provider_id TEXT,
               persona_id TEXT, summary TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL,
@@ -164,9 +168,14 @@ class MessageSelectionIn(BaseModel):
     assistant_message_id: str
 
 
+class MessageEditIn(BaseModel):
+    content: str = Field(min_length=1, max_length=200000)
+
+
 class PersonaIn(BaseModel):
     name: str = Field(min_length=1, max_length=80)
     prompt: str = ""
+    config: dict[str, Any] = Field(default_factory=dict)
 
 
 class ConversationIn(BaseModel):
@@ -270,11 +279,36 @@ def masked_provider(row: sqlite3.Row) -> dict[str, Any]:
     return item
 
 
+PERSONA_CONFIG_DEFAULTS = {
+    "memory_enabled": True, "history_enabled": True, "summary_frequency": 20,
+    "quick_phrases": [], "custom_headers": {}, "custom_body": {}, "regex_rules": [],
+    "tools": {"time": True, "clipboard": False, "tts": False, "ask_user": True, "calculator": True},
+    "mcp_servers": [], "provider_id": "", "stream_enabled": None,
+}
+
+
+def normalize_persona_config(value: Any) -> dict[str, Any]:
+    config = dict(PERSONA_CONFIG_DEFAULTS)
+    config["tools"] = dict(PERSONA_CONFIG_DEFAULTS["tools"])
+    if isinstance(value, str):
+        try: value = json.loads(value)
+        except json.JSONDecodeError: value = {}
+    if isinstance(value, dict):
+        config.update({key: item for key, item in value.items() if key in config})
+        if isinstance(value.get("tools"), dict): config["tools"].update(value["tools"])
+    config["summary_frequency"] = max(1, min(200, int(config.get("summary_frequency") or 20)))
+    for key in ("quick_phrases", "regex_rules", "mcp_servers"):
+        if not isinstance(config.get(key), list): config[key] = []
+    for key in ("custom_headers", "custom_body"):
+        if not isinstance(config.get(key), dict): config[key] = {}
+    return config
+
+
 @app.get("/api/bootstrap")
 def bootstrap() -> dict[str, Any]:
     with closing(db()) as connection:
         providers = [masked_provider(row) for row in connection.execute("SELECT * FROM providers ORDER BY created_at")]
-        personas = [dict(row) for row in connection.execute("SELECT * FROM personas ORDER BY created_at")]
+        personas = [{**dict(row), "config": normalize_persona_config(row["config_json"])} for row in connection.execute("SELECT p.*,c.config_json FROM personas p LEFT JOIN persona_configs c ON c.persona_id=p.id ORDER BY p.created_at")]
         conversations = [dict(row) for row in connection.execute("SELECT * FROM conversations ORDER BY updated_at DESC")]
         settings_rows = {row["key"]: row["value"] for row in connection.execute("SELECT * FROM app_settings")}
     return {"providers": providers, "personas": personas, "conversations": conversations, "settings": {
@@ -443,8 +477,10 @@ def save_persona(body: PersonaIn) -> dict[str, Any]:
     created = now_iso()
     with closing(db()) as connection:
         connection.execute("INSERT INTO personas VALUES (?, ?, ?, ?)", (persona_id, body.name, body.prompt, created))
+        config = normalize_persona_config(body.config)
+        connection.execute("INSERT INTO persona_configs VALUES (?,?,?)", (persona_id, json.dumps(config, ensure_ascii=False), created))
         connection.commit()
-    return {"id": persona_id, "name": body.name, "prompt": body.prompt, "created_at": created}
+    return {"id": persona_id, "name": body.name, "prompt": body.prompt, "config": config, "created_at": created}
 
 
 @app.put("/api/personas/{persona_id}")
@@ -453,9 +489,11 @@ def update_persona(persona_id: str, body: PersonaIn) -> dict[str, Any]:
         existing = connection.execute("SELECT * FROM personas WHERE id=?", (persona_id,)).fetchone()
         if not existing:
             raise HTTPException(404, "人格不存在")
+        config = normalize_persona_config(body.config)
         connection.execute("UPDATE personas SET name=?,prompt=? WHERE id=?", (body.name, body.prompt, persona_id))
+        connection.execute("INSERT INTO persona_configs VALUES (?,?,?) ON CONFLICT(persona_id) DO UPDATE SET config_json=excluded.config_json,updated_at=excluded.updated_at", (persona_id, json.dumps(config, ensure_ascii=False), now_iso()))
         connection.commit()
-    return {"id": persona_id, "name": body.name, "prompt": body.prompt, "created_at": existing["created_at"]}
+    return {"id": persona_id, "name": body.name, "prompt": body.prompt, "config": config, "created_at": existing["created_at"]}
 
 
 @app.delete("/api/personas/{persona_id}")
@@ -463,6 +501,7 @@ def delete_persona(persona_id: str) -> dict[str, bool]:
     with closing(db()) as connection:
         connection.execute("UPDATE conversations SET persona_id=NULL WHERE persona_id=?", (persona_id,))
         connection.execute("DELETE FROM personas WHERE id=?", (persona_id,))
+        connection.execute("DELETE FROM persona_configs WHERE persona_id=?", (persona_id,))
         connection.commit()
     return {"ok": True}
 
@@ -582,6 +621,35 @@ def delete_message_version(message_id: str) -> dict[str, Any]:
         connection.execute(f"DELETE FROM message_selections WHERE assistant_message_id IN ({placeholders})", targets)
         connection.commit()
     return {"ok": True, "deleted": targets}
+
+
+@app.patch("/api/messages/{message_id}")
+def edit_message(message_id: str, body: MessageEditIn) -> dict[str, Any]:
+    with closing(db()) as connection:
+        message = connection.execute("SELECT * FROM messages WHERE id=? AND NOT EXISTS (SELECT 1 FROM message_trash t WHERE t.message_id=messages.id)", (message_id,)).fetchone()
+        if not message:
+            raise HTTPException(404, "消息不存在")
+        connection.execute("UPDATE messages SET content=? WHERE id=?", (body.content.strip(), message_id))
+        connection.execute("UPDATE conversations SET updated_at=? WHERE id=?", (now_iso(), message["conversation_id"]))
+        connection.commit()
+    return {**dict(message), "content": body.content.strip()}
+
+
+@app.delete("/api/messages/{message_id}/versions")
+def delete_all_message_versions(message_id: str) -> dict[str, Any]:
+    with closing(db()) as connection:
+        message = connection.execute("SELECT * FROM messages WHERE id=?", (message_id,)).fetchone()
+        if not message:
+            raise HTTPException(404, "消息不存在")
+        parent_id = message["parent_message_id"] if message["role"] == "assistant" else message_id
+        if message["role"] == "assistant":
+            targets = [row["id"] for row in connection.execute("SELECT id FROM messages WHERE parent_message_id=?", (parent_id,))]
+        else:
+            targets = [message_id, *[row["id"] for row in connection.execute("SELECT id FROM messages WHERE parent_message_id=?", (message_id,))]]
+        connection.executemany("INSERT OR REPLACE INTO message_trash(message_id,deleted_at) VALUES (?,?)", [(target, now_iso()) for target in targets])
+        connection.execute("DELETE FROM message_selections WHERE conversation_id=? AND parent_message_id=?", (message["conversation_id"], parent_id))
+        connection.commit()
+    return {"ok": True, "deleted": targets, "parent_message_id": parent_id}
 
 
 @app.get("/api/favorites")
@@ -807,9 +875,9 @@ async def ai_game_turn(game_id: str, body: AiGameTurnIn) -> dict[str, Any]:
             if persona: instruction = persona["prompt"] + "\n\n" + instruction
             headers = provider_headers(provider["protocol"], provider["api_key"], provider["custom_headers"])
             if provider["protocol"] == "anthropic":
-                payload = {"model": provider["model"], "max_tokens": 220, "messages": [{"role": "user", "content": instruction}]}
+                payload = {"model": provider["model"], "max_tokens": 96, "temperature": 0.2, "messages": [{"role": "user", "content": instruction}]}
             else:
-                payload = {"model": provider["model"], "max_tokens": 220, "stream": False, "messages": [{"role": "user", "content": instruction}]}
+                payload = {"model": provider["model"], "max_tokens": 96, "temperature": 0.2, "stream": False, "messages": [{"role": "user", "content": instruction}]}
             response = await client.post(provider_endpoint(provider["base_url"], provider["protocol"]), headers=headers, json=payload)
             if response.status_code >= 400: raise HTTPException(502, f"游戏 AI 请求失败：{response.status_code}")
             data = response.json(); text = "".join(block.get("text", "") for block in data.get("content", []) if block.get("type") == "text") if provider["protocol"] == "anthropic" else data.get("choices", [{}])[0].get("message", {}).get("content", "")
@@ -886,8 +954,11 @@ def load_chat_context(connection: sqlite3.Connection, body: ChatIn, cutoff: str 
     if not provider:
         raise HTTPException(404, "API 配置不存在或已停用")
     persona_prompt = ""
+    persona_config = normalize_persona_config({})
     if body.persona_id:
         persona = connection.execute("SELECT * FROM personas WHERE id=?", (body.persona_id,)).fetchone()
+        config_row = connection.execute("SELECT config_json FROM persona_configs WHERE persona_id=?", (body.persona_id,)).fetchone()
+        persona_config = normalize_persona_config(config_row["config_json"] if config_row else {})
         persona_prompt = f"<assistant_persona active=\"true\">\n{persona['prompt']}\n</assistant_persona>" if persona and persona["prompt"].strip() else ""
     conversation = connection.execute("SELECT * FROM conversations WHERE id=?", (body.conversation_id,)).fetchone()
     if not conversation:
@@ -905,12 +976,16 @@ def load_chat_context(connection: sqlite3.Connection, body: ChatIn, cutoff: str 
         params.append(cutoff)
     query += " ORDER BY created_at"
     messages = [{"role": row["role"], "content": row["content"]} for row in connection.execute(query, params)]
+    if not persona_config["history_enabled"]:
+        messages = []
     time_context = f"当前本地时间（由用户设备提供）：{body.local_time}" if body.local_time else ""
     proactive_row = connection.execute("SELECT value FROM app_settings WHERE key='proactive_questions'").fetchone()
     proactive_questions = proactive_row and proactive_row["value"] == "true"
     question_context = ("用户允许你在合适时主动提问、自然追问、发起新话题或提供清晰的编号选项；不要机械地每轮都提问。" if proactive_questions else "除非完成当前请求确实缺少必要信息，否则不要主动反问或发起问卷；优先直接回应用户。")
     formatting_context = "界面支持 Markdown。你可以根据语义有节制地使用 **粗体**、*斜体*、标题、引用、列表与代码块；不要为了装饰而过度格式化。"
-    system_parts = [part for part in (persona_prompt, conversation["summary"], time_context, question_context, formatting_context) if part]
+    tool_names = [name for name, enabled in persona_config["tools"].items() if enabled]
+    tool_context = f"该人格启用的本地能力偏好：{', '.join(tool_names)}。只有宿主实际提供的能力才可调用。" if tool_names else ""
+    system_parts = [part for part in (persona_prompt, conversation["summary"] if persona_config["history_enabled"] else "", time_context, question_context, formatting_context, tool_context) if part]
     if system_parts:
         messages.insert(0, {"role": "system", "content": "\n\n".join(system_parts)})
     return provider, persona_prompt, messages
@@ -1146,9 +1221,11 @@ async def chat(body: ChatIn) -> StreamingResponse:
             cutoff = reused["created_at"]
             body.content = reused["content"]
         provider, _, messages = load_chat_context(connection, body, cutoff)
+        config_row = connection.execute("SELECT config_json FROM persona_configs WHERE persona_id=?", (body.persona_id,)).fetchone() if body.persona_id else None
+        persona_config = normalize_persona_config(config_row["config_json"] if config_row else {})
         permission_row = connection.execute("SELECT value FROM app_settings WHERE key='tool_permissions'").fetchone()
         permissions = json.loads(permission_row["value"]) if permission_row else {"memory_read": "allow"}
-        memory_sources = retrieve_memories(connection, body.content) if permissions.get("memory_read") == "allow" else []
+        memory_sources = retrieve_memories(connection, body.content) if permissions.get("memory_read") == "allow" and persona_config["memory_enabled"] else []
         if memory_sources:
             memory_context = "<relevant_memories>\n" + "\n\n".join(
                 f"[memory:{item['id']}] {item['title']}\n{item['content']}" for item in memory_sources

@@ -20,6 +20,9 @@
     if (result && !Array.isArray(result) && result.ok === false) throw new Error(result.error || "原生操作失败");
     return result;
   };
+  let nativeChatSequence=0;const nativeChatPending=new Map();
+  window.AtherloomNativeResolve=(id,raw)=>{const pending=nativeChatPending.get(id);if(!pending)return;nativeChatPending.delete(id);try{const result=JSON.parse(raw);if(!result.ok)throw new Error(result.error||"原生请求失败");pending.resolve(result);}catch(error){pending.reject(error);}};
+  const nativeChat=request=>new Promise((resolve,reject)=>{const id=`chat-${++nativeChatSequence}`;nativeChatPending.set(id,{resolve,reject});window.AtherloomNative.chatAsync(JSON.stringify(request),id);});
   const publicProvider = item => { const copy={...item,has_api_key:!!item.api_key||!!item.has_api_key}; delete copy.api_key; return copy; };
   const webModels = async provider => {
     const base=provider.base_url.replace(/\/+$/,""),anthropic=provider.protocol==="anthropic",endpoint=`${base}/models`;
@@ -35,7 +38,7 @@
     const endpoint=anthropic?(base.endsWith("/v1")?`${base}/messages`:`${base}/v1/messages`):(base.endsWith("/chat/completions")?base:`${base}/chat/completions`);
     const headers={"Content-Type":"application/json",...(JSON.parse(provider.custom_headers||"{}"))};
     if(anthropic){headers["x-api-key"]=provider.api_key;headers["anthropic-version"]="2023-06-01";}else headers.Authorization=`Bearer ${provider.api_key}`;
-    const payload={model:provider.model,max_tokens:Number(provider.max_tokens||4096),temperature:Number(provider.temperature??.7),top_p:Number(provider.top_p??1),messages:formatMessages(request.messages,provider.protocol)};if(anthropic&&request.system)payload.system=request.system;
+    const payload={model:provider.model,max_tokens:Number(request.max_tokens||provider.max_tokens||4096),temperature:Number(request.temperature??provider.temperature??.7),top_p:Number(request.top_p??provider.top_p??1),messages:formatMessages(request.messages,provider.protocol)};if(anthropic&&request.system)payload.system=request.system;
     const response=await originalFetch(endpoint,{method:"POST",headers,body:JSON.stringify(payload)});
     const data=await response.json().catch(()=>({}));if(!response.ok)throw new Error(`HTTP ${response.status} · ${data.error?.message||data.message||"网关请求失败"}`);
     const content=anthropic?(data.content||[]).filter(block=>block.type==="text").map(block=>block.text).join(""):data.choices?.[0]?.message?.content;
@@ -109,6 +112,9 @@
     if (url.pathname === "/api/providers/models" && method === "POST") return json({models:native?nativeResult("listModels",body):await webModels(body)});
     if(url.pathname==="/api/messages/selection"&&method==="PATCH"){const selected=read(`versions:${body.conversation_id}`,{});selected[body.parent_message_id]=body.assistant_message_id;write(`versions:${body.conversation_id}`,selected);return json({ok:true});}
     const deleteMessage=url.pathname.match(/^\/api\/messages\/([^/]+)$/);
+    const deleteMessageVersions=url.pathname.match(/^\/api\/messages\/([^/]+)\/versions$/);
+    if(deleteMessageVersions&&method==="DELETE"){const id=decodeURIComponent(deleteMessageVersions[1]);for(const conversation of read("conversations",[])){const all=messages(conversation.id),target=all.find(item=>item.id===id);if(!target)continue;const parentId=target.role==="assistant"?target.parent_message_id:target.id,deleted=target.role==="assistant"?all.filter(item=>item.parent_message_id===parentId).map(item=>item.id):all.filter(item=>item.id===id||item.parent_message_id===id).map(item=>item.id);saveMessages(conversation.id,all.filter(item=>!deleted.includes(item.id)));const selected=read(`versions:${conversation.id}`,{});delete selected[parentId];write(`versions:${conversation.id}`,selected);return json({ok:true,deleted,parent_message_id:parentId});}return json({detail:"消息不存在"},404);}
+    if(deleteMessage&&method==="PATCH"){const id=decodeURIComponent(deleteMessage[1]);for(const conversation of read("conversations",[])){const all=messages(conversation.id),target=all.find(item=>item.id===id);if(!target)continue;target.content=String(body.content||"").trim();if(!target.content)return json({detail:"消息内容不能为空"},422);saveMessages(conversation.id,all);return json(target);}return json({detail:"消息不存在"},404);}
     if(deleteMessage&&method==="DELETE"){const id=decodeURIComponent(deleteMessage[1]);for(const conversation of read("conversations",[])){const all=messages(conversation.id),target=all.find(item=>item.id===id);if(!target)continue;saveMessages(conversation.id,all.filter(item=>item.id!==id&&(target.role!=="user"||item.parent_message_id!==id)));const selected=read(`versions:${conversation.id}`,{});if(target.parent_message_id)delete selected[target.parent_message_id];if(target.role==="user")delete selected[target.id];write(`versions:${conversation.id}`,selected);return json({ok:true});}return json({detail:"消息不存在"},404);}
     if (/^\/api\/providers\/[^/]+$/.test(url.pathname) && method === "DELETE") {
       const id=decodeURIComponent(url.pathname.split("/").pop());
@@ -144,14 +150,15 @@
       let user;
       if(body.reuse_user_message_id) user=history.find(item=>item.id===body.reuse_user_message_id);
       if(!user){user={id:uid(),role:"user",content:body.content,attachments:body.attachments||[],created_at:now};history.push(user);}
-      const persona=read("personas",[]).find(item=>item.id===body.persona_id),memorySources=relevantMemories(body.content);
+      const persona=read("personas",[]).find(item=>item.id===body.persona_id),personaConfig=persona?.config||{},memorySources=personaConfig.memory_enabled===false?[]:relevantMemories(body.content);
       const personaContext=persona?.prompt?.trim()?`<assistant_persona active="true">\n${persona.prompt}\n</assistant_persona>`:"";
       const memoryContext=memorySources.length?`<relevant_memories>\n${memorySources.map(item=>`[memory:${item.id}] ${item.title}\n${item.content}`).join("\n\n")}\n</relevant_memories>`:"";
       const questionContext=settings().proactive_questions?"用户允许你在合适时主动提问、自然追问、发起新话题或提供清晰的编号选项；不要机械地每轮都提问。":"除非完成当前请求确实缺少必要信息，否则不要主动反问或发起问卷；优先直接回应用户。";
       const formattingContext="界面支持 Markdown。你可以根据语义有节制地使用 **粗体**、*斜体*、标题、引用、列表与代码块；不要为了装饰而过度格式化。";
-      const prompt=[personaContext,memoryContext,`当前时间：${new Date().toLocaleString("zh-CN",{hour12:false})}`,questionContext,formattingContext].filter(Boolean).join("\n\n");
+      const enabledTools=Object.entries(personaConfig.tools||{}).filter(([,enabled])=>enabled).map(([name])=>name),toolContext=enabledTools.length?`该人格启用的本地能力偏好：${enabledTools.join(", ")}。只有宿主实际提供的能力才可调用。`:"";
+      const prompt=[personaContext,memoryContext,`当前时间：${new Date().toLocaleString("zh-CN",{hour12:false})}`,questionContext,formattingContext,toolContext].filter(Boolean).join("\n\n");
       try {
-        const provider=providers().find(item=>item.id===body.provider_id);const rawMessages=effectiveMessages(body.conversation_id,history).filter(item=>item.role==="user"||item.role==="assistant").map(item=>({role:item.role,content:item.content,attachments:item.attachments||[]}));
+        const provider=providers().find(item=>item.id===body.provider_id);const sourceMessages=personaConfig.history_enabled===false?[user]:effectiveMessages(body.conversation_id,history),rawMessages=sourceMessages.filter(item=>item.role==="user"||item.role==="assistant").map(item=>({role:item.role,content:item.content,attachments:item.attachments||[]}));
         const request={provider_id:body.provider_id,system:prompt,messages:native?formatMessages(rawMessages,provider?.protocol||"openai"):rawMessages};
         let sentMemorySources=false;
         const persistStreamEvent=(()=>{const assistant={id:uid(),role:"assistant",content:"",reasoning:"",model:provider?.model||"",parent_message_id:user.id,created_at:new Date().toISOString()};return event=>{const output=[];if(!sentMemorySources&&memorySources.length){sentMemorySources=true;output.push({memory_sources:memorySources.map(item=>({id:item.id,title:item.title,kind:item.kind}))});}if(event.delta)assistant.content+=event.delta;if(event.reasoning_delta)assistant.reasoning+=event.reasoning_delta;if(event.error){saveMessages(body.conversation_id,history);return [...output,event];}if(!event.done)return [...output,event];history.push(assistant);saveMessages(body.conversation_id,history);const selected=read(`versions:${body.conversation_id}`,{});selected[user.id]=assistant.id;write(`versions:${body.conversation_id}`,selected);const conversation=read("conversations",[]).find(item=>item.id===body.conversation_id);let title="";if(conversation?.title==="新对话"){title=(user.content||"新对话").replace(/\s+/g," ").slice(0,24);updateConversation(body.conversation_id,{title});}return [...output,{done:true,assistant_id:assistant.id,user_id:user.id,title}];};})();
@@ -159,7 +166,7 @@
           return nativeStreamResponse(request,persistStreamEvent);
         }
         if(!native&&provider?.stream_enabled!==false&&provider?.stream_enabled!==0)return webStreamResponse(request,read("providers",[]).find(item=>item.id===body.provider_id),persistStreamEvent);
-        const result=native?nativeResult("chat",request):await webChat(request);
+        const result=native?await nativeChat(request):await webChat(request);
         const assistant={id:uid(),role:"assistant",content:result.content||"",model:result.model||"",parent_message_id:user.id,created_at:new Date().toISOString()};
         history.push(assistant);saveMessages(body.conversation_id,history);
         const selected=read(`versions:${body.conversation_id}`,{});selected[user.id]=assistant.id;write(`versions:${body.conversation_id}`,selected);
@@ -173,7 +180,7 @@
     if(aiTurn&&method==="POST"){
       const gameId=aiTurn[1],allowed=aiGameActions[gameId];if(!allowed)return json({detail:"游戏尚未开放 AI 游玩"},404);const decisions=[];let spent=0,finalState;
       for(let turn=0;turn<(body.turns||1);turn++){const key=`game:${gameId}`,fallback=gameId==="quiet_fishing"?defaultGame():gameId==="claw_machine"?defaultClaw():defaultSlots(),current=read(key,fallback),persona=read("personas",[]).find(item=>item.id===body.persona_id),instruction=`${persona?.prompt?persona.prompt+"\n\n":""}你正在 Atherloom 中玩游戏 ${gameId}。\n当前状态：${JSON.stringify(current)}\n允许动作：${JSON.stringify(allowed)}\n剩余可花云贝预算：${(body.max_spend||30)-spent}。\n只返回 JSON：{"action":"白名单动作","amount":1,"target":"需要时填写","comment":"一句当轮想法"}。`;
-        try{const provider=providers().find(item=>item.id===body.provider_id),request={provider_id:body.provider_id,messages:[{role:"user",content:instruction}],system:""},answer=native?nativeResult("chat",request):await webChat(request),match=(answer.content||"").match(/\{[\s\S]*\}/);if(!match)throw new Error("模型没有返回游戏动作");const choice=JSON.parse(match[0]),valid=allowed.find(item=>item.action===choice.action&&(!item.target||item.target===choice.target));if(!valid)throw new Error("模型选择了白名单外动作");const cost=gameId==="claw_machine"&&valid.action==="grab"?10:gameId==="cloud_slots"?5:gameId==="quiet_fishing"&&valid.action==="buy_bait"?25:0;if(spent+cost>(body.max_spend||30))break;const response=await window.fetch(`/api/games/${gameId}/action`,{method:"POST",body:JSON.stringify(valid)});if(!response.ok)throw new Error((await response.json()).detail);const played=await response.json();spent+=cost;if(choice.comment){played.state.journal=[...played.state.journal,`AI：${String(choice.comment).slice(0,160)}`].slice(-30);write(key,played.state);}finalState=played.state;decisions.push({choice:valid,comment:choice.comment||"",events:played.events});}catch(error){return json({detail:error.message},502);}
+        try{const provider=providers().find(item=>item.id===body.provider_id),request={provider_id:body.provider_id,messages:[{role:"user",content:instruction}],system:"",max_tokens:96,temperature:.2,thinking_enabled:false},answer=native?await nativeChat(request):await webChat(request),match=(answer.content||"").match(/\{[\s\S]*\}/);if(!match)throw new Error("模型没有返回游戏动作");const choice=JSON.parse(match[0]),valid=allowed.find(item=>item.action===choice.action&&(!item.target||item.target===choice.target));if(!valid)throw new Error("模型选择了白名单外动作");const cost=gameId==="claw_machine"&&valid.action==="grab"?10:gameId==="cloud_slots"?5:gameId==="quiet_fishing"&&valid.action==="buy_bait"?25:0;if(spent+cost>(body.max_spend||30))break;const response=await window.fetch(`/api/games/${gameId}/action`,{method:"POST",body:JSON.stringify(valid)});if(!response.ok)throw new Error((await response.json()).detail);const played=await response.json();spent+=cost;if(choice.comment){played.state.journal=[...played.state.journal,`AI：${String(choice.comment).slice(0,160)}`].slice(-30);write(key,played.state);}finalState=played.state;decisions.push({choice:valid,comment:choice.comment||"",events:played.events});}catch(error){return json({detail:error.message},502);}
       }return json({state:finalState,decisions,spent});
     }
     if(/\/api\/games\/claw_machine\/state/.test(url.pathname))return json({game_id:"claw_machine",state:read("game:claw_machine",defaultClaw()),waters:{}});

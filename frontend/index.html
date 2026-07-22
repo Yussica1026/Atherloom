@@ -13,7 +13,7 @@
   <title>Atherloom</title>
   <link rel="manifest" href="manifest.json">
   <link rel="icon" href="assets/app-icon.svg" type="image/svg+xml">
-  <link rel="stylesheet" href="assets/app.css?v=0418">
+  <link rel="stylesheet" href="assets/app.css?v=0423">
   <script>document.documentElement.dataset.launchMode=performance.getEntriesByType("navigation")[0]?.type==="reload"?"refresh":"full";</script>
 </head>
 <body>
@@ -75,6 +75,7 @@
           <div class="composer-bottom">
             <div class="composer-tools">
               <button class="round-button" id="attachmentButton" title="添加附件" type="button">＋</button>
+              <button class="round-button" id="quickPhraseButton" title="快捷短语" type="button" hidden>⚡</button>
               <button class="model-picker" id="modelPicker">选择模型⌄</button>
               <button class="persona-picker" id="personaPicker">默认人格⌄</button>
             </div>
@@ -175,7 +176,14 @@
           <div class="setting-row"><div><strong>允许助手主动提问</strong><small>开启后，助手可以自然追问、发起话题或给出选项；关闭后会尽量直接回答。</small></div><label class="switch"><input id="proactiveQuestions" type="checkbox"><span></span></label></div>
           <form id="personaForm" class="edit-card visible">
             <label>人格名称<input name="name" required placeholder="例如：私人助手"></label>
-            <label>系统指令<textarea name="prompt" rows="12" placeholder="身份、关系、说话方式、做事边界……"></textarea></label>
+            <nav class="persona-tabs" aria-label="人格功能"><button type="button" class="active" data-persona-tab="prompt">提示词</button><button type="button" data-persona-tab="memory">记忆</button><button type="button" data-persona-tab="phrases">快捷短语</button><button type="button" data-persona-tab="request">自定义请求</button><button type="button" data-persona-tab="regex">正则替换</button><button type="button" data-persona-tab="tools">本地工具</button><button type="button" data-persona-tab="mcp">MCP</button></nav>
+            <section class="persona-pane active" data-persona-pane="prompt"><label>系统指令<textarea name="prompt" rows="12" placeholder="身份、关系、说话方式、做事边界……"></textarea></label></section>
+            <section class="persona-pane" data-persona-pane="memory"><div class="setting-row"><div><strong>使用记忆</strong><small>允许该人格检索已确认的长期记忆</small></div><label class="switch"><input name="memory_enabled" type="checkbox" checked><span></span></label></div><div class="setting-row"><div><strong>参考历史聊天记录</strong><small>关闭后只读取当前消息与人格提示词</small></div><label class="switch"><input name="history_enabled" type="checkbox" checked><span></span></label></div><label>摘要更新频率（消息条数）<input name="summary_frequency" type="number" min="1" max="200" value="20"></label></section>
+            <section class="persona-pane" data-persona-pane="phrases"><label>快捷短语<textarea name="quick_phrases" rows="10" placeholder="每行一条，例如：\n继续说下去\n帮我整理成清单"></textarea><small class="muted">保存后可作为该人格的常用输入短语。</small></label></section>
+            <section class="persona-pane" data-persona-pane="request"><label>自定义 Header（JSON）<textarea name="persona_headers" rows="7">{}</textarea></label><label>自定义 Body（JSON）<textarea name="persona_body" rows="9">{}</textarea></label><p class="privacy-note">只允许合法 JSON；模型、消息、API Key 等核心字段仍由线路安全管理。</p></section>
+            <section class="persona-pane" data-persona-pane="regex"><label>正则规则（JSON 数组）<textarea name="regex_rules" rows="12" placeholder='[{"pattern":"原文","replacement":"替换","flags":"g","target":"assistant"}]'>[]</textarea><small class="muted">目标可选 user、assistant 或 both。错误规则不会执行。</small></label></section>
+            <section class="persona-pane" data-persona-pane="tools"><div class="persona-tool-list"><label class="check-label"><input name="tool_time" type="checkbox" checked> 时间信息</label><label class="check-label"><input name="tool_clipboard" type="checkbox"> 剪贴板（需系统授权）</label><label class="check-label"><input name="tool_tts" type="checkbox"> 文字转语音</label><label class="check-label"><input name="tool_ask_user" type="checkbox" checked> 询问用户</label><label class="check-label"><input name="tool_calculator" type="checkbox" checked> 计算器</label></div></section>
+            <section class="persona-pane" data-persona-pane="mcp"><label>绑定 MCP 服务<textarea name="mcp_servers" rows="8" placeholder="每行一个已配置的 MCP 服务名称"></textarea><small class="muted">仅绑定全局已配置并通过测试的服务，不在这里保存访问令牌。</small></label></section>
             <div class="form-actions"><button type="button" class="ghost" id="cancelPersonaEdit" hidden>取消编辑</button><button class="primary" id="savePersona">保存人格</button></div>
           </form>
           <div id="personaList" class="stack-list"></div>
@@ -258,16 +266,18 @@
 
   <div class="popover" id="modelPopover" hidden></div>
   <div class="popover" id="personaPopover" hidden></div>
+  <div class="popover" id="quickPhrasePopover" hidden></div>
   <div class="popover conversation-popover" id="conversationPopover" hidden></div>
-  <div class="message-menu-backdrop" id="messageMenu" hidden><section class="message-menu" role="dialog" aria-label="消息操作"><button type="button" id="branchMessage">创建分支</button><button type="button" class="danger" id="deleteMessageVersion">删除本版本</button><button type="button" id="closeMessageMenu">取消</button></section></div>
-  <script src="assets/standalone.js?v=0418"></script>
-  <script src="assets/app.js?v=0418" defer></script>
+  <div class="message-menu-backdrop" id="messageMenu" hidden><section class="message-menu" role="dialog" aria-label="消息操作"><button type="button" id="branchMessage">创建分支</button><button type="button" id="editMessage">修改内容</button><button type="button" class="danger" id="deleteMessageVersion">删除本版本</button><button type="button" class="danger" id="deleteAllMessageVersions">删除全部版本</button><button type="button" id="closeMessageMenu">取消</button></section></div>
+  <div class="message-menu-backdrop" id="messageEditor" hidden><form class="message-editor" role="dialog" aria-label="修改消息"><h3>修改内容</h3><textarea id="messageEditContent" rows="7" required></textarea><div class="form-actions"><button type="button" class="ghost" id="cancelMessageEdit">取消</button><button class="primary">保存修改</button></div></form></div>
+  <script src="assets/standalone.js?v=0423"></script>
+  <script src="assets/app.js?v=0423" defer></script>
   <script>
     if ('serviceWorker' in navigator) {
-      navigator.serviceWorker.register('service-worker.js?v=31', { updateViaCache: 'none' }).then(registration => registration.update());
+      navigator.serviceWorker.register('service-worker.js?v=36', { updateViaCache: 'none' }).then(registration => registration.update());
       navigator.serviceWorker.addEventListener('controllerchange', () => {
-        if (!sessionStorage.getItem('atherloom:sw-reloaded-v31')) {
-          sessionStorage.setItem('atherloom:sw-reloaded-v31', '1');
+        if (!sessionStorage.getItem('atherloom:sw-reloaded-v36')) {
+          sessionStorage.setItem('atherloom:sw-reloaded-v36', '1');
           location.reload();
         }
       });
