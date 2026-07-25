@@ -36,6 +36,7 @@ import java.io.InputStreamReader;
 import java.io.OutputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
+import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
 import java.util.Iterator;
 
@@ -164,6 +165,21 @@ public class MainActivity extends Activity {
             } catch (Exception error) { return failure(error); } finally { if (connection != null) connection.disconnect(); }
         }
 
+        @JavascriptInterface public String webSearch(String raw) {
+            HttpURLConnection connection = null;
+            try {
+                JSONObject request=new JSONObject(raw);String query=request.optString("query").trim();int limit=Math.max(1,Math.min(request.optInt("max_results",5),8));
+                if(query.isEmpty())throw new Exception("搜索关键词不能为空");
+                String endpoint="https://api.duckduckgo.com/?q="+URLEncoder.encode(query,"UTF-8")+"&format=json&no_html=1&skip_disambig=1";
+                connection=(HttpURLConnection)new URL(endpoint).openConnection();connection.setConnectTimeout(20000);connection.setReadTimeout(25000);connection.setRequestProperty("User-Agent","Atherloom/0.5 Android");
+                int status=connection.getResponseCode();String response=read(status>=400?connection.getErrorStream():connection.getInputStream());if(status>=400)throw new Exception("搜索服务 HTTP "+status);
+                JSONObject data=new JSONObject(response),output=new JSONObject().put("query",query);JSONArray results=new JSONArray();
+                if(!data.optString("AbstractURL").isEmpty())results.put(new JSONObject().put("title",data.optString("Heading",query)).put("url",data.optString("AbstractURL")).put("snippet",data.optString("AbstractText")));
+                JSONArray related=data.optJSONArray("RelatedTopics");if(related!=null)for(int i=0;i<related.length()&&results.length()<limit;i++){JSONObject row=related.optJSONObject(i);if(row==null)continue;if(row.has("Topics")){JSONArray nested=row.optJSONArray("Topics");row=nested!=null&&nested.length()>0?nested.optJSONObject(0):null;}if(row!=null&&!row.optString("FirstURL").isEmpty())results.put(new JSONObject().put("title",row.optString("Text").split(" - ")[0]).put("url",row.optString("FirstURL")).put("snippet",row.optString("Text")));}
+                return output.put("results",results).put("result_count",results.length()).toString();
+            } catch(Exception error){return failure(error);} finally {if(connection!=null)connection.disconnect();}
+        }
+
         @JavascriptInterface public String chat(String raw) {
             HttpURLConnection connection = null;
             try {
@@ -177,6 +193,14 @@ public class MainActivity extends Activity {
                 if (!protocol.equals("anthropic") && !request.optString("system").isEmpty()) { JSONArray withSystem = new JSONArray(); withSystem.put(new JSONObject().put("role", "system").put("content", request.getString("system"))); for (int i=0;i<requestMessages.length();i++) withSystem.put(requestMessages.get(i)); requestMessages=withSystem; }
                 JSONObject payload = new JSONObject(); payload.put("model", provider.getString("model")); payload.put("max_tokens", request.optInt("max_tokens", provider.optInt("max_tokens", 4096))); payload.put("temperature", request.optDouble("temperature", provider.optDouble("temperature", 0.7))); payload.put("top_p", request.optDouble("top_p", provider.optDouble("top_p", 1.0))); payload.put("messages", requestMessages);
                 if (protocol.equals("anthropic") && request.has("system")) payload.put("system", request.getString("system"));
+                if (request.has("tools")) {
+                    JSONArray requested = request.getJSONArray("tools"), tools = new JSONArray();
+                    for (int i=0;i<requested.length();i++) {
+                        JSONObject tool=requested.getJSONObject(i);
+                        tools.put(protocol.equals("anthropic") ? new JSONObject().put("name",tool.getString("name")).put("description",tool.optString("description")).put("input_schema",tool.getJSONObject("input_schema")) : new JSONObject().put("type","function").put("function",new JSONObject().put("name",tool.getString("name")).put("description",tool.optString("description")).put("parameters",tool.getJSONObject("input_schema"))));
+                    }
+                    payload.put("tools",tools);
+                }
                 if ((protocol.equals("deepseek") || protocol.equals("glm")) && request.optBoolean("thinking_enabled", provider.optBoolean("thinking_enabled", true))) payload.put("thinking", new JSONObject().put("type", "enabled"));
                 connection = (HttpURLConnection)new URL(endpoint).openConnection(); connection.setRequestMethod("POST"); connection.setConnectTimeout(25000); connection.setReadTimeout(180000); connection.setDoOutput(true); connection.setRequestProperty("Content-Type", "application/json");
                 String apiKey = provider.optString("api_key");
@@ -187,12 +211,12 @@ public class MainActivity extends Activity {
                 try (OutputStream output = connection.getOutputStream()) { output.write(payload.toString().getBytes(StandardCharsets.UTF_8)); }
                 int status = connection.getResponseCode(); String response = read(status >= 400 ? connection.getErrorStream() : connection.getInputStream());
                 if (status >= 400) throw new Exception("HTTP " + status + " · " + response.substring(0, Math.min(300, response.length())));
-                JSONObject data = new JSONObject(response); String content;
-                if (protocol.equals("anthropic")) { StringBuilder text = new StringBuilder(); JSONArray blocks=data.optJSONArray("content"); if(blocks!=null)for(int i=0;i<blocks.length();i++)if("text".equals(blocks.getJSONObject(i).optString("type")))text.append(blocks.getJSONObject(i).optString("text")); content=text.toString(); }
-                else content=nullableString(data.getJSONArray("choices").getJSONObject(0).getJSONObject("message"), "content");
+                JSONObject data = new JSONObject(response); String content; JSONArray toolCalls=new JSONArray(); Object rawAssistant;
+                if (protocol.equals("anthropic")) { StringBuilder text = new StringBuilder(); JSONArray blocks=data.optJSONArray("content"); rawAssistant=blocks==null?new JSONArray():blocks;if(blocks!=null)for(int i=0;i<blocks.length();i++){JSONObject block=blocks.getJSONObject(i);if("text".equals(block.optString("type")))text.append(block.optString("text"));if("tool_use".equals(block.optString("type")))toolCalls.put(new JSONObject().put("id",block.optString("id")).put("name",block.optString("name")).put("arguments",block.optJSONObject("input")==null?new JSONObject():block.optJSONObject("input")));} content=text.toString(); }
+                else {JSONObject message=data.getJSONArray("choices").getJSONObject(0).getJSONObject("message");rawAssistant=message;content=nullableString(message, "content");JSONArray calls=message.optJSONArray("tool_calls");if(calls!=null)for(int i=0;i<calls.length();i++){JSONObject call=calls.getJSONObject(i),function=call.optJSONObject("function");if(function!=null)toolCalls.put(new JSONObject().put("id",call.optString("id")).put("name",function.optString("name")).put("arguments",new JSONObject(function.optString("arguments","{}"))));}}
                 JSONObject responseMessage = protocol.equals("anthropic") ? null : data.getJSONArray("choices").getJSONObject(0).getJSONObject("message");
                 String reasoning = protocol.equals("anthropic") ? "" : nullableString(responseMessage, "reasoning_content"); if (reasoning.isEmpty()) reasoning=nullableString(responseMessage, "reasoning");
-                return new JSONObject().put("ok", true).put("content", content).put("reasoning", reasoning).put("model", provider.optString("model")).toString();
+                return new JSONObject().put("ok", true).put("content", content).put("reasoning", reasoning).put("model", provider.optString("model")).put("tool_calls",toolCalls).put("raw_assistant",rawAssistant).toString();
             } catch (Exception error) { return failure(error); } finally { if (connection != null) connection.disconnect(); }
         }
 

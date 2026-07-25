@@ -1,3 +1,4 @@
+import asyncio
 import tempfile
 import unittest
 import uuid
@@ -57,6 +58,32 @@ class LocalClientTests(unittest.TestCase):
         refreshed = self.client.post(f"/api/mcp-servers/{server['id']}/refresh").json()
         self.assertEqual(refreshed["last_status"], "online")
         self.assertEqual(refreshed["tools"][0]["name"], "echo")
+
+    def test_builtin_tools_follow_permissions_and_mutate_memory_by_id(self):
+        tools, bindings = app_module.builtin_tool_catalog({"web_search":"allow","memory_read":"allow","memory_write":"allow"})
+        names = {tool["name"] for tool in tools}
+        self.assertEqual(names, {"atherloom_web_search", "atherloom_memory_search", "atherloom_memory_create", "atherloom_memory_update"})
+        self.assertEqual(bindings["atherloom_memory_update"][1], "memory_update")
+        created = asyncio.run(app_module.invoke_builtin_tool("memory_create", {"title":"饮品","content":"用户喜欢热牛奶","kind":"preference"}))
+        found = asyncio.run(app_module.invoke_builtin_tool("memory_search", {"query":"热牛奶"}))
+        self.assertEqual(found["memories"][0]["memory_id"], created["memory_id"])
+        updated = asyncio.run(app_module.invoke_builtin_tool("memory_update", {"memory_id":created["memory_id"],"content":"用户现在喜欢温牛奶"}))
+        self.assertTrue(updated["updated"])
+        self.assertEqual(self.client.get("/api/memories?q=温牛奶").json()[0]["id"], created["memory_id"])
+        denied, _ = app_module.builtin_tool_catalog({"web_search":"deny","memory_read":"ask","memory_write":"deny"})
+        self.assertEqual(denied, [])
+
+    def test_one_click_ai_tools_control_exists(self):
+        html = (app_module.ROOT / "frontend" / "index.html").read_text(encoding="utf-8")
+        script = (app_module.ROOT / "frontend" / "assets" / "app.js").read_text(encoding="utf-8")
+        standalone = (app_module.ROOT / "frontend" / "assets" / "standalone.js").read_text(encoding="utf-8")
+        android = (app_module.ROOT / "android" / "app" / "src" / "main" / "java" / "app" / "atherloom" / "mobile" / "MainActivity.java").read_text(encoding="utf-8")
+        self.assertIn('id="enableAiTools"', html)
+        self.assertIn('["web_search", "file_read", "memory_read", "memory_write"]', script)
+        self.assertIn("atherloom_memory_update", standalone)
+        self.assertIn("toolFollowupMessages", standalone)
+        self.assertIn("webSearch(String raw)", android)
+        self.assertIn('payload.put("tools",tools)', android)
 
     def test_android_camera_uses_image_capture_instead_of_generic_picker(self):
         source = (app_module.ROOT / "android" / "app" / "src" / "main" / "java" / "app" / "atherloom" / "mobile" / "MainActivity.java").read_text(encoding="utf-8")

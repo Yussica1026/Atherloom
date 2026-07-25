@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import json
 import hashlib
+import html as html_lib
 import math
 import asyncio
 import os
 import re
 import sqlite3
 import uuid
+from urllib.parse import parse_qs, unquote, urlparse
 from collections import Counter
 from contextlib import closing
 from datetime import datetime, timezone
@@ -771,6 +773,8 @@ async def discover_server_tools(server: dict[str, Any]) -> list[dict[str, Any]]:
 
 async def invoke_server_tool(server: dict[str, Any], name: str, arguments: dict[str, Any]) -> Any:
     server = expanded_mcp_server(server)
+    if server.get("transport") == "builtin":
+        return await invoke_builtin_tool(name, arguments)
     if server.get("transport") == "stdio":
         response = await stdio_mcp_exchange(server, "tools/call", {"name": name, "arguments": arguments})
         return response.get("result", {})
@@ -811,6 +815,127 @@ async def bound_mcp_catalog(servers: list[dict[str, Any]]) -> tuple[list[dict[st
             catalog.append({"name": safe, "description": f"[{server['name']}] {tool.get('description', '')}".strip(), "input_schema": schema})
             bindings[safe] = (server, original)
     return catalog, bindings
+
+
+BUILTIN_TOOL_SPECS = {
+    "web_search": {
+        "permission": "web_search",
+        "description": "搜索公开互联网，返回标题、链接与摘要。适合查询最新信息或核实事实。",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "具体、完整的搜索关键词"},
+                "max_results": {"type": "integer", "minimum": 1, "maximum": 8, "default": 5},
+            },
+            "required": ["query"],
+        },
+    },
+    "memory_search": {
+        "permission": "memory_read",
+        "description": "检索 Atherloom 本地长期记忆，返回可用于后续更新的 memory_id。",
+        "input_schema": {
+            "type": "object",
+            "properties": {"query": {"type": "string", "description": "记忆标题或内容关键词；留空返回最近记忆"}},
+        },
+    },
+    "memory_create": {
+        "permission": "memory_write",
+        "description": "新增一条本地长期记忆。只保存用户明确表达、值得跨对话保留的信息。",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "title": {"type": "string", "description": "简短明确的标题"},
+                "content": {"type": "string", "description": "忠实、完整且不臆测的记忆内容"},
+                "kind": {"type": "string", "enum": ["fact", "preference", "relationship", "promise", "event", "emotion", "summary", "diary", "other"]},
+            },
+            "required": ["title", "content"],
+        },
+    },
+    "memory_update": {
+        "permission": "memory_write",
+        "description": "按 memory_id 更新已有本地记忆。应先调用 memory_search 获得准确 ID。",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "memory_id": {"type": "string", "description": "memory_search 返回的准确 ID"},
+                "title": {"type": "string"},
+                "content": {"type": "string"},
+                "kind": {"type": "string", "enum": ["fact", "preference", "relationship", "promise", "event", "emotion", "summary", "diary", "other"]},
+            },
+            "required": ["memory_id"],
+        },
+    },
+}
+
+
+def builtin_tool_catalog(permissions: dict[str, str]) -> tuple[list[dict[str, Any]], dict[str, tuple[dict[str, Any], str]]]:
+    server = {
+        "id": "__builtin__", "name": "Atherloom 内置工具", "transport": "builtin",
+        "tool_policies": {name: permissions.get(spec["permission"], "ask") for name, spec in BUILTIN_TOOL_SPECS.items()},
+    }
+    catalog, bindings = [], {}
+    for name, spec in BUILTIN_TOOL_SPECS.items():
+        if permissions.get(spec["permission"], "ask") != "allow":
+            continue
+        safe_name = f"atherloom_{name}"
+        catalog.append({"name": safe_name, "description": spec["description"], "input_schema": spec["input_schema"]})
+        bindings[safe_name] = (server, name)
+    return catalog, bindings
+
+
+def _clean_search_text(value: str) -> str:
+    return re.sub(r"\s+", " ", html_lib.unescape(re.sub(r"<[^>]+>", " ", value))).strip()
+
+
+async def invoke_builtin_tool(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+    if name == "web_search":
+        query = str(arguments.get("query", "")).strip()
+        if not query:
+            raise ValueError("搜索关键词不能为空")
+        limit = max(1, min(int(arguments.get("max_results") or 5), 8))
+        async with httpx.AsyncClient(timeout=25, follow_redirects=True, headers={"User-Agent": "Mozilla/5.0 Atherloom/0.5"}) as client:
+            response = await client.get("https://html.duckduckgo.com/html/", params={"q": query})
+            response.raise_for_status()
+        links = re.findall(r'<a[^>]+class="result__a"[^>]+href="([^"]+)"[^>]*>(.*?)</a>', response.text, re.I | re.S)
+        snippets = re.findall(r'<a[^>]+class="result__snippet"[^>]*>(.*?)</a>|<div[^>]+class="result__snippet"[^>]*>(.*?)</div>', response.text, re.I | re.S)
+        results = []
+        for index, (raw_url, title) in enumerate(links[:limit]):
+            parsed = urlparse(html_lib.unescape(raw_url))
+            actual_url = unquote(parse_qs(parsed.query).get("uddg", [raw_url])[0])
+            snippet_parts = snippets[index] if index < len(snippets) else ("", "")
+            results.append({"title": _clean_search_text(title), "url": actual_url, "snippet": _clean_search_text(snippet_parts[0] or snippet_parts[1])})
+        return {"query": query, "results": results, "result_count": len(results)}
+    if name == "memory_search":
+        query = str(arguments.get("query", "")).strip()
+        with closing(db()) as connection:
+            if query:
+                rows = connection.execute(
+                    "SELECT * FROM memories WHERE deleted_at IS NULL AND (title LIKE ? OR content LIKE ?) ORDER BY starred DESC,updated_at DESC LIMIT 20",
+                    (f"%{query}%", f"%{query}%"),
+                ).fetchall()
+            else:
+                rows = connection.execute("SELECT * FROM memories WHERE deleted_at IS NULL ORDER BY starred DESC,updated_at DESC LIMIT 20").fetchall()
+        return {"memories": [{"memory_id": row["id"], "title": row["title"], "content": row["content"], "kind": row["kind"], "updated_at": row["updated_at"]} for row in rows]}
+    if name == "memory_create":
+        body = MemoryIn(title=str(arguments.get("title", "")).strip(), content=str(arguments.get("content", "")).strip(), kind=str(arguments.get("kind") or "fact"))
+        saved = create_memory(body)
+        return {"created": True, "memory_id": saved["id"], "title": saved["title"], "kind": saved["kind"]}
+    if name == "memory_update":
+        memory_id = str(arguments.get("memory_id", "")).strip()
+        with closing(db()) as connection:
+            row = connection.execute("SELECT * FROM memories WHERE id=? AND deleted_at IS NULL", (memory_id,)).fetchone()
+        if not row:
+            raise ValueError("找不到该 memory_id；请先调用 memory_search")
+        body = MemoryIn(
+            title=str(arguments.get("title", row["title"])).strip(),
+            content=str(arguments.get("content", row["content"])).strip(),
+            kind=str(arguments.get("kind", row["kind"])),
+            source_conversation_id=row["source_conversation_id"],
+            source_message_id=row["source_message_id"],
+        )
+        saved = update_memory(memory_id, body)
+        return {"updated": True, "memory_id": saved["id"], "title": saved["title"], "kind": saved["kind"]}
+    raise ValueError(f"未知内置工具：{name}")
 
 
 @app.post("/api/mcp-servers/test")
@@ -886,7 +1011,7 @@ async def refresh_mcp_server(server_id: str) -> dict[str, Any]:
 @app.get("/api/mcp-audit")
 def list_mcp_audit(limit: int = 100) -> list[dict[str, Any]]:
     with closing(db()) as connection:
-        return [dict(row) for row in connection.execute("SELECT a.*,s.name server_name FROM mcp_audit a LEFT JOIN mcp_servers s ON s.id=a.server_id ORDER BY a.created_at DESC LIMIT ?", (max(1,min(limit,500)),))]
+        return [dict(row) for row in connection.execute("SELECT a.*,COALESCE(s.name, CASE WHEN a.server_id='__builtin__' THEN 'Atherloom 内置工具' ELSE NULL END) server_name FROM mcp_audit a LEFT JOIN mcp_servers s ON s.id=a.server_id ORDER BY a.created_at DESC LIMIT ?", (max(1,min(limit,500)),))]
 
 
 def record_mcp_audit(server_id: str, tool_name: str, status: str, detail: str = "") -> None:
@@ -1735,8 +1860,11 @@ async def chat(body: ChatIn) -> StreamingResponse:
                     yield json.dumps({"error": "这条 API 线路的自定义请求头不是有效 JSON"}, ensure_ascii=False) + "\n"
                     return
                 direct_answer = False
-                if bound_mcp_servers:
+                builtin_tools, builtin_bindings = builtin_tool_catalog(permissions)
+                if bound_mcp_servers or builtin_tools:
                     mcp_tools, mcp_bindings = await bound_mcp_catalog(bound_mcp_servers)
+                    mcp_tools = [*builtin_tools, *mcp_tools]
+                    mcp_bindings = {**builtin_bindings, **mcp_bindings}
                     if mcp_tools:
                         probe_payload = dict(payload)
                         probe_payload["stream"] = False
