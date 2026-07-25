@@ -548,6 +548,14 @@ $("#codeTheme").onchange = event => { state.settings.code_theme = event.target.v
 $("#memoryStrategy").onchange = saveAppSettings;
 $("#resetSummaryPrompt").onclick = () => { $("#summaryPrompt").value = $("#summaryPrompt").dataset.defaultPrompt; saveAppSettings(); };
 document.querySelectorAll("[data-permission]").forEach(select => select.onchange = saveAppSettings);
+$("#enableAiTools").onclick = () => {
+  for (const name of ["web_search", "file_read", "memory_read", "memory_write"]) {
+    const select = document.querySelector(`[data-permission="${name}"]`);
+    if (select) select.value = "allow";
+  }
+  saveAppSettings();
+  $("#toolSaveState").textContent = "正在开启联网、读文件和记忆读写…";
+};
 document.querySelectorAll("[data-bulk-permission]").forEach(button => button.onclick = () => {
   const permission = button.dataset.bulkPermission;
   document.querySelectorAll("[data-permission]").forEach(select => {
