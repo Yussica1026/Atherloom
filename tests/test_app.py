@@ -1,6 +1,7 @@
 import tempfile
 import unittest
 import uuid
+import sys
 from pathlib import Path
 
 from fastapi.testclient import TestClient
@@ -30,12 +31,32 @@ class LocalClientTests(unittest.TestCase):
         book = self.client.post("/api/worldbooks", json={"name":"共同规则","description":"跨人格复用","entries":[{"name":"常驻规则","content":"始终使用简洁中文。","constant":True,"position":"system_after"},{"name":"旅行设定","content":"旅行发生在云海城。","keywords":["旅行"],"scan_depth":4,"position":"system_after"}]}).json()
         self.assertEqual(self.client.get("/api/bootstrap").json()["worldbooks"][0]["name"], "共同规则")
         with app_module.closing(app_module.db()) as connection:
-            connection.execute("INSERT INTO messages VALUES (?, ?, 'user', '我想去旅行', NULL, NULL, ?, '', NULL)",(str(uuid.uuid4()),conversation["id"],app_module.now_iso()));connection.commit()
             body=app_module.ChatIn(conversation_id=conversation["id"],content="我想去旅行",provider_id=provider["id"],worldbook_ids=[book["id"]])
             _,_,messages=app_module.load_chat_context(connection,body)
             system=messages[0]["content"]
             self.assertIn("始终使用简洁中文",system);self.assertIn("旅行发生在云海城",system)
             body.worldbook_ids=[];_,_,plain=app_module.load_chat_context(connection,body);self.assertNotIn("旅行发生在云海城",plain[0]["content"])
+
+    def test_mcp_server_crud_masks_token_and_can_bind_to_persona(self):
+        server = self.client.post("/api/mcp-servers", json={"name":"memory","url":"https://memory.example.com/mcp","token":"secret-token"}).json()
+        self.assertTrue(server["has_token"])
+        self.assertNotIn("token", server)
+        bootstrap = self.client.get("/api/bootstrap").json()
+        self.assertEqual(bootstrap["mcp_servers"][0]["name"], "memory")
+        self.assertNotIn("secret-token", str(bootstrap))
+        persona = self.client.post("/api/personas", json={"name":"朋友","prompt":"保持诚实","config":{"mcp_servers":["memory"]}}).json()
+        self.assertEqual(persona["config"]["mcp_servers"], ["memory"])
+        updated = self.client.put(f"/api/mcp-servers/{server['id']}", json={"name":"memory","url":"https://memory.example.com/v2/mcp","token":""}).json()
+        self.assertTrue(updated["has_token"])
+        self.assertEqual(updated["url"], "https://memory.example.com/v2/mcp")
+        self.assertEqual(self.client.delete(f"/api/mcp-servers/{server['id']}").json(), {"ok":True})
+
+    def test_stdio_mcp_can_refresh_tools(self):
+        fixture = Path(__file__).with_name("fixture_mcp.py")
+        server = self.client.post("/api/mcp-servers", json={"name":"local-tools","transport":"stdio","command":sys.executable,"args":[str(fixture)]}).json()
+        refreshed = self.client.post(f"/api/mcp-servers/{server['id']}/refresh").json()
+        self.assertEqual(refreshed["last_status"], "online")
+        self.assertEqual(refreshed["tools"][0]["name"], "echo")
 
     def test_model_ids_are_normalized_and_deduplicated(self):
         payload = {"data": [{"id": "glm-5"}, {"id": "deepseek-chat"}, {"id": "glm-5"}, "custom-model", {}]}
