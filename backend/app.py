@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 import hashlib
 import math
+import asyncio
+import os
 import re
 import sqlite3
 import uuid
@@ -116,6 +118,16 @@ def init_db() -> None:
               enabled INTEGER NOT NULL DEFAULT 1, entries_json TEXT NOT NULL DEFAULT '[]',
               created_at TEXT NOT NULL, updated_at TEXT NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS mcp_servers (
+              id TEXT PRIMARY KEY, name TEXT NOT NULL UNIQUE, url TEXT NOT NULL,
+              token TEXT NOT NULL DEFAULT '', enabled INTEGER NOT NULL DEFAULT 1,
+              last_status TEXT NOT NULL DEFAULT '', last_detail TEXT NOT NULL DEFAULT '',
+              last_tested_at TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS mcp_audit (
+              id TEXT PRIMARY KEY, server_id TEXT NOT NULL, tool_name TEXT NOT NULL,
+              status TEXT NOT NULL, detail TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL
+            );
             """
         )
         columns = {row["name"] for row in connection.execute("PRAGMA table_info(providers)")}
@@ -142,6 +154,18 @@ def init_db() -> None:
         for column in ("pinned", "starred", "archived"):
             if column not in conversation_columns:
                 connection.execute(f"ALTER TABLE conversations ADD COLUMN {column} INTEGER NOT NULL DEFAULT 0")
+        mcp_columns = {row["name"] for row in connection.execute("PRAGMA table_info(mcp_servers)")}
+        for column, definition in {
+            "transport": "TEXT NOT NULL DEFAULT 'http'",
+            "command": "TEXT NOT NULL DEFAULT ''",
+            "args_json": "TEXT NOT NULL DEFAULT '[]'",
+            "env_json": "TEXT NOT NULL DEFAULT '{}'",
+            "headers_json": "TEXT NOT NULL DEFAULT '{}'",
+            "tools_json": "TEXT NOT NULL DEFAULT '[]'",
+            "tool_policy_json": "TEXT NOT NULL DEFAULT '{}'",
+        }.items():
+            if column not in mcp_columns:
+                connection.execute(f"ALTER TABLE mcp_servers ADD COLUMN {column} {definition}")
         connection.commit()
 
 
@@ -189,6 +213,19 @@ class WorldbookIn(BaseModel):
     description: str = Field(default="", max_length=1000)
     enabled: bool = True
     entries: list[dict[str, Any]] = Field(default_factory=list, max_length=500)
+
+
+class McpServerIn(BaseModel):
+    name: str = Field(min_length=1, max_length=100)
+    transport: str = Field(default="http", pattern="^(http|stdio)$")
+    url: str = Field(default="", max_length=2000)
+    token: str = Field(default="", max_length=4000)
+    command: str = Field(default="", max_length=1000)
+    args: list[str] = Field(default_factory=list, max_length=100)
+    env: dict[str, str] = Field(default_factory=dict)
+    headers: dict[str, str] = Field(default_factory=dict)
+    tool_policies: dict[str, str] = Field(default_factory=dict)
+    enabled: bool = True
 
 
 class ConversationIn(BaseModel):
@@ -302,6 +339,20 @@ def worldbook_dict(row: sqlite3.Row) -> dict[str, Any]:
     return item
 
 
+def masked_mcp_server(row: sqlite3.Row) -> dict[str, Any]:
+    item = dict(row)
+    item.pop("token", None)
+    item["has_token"] = bool(row["token"])
+    for source, target, fallback in (("args_json", "args", []), ("env_json", "env", {}), ("headers_json", "headers", {}), ("tools_json", "tools", []), ("tool_policy_json", "tool_policies", {})):
+        try:
+            item[target] = json.loads(item.pop(source))
+        except (json.JSONDecodeError, TypeError):
+            item[target] = fallback
+    item["env_keys"] = sorted(item.pop("env").keys())
+    item["headers"] = {key: ("••••" if key.lower() in ("authorization", "x-api-key") else value) for key, value in item["headers"].items()}
+    return item
+
+
 PERSONA_CONFIG_DEFAULTS = {
     "memory_enabled": True, "history_enabled": True, "summary_frequency": 20,
     "quick_phrases": [], "custom_headers": {}, "custom_body": {}, "regex_rules": [],
@@ -335,8 +386,9 @@ def bootstrap() -> dict[str, Any]:
         personas = [{**dict(row), "config": normalize_persona_config(row["config_json"])} for row in connection.execute("SELECT p.*,c.config_json FROM personas p LEFT JOIN persona_configs c ON c.persona_id=p.id ORDER BY p.created_at")]
         conversations = [dict(row) for row in connection.execute("SELECT * FROM conversations ORDER BY updated_at DESC")]
         worldbooks = [worldbook_dict(row) for row in connection.execute("SELECT * FROM worldbooks ORDER BY updated_at DESC")]
+        mcp_servers = [masked_mcp_server(row) for row in connection.execute("SELECT * FROM mcp_servers ORDER BY updated_at DESC")]
         settings_rows = {row["key"]: row["value"] for row in connection.execute("SELECT * FROM app_settings")}
-    return {"providers": providers, "personas": personas, "conversations": conversations, "worldbooks": worldbooks, "settings": {
+    return {"providers": providers, "personas": personas, "conversations": conversations, "worldbooks": worldbooks, "mcp_servers": mcp_servers, "settings": {
         "auto_title_mode": settings_rows.get("auto_title_mode", "local"),
         "title_provider_id": settings_rows.get("title_provider_id", ""),
         "summary_enabled": settings_rows.get("summary_enabled", "true") == "true",
@@ -571,6 +623,276 @@ def update_worldbook(worldbook_id: str, body: WorldbookIn) -> dict[str, Any]:
 def delete_worldbook(worldbook_id: str) -> dict[str, bool]:
     with closing(db()) as connection: connection.execute("DELETE FROM worldbooks WHERE id=?",(worldbook_id,));connection.commit()
     return {"ok":True}
+
+
+def mcp_headers(token: str = "", session_id: str = "") -> dict[str, str]:
+    headers = {"accept": "application/json, text/event-stream", "content-type": "application/json"}
+    if token:
+        headers["authorization"] = f"Bearer {token}"
+    if session_id:
+        headers["mcp-session-id"] = session_id
+    return headers
+
+
+def parse_mcp_response(response: httpx.Response) -> dict[str, Any]:
+    text = response.text.strip()
+    if not text:
+        return {}
+    if "text/event-stream" in response.headers.get("content-type", "") or text.startswith("event:") or text.startswith("data:"):
+        payloads = [line[5:].strip() for line in text.splitlines() if line.startswith("data:") and line[5:].strip()]
+        if not payloads:
+            return {}
+        text = payloads[-1]
+    try:
+        payload = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise HTTPException(502, "MCP 服务返回的不是有效 JSON/SSE") from exc
+    if not isinstance(payload, dict):
+        raise HTTPException(502, "MCP 服务返回格式无效")
+    if payload.get("error"):
+        error = payload["error"]
+        detail = error.get("message", str(error)) if isinstance(error, dict) else str(error)
+        raise HTTPException(502, f"MCP 错误：{detail}")
+    return payload
+
+
+async def mcp_post(client: httpx.AsyncClient, url: str, token: str, method: str, params: dict[str, Any] | None = None, request_id: int | None = 1, session_id: str = "") -> tuple[dict[str, Any], str]:
+    body: dict[str, Any] = {"jsonrpc": "2.0", "method": method}
+    if request_id is not None:
+        body["id"] = request_id
+    if params is not None:
+        body["params"] = params
+    try:
+        response = await client.post(url, headers=mcp_headers(token, session_id), json=body)
+    except httpx.RequestError as exc:
+        raise HTTPException(502, f"无法连接 MCP：{exc}") from exc
+    if response.status_code >= 400:
+        raise HTTPException(response.status_code, f"MCP HTTP {response.status_code}：{response.text[:300]}")
+    return parse_mcp_response(response), response.headers.get("mcp-session-id", session_id)
+
+
+async def discover_mcp_tools(url: str, token: str, custom_headers: dict[str, str] | None = None) -> list[dict[str, Any]]:
+    if not re.match(r"^https?://", url, re.IGNORECASE):
+        raise HTTPException(422, "MCP 地址必须使用 http:// 或 https://")
+    async with httpx.AsyncClient(timeout=25, follow_redirects=True, headers=custom_headers or {}) as client:
+        initialized, session_id = await mcp_post(client, url, token, "initialize", {
+            "protocolVersion": "2025-03-26",
+            "capabilities": {},
+            "clientInfo": {"name": "Atherloom", "version": "0.5.15"},
+        })
+        if not initialized.get("result"):
+            raise HTTPException(502, "MCP 初始化没有返回 result")
+        await mcp_post(client, url, token, "notifications/initialized", request_id=None, session_id=session_id)
+        listed, _ = await mcp_post(client, url, token, "tools/list", {}, 2, session_id)
+    tools = listed.get("result", {}).get("tools", [])
+    return tools if isinstance(tools, list) else []
+
+
+async def call_mcp_tool(url: str, token: str, name: str, arguments: dict[str, Any], custom_headers: dict[str, str] | None = None) -> Any:
+    async with httpx.AsyncClient(timeout=60, follow_redirects=True, headers=custom_headers or {}) as client:
+        _, session_id = await mcp_post(client, url, token, "initialize", {
+            "protocolVersion": "2025-03-26",
+            "capabilities": {},
+            "clientInfo": {"name": "Atherloom", "version": "0.5.15"},
+        })
+        await mcp_post(client, url, token, "notifications/initialized", request_id=None, session_id=session_id)
+        called, _ = await mcp_post(client, url, token, "tools/call", {"name": name, "arguments": arguments}, 3, session_id)
+    return called.get("result", {})
+
+
+async def stdio_mcp_exchange(server: dict[str, Any], method: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
+    command = str(server.get("command", "")).strip()
+    if not command:
+        raise HTTPException(422, "stdio MCP 缺少启动命令")
+    args = server.get("args", [])
+    env = {**os.environ, **{str(key): str(value) for key, value in server.get("env", {}).items()}}
+    try:
+        process = await asyncio.create_subprocess_exec(command, *args, stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, env=env)
+    except OSError as exc:
+        raise HTTPException(502, f"无法启动 stdio MCP：{exc}") from exc
+    next_id = 1
+    async def request(name: str, request_params: dict[str, Any] | None = None, notification: bool = False) -> dict[str, Any]:
+        nonlocal next_id
+        payload: dict[str, Any] = {"jsonrpc": "2.0", "method": name}
+        request_id = None if notification else next_id
+        if request_id is not None:
+            payload["id"] = request_id
+            next_id += 1
+        if request_params is not None:
+            payload["params"] = request_params
+        assert process.stdin and process.stdout
+        process.stdin.write((json.dumps(payload, ensure_ascii=False) + "\n").encode())
+        await process.stdin.drain()
+        if notification:
+            return {}
+        for _ in range(100):
+            line = await asyncio.wait_for(process.stdout.readline(), timeout=30)
+            if not line:
+                break
+            try:
+                response = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if response.get("id") == request_id:
+                if response.get("error"):
+                    raise HTTPException(502, f"MCP 错误：{response['error']}")
+                return response
+        raise HTTPException(502, "stdio MCP 没有返回有效响应")
+    try:
+        await request("initialize", {"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"Atherloom","version":"0.5.15"}})
+        await request("notifications/initialized", notification=True)
+        return await request(method, params or {})
+    finally:
+        if process.returncode is None:
+            process.terminate()
+            try:
+                await asyncio.wait_for(process.wait(), timeout=3)
+            except asyncio.TimeoutError:
+                process.kill()
+
+
+def expanded_mcp_server(row: dict[str, Any]) -> dict[str, Any]:
+    item = dict(row)
+    for source, target, fallback in (("args_json","args",[]),("env_json","env",{}),("headers_json","headers",{}),("tool_policy_json","tool_policies",{})):
+        if source in item:
+            try: item[target] = json.loads(item[source])
+            except (json.JSONDecodeError, TypeError): item[target] = fallback
+    return item
+
+
+async def discover_server_tools(server: dict[str, Any]) -> list[dict[str, Any]]:
+    server = expanded_mcp_server(server)
+    if server.get("transport") == "stdio":
+        response = await stdio_mcp_exchange(server, "tools/list")
+        tools = response.get("result", {}).get("tools", [])
+        return tools if isinstance(tools, list) else []
+    return await discover_mcp_tools(server.get("url", ""), server.get("token", ""), server.get("headers", {}))
+
+
+async def invoke_server_tool(server: dict[str, Any], name: str, arguments: dict[str, Any]) -> Any:
+    server = expanded_mcp_server(server)
+    if server.get("transport") == "stdio":
+        response = await stdio_mcp_exchange(server, "tools/call", {"name": name, "arguments": arguments})
+        return response.get("result", {})
+    return await call_mcp_tool(server.get("url", ""), server.get("token", ""), name, arguments, server.get("headers", {}))
+
+
+def mcp_result_text(result: Any) -> str:
+    if isinstance(result, dict) and isinstance(result.get("content"), list):
+        pieces = []
+        for block in result["content"]:
+            if isinstance(block, dict) and block.get("type") == "text":
+                pieces.append(str(block.get("text", "")))
+            elif isinstance(block, dict):
+                pieces.append(json.dumps(block, ensure_ascii=False))
+        if pieces:
+            return "\n".join(pieces)
+    return json.dumps(result, ensure_ascii=False)
+
+
+async def bound_mcp_catalog(servers: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], dict[str, tuple[dict[str, Any], str]]]:
+    catalog: list[dict[str, Any]] = []
+    bindings: dict[str, tuple[dict[str, Any], str]] = {}
+    for server in servers:
+        try:
+            tools = await discover_server_tools(server)
+        except HTTPException:
+            continue
+        for tool in tools:
+            original = str(tool.get("name", "")).strip()
+            if not original:
+                continue
+            policy = expanded_mcp_server(server).get("tool_policies", {}).get(original, "allow")
+            if policy == "deny":
+                continue
+            safe_base = re.sub(r"[^a-zA-Z0-9_-]", "_", original)[:40] or "tool"
+            safe = f"mcp_{hashlib.sha1(server['id'].encode()).hexdigest()[:8]}_{safe_base}"[:64]
+            schema = tool.get("inputSchema") if isinstance(tool.get("inputSchema"), dict) else {"type": "object", "properties": {}}
+            catalog.append({"name": safe, "description": f"[{server['name']}] {tool.get('description', '')}".strip(), "input_schema": schema})
+            bindings[safe] = (server, original)
+    return catalog, bindings
+
+
+@app.post("/api/mcp-servers/test")
+async def test_mcp_server(body: McpServerIn) -> dict[str, Any]:
+    tools = await discover_server_tools({"transport":body.transport,"url":body.url,"token":body.token,"command":body.command,"args":body.args,"env":body.env,"headers":body.headers})
+    return {"ok": True, "tool_count": len(tools), "tools": [{"name": str(tool.get("name", "")), "description": str(tool.get("description", ""))} for tool in tools], "message": f"连接成功，发现 {len(tools)} 个工具"}
+
+
+@app.post("/api/mcp-servers")
+def create_mcp_server(body: McpServerIn) -> dict[str, Any]:
+    item_id, created = str(uuid.uuid4()), now_iso()
+    with closing(db()) as connection:
+        try:
+            connection.execute("""INSERT INTO mcp_servers
+              (id,name,url,token,enabled,last_status,last_detail,last_tested_at,created_at,updated_at,transport,command,args_json,env_json,headers_json,tools_json,tool_policy_json)
+              VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+              (item_id,body.name,body.url,body.token,int(body.enabled),"","",None,created,created,body.transport,body.command,json.dumps(body.args,ensure_ascii=False),json.dumps(body.env,ensure_ascii=False),json.dumps(body.headers,ensure_ascii=False),"[]",json.dumps(body.tool_policies,ensure_ascii=False)))
+            connection.commit()
+        except sqlite3.IntegrityError as exc:
+            raise HTTPException(409, "MCP 服务名称已存在") from exc
+        return masked_mcp_server(connection.execute("SELECT * FROM mcp_servers WHERE id=?", (item_id,)).fetchone())
+
+
+@app.put("/api/mcp-servers/{server_id}")
+def update_mcp_server(server_id: str, body: McpServerIn) -> dict[str, Any]:
+    with closing(db()) as connection:
+        existing = connection.execute("SELECT * FROM mcp_servers WHERE id=?", (server_id,)).fetchone()
+        if not existing:
+            raise HTTPException(404, "MCP 服务不存在")
+        token = body.token or existing["token"]
+        env = body.env or json.loads(existing["env_json"] or "{}")
+        existing_headers = json.loads(existing["headers_json"] or "{}")
+        headers = body.headers or existing_headers
+        headers = {key: (existing_headers.get(key, value) if value == "••••" else value) for key, value in headers.items()}
+        try:
+            connection.execute("""UPDATE mcp_servers SET name=?,url=?,token=?,enabled=?,updated_at=?,transport=?,command=?,args_json=?,env_json=?,headers_json=?,tool_policy_json=? WHERE id=?""",
+              (body.name,body.url,token,int(body.enabled),now_iso(),body.transport,body.command,json.dumps(body.args,ensure_ascii=False),json.dumps(env,ensure_ascii=False),json.dumps(headers,ensure_ascii=False),json.dumps(body.tool_policies,ensure_ascii=False),server_id))
+            connection.commit()
+        except sqlite3.IntegrityError as exc:
+            raise HTTPException(409, "MCP 服务名称已存在") from exc
+        return masked_mcp_server(connection.execute("SELECT * FROM mcp_servers WHERE id=?", (server_id,)).fetchone())
+
+
+@app.delete("/api/mcp-servers/{server_id}")
+def delete_mcp_server(server_id: str) -> dict[str, bool]:
+    with closing(db()) as connection:
+        connection.execute("DELETE FROM mcp_servers WHERE id=?", (server_id,))
+        connection.commit()
+    return {"ok": True}
+
+
+@app.post("/api/mcp-servers/{server_id}/refresh")
+async def refresh_mcp_server(server_id: str) -> dict[str, Any]:
+    with closing(db()) as connection:
+        row = connection.execute("SELECT * FROM mcp_servers WHERE id=?", (server_id,)).fetchone()
+    if not row:
+        raise HTTPException(404, "MCP 服务不存在")
+    tested = now_iso()
+    try:
+        tools = await discover_server_tools(dict(row))
+        status, detail = "online", f"发现 {len(tools)} 个工具"
+    except Exception as exc:
+        tools, status, detail = [], "error", str(exc)
+    with closing(db()) as connection:
+        connection.execute("UPDATE mcp_servers SET tools_json=?,last_status=?,last_detail=?,last_tested_at=?,updated_at=? WHERE id=?", (json.dumps(tools,ensure_ascii=False),status,detail,tested,tested,server_id))
+        connection.commit()
+        saved = masked_mcp_server(connection.execute("SELECT * FROM mcp_servers WHERE id=?", (server_id,)).fetchone())
+    if status == "error":
+        raise HTTPException(502, detail)
+    return saved
+
+
+@app.get("/api/mcp-audit")
+def list_mcp_audit(limit: int = 100) -> list[dict[str, Any]]:
+    with closing(db()) as connection:
+        return [dict(row) for row in connection.execute("SELECT a.*,s.name server_name FROM mcp_audit a LEFT JOIN mcp_servers s ON s.id=a.server_id ORDER BY a.created_at DESC LIMIT ?", (max(1,min(limit,500)),))]
+
+
+def record_mcp_audit(server_id: str, tool_name: str, status: str, detail: str = "") -> None:
+    with closing(db()) as connection:
+        connection.execute("INSERT INTO mcp_audit VALUES (?,?,?,?,?,?)", (str(uuid.uuid4()),server_id,tool_name,status,detail[:2000],now_iso()))
+        connection.commit()
 
 
 @app.post("/api/conversations")
@@ -1100,7 +1422,8 @@ def load_chat_context(connection: sqlite3.Connection, body: ChatIn, cutoff: str 
     tool_context = f"该人格启用的本地能力偏好：{', '.join(tool_names)}。只有宿主实际提供的能力才可调用。" if tool_names else ""
     game_tool_context = "宿主提供云汀钓记、抓娃娃机和云纹老虎机游戏工具。用户要求你去玩时，宿主会在回复前执行工具并提供 <verified_game_result>。只有收到该结果才能声称自己玩过，并应自然讲述真实动作、收获与心里话；没有结果时不得虚构游戏经历。"
     game_context = f"<verified_game_result>\n{body.game_context}\n</verified_game_result>\n这是宿主刚刚真实执行的游戏结果。请以当前人格自然回应，可以主动谈起收获与心情，不要声称没有玩过。" if body.game_context else ""
-    entries=active_worldbook_entries(connection,body.worldbook_ids,messages);before=[entry["content"] for entry in entries if entry.get("position")=="system_before"];after=[entry["content"] for entry in entries if entry.get("position")=="system_after" or entry.get("role")=="system" and str(entry.get("position","")).startswith("history_")]
+    scan_messages=[*messages,{"role":"user","content":body.content}]
+    entries=active_worldbook_entries(connection,body.worldbook_ids,scan_messages);before=[entry["content"] for entry in entries if entry.get("position")=="system_before"];after=[entry["content"] for entry in entries if entry.get("position")=="system_after" or entry.get("role")=="system" and str(entry.get("position","")).startswith("history_")]
     for entry in reversed([item for item in entries if item.get("position")=="history_before" and item.get("role")!="system"]): messages.insert(0,{"role":entry.get("role","user"),"content":entry["content"]})
     for entry in [item for item in entries if item.get("position")=="history_after" and item.get("role")!="system"]: messages.append({"role":entry.get("role","user"),"content":entry["content"]})
     worldbook_before="<worldbook_instructions>\n"+"\n\n".join(before)+"\n</worldbook_instructions>" if before else "";worldbook_after="<worldbook_instructions>\n"+"\n\n".join(after)+"\n</worldbook_instructions>" if after else ""
@@ -1342,6 +1665,11 @@ async def chat(body: ChatIn) -> StreamingResponse:
         provider, _, messages = load_chat_context(connection, body, cutoff)
         config_row = connection.execute("SELECT config_json FROM persona_configs WHERE persona_id=?", (body.persona_id,)).fetchone() if body.persona_id else None
         persona_config = normalize_persona_config(config_row["config_json"] if config_row else {})
+        bound_names = [str(name) for name in persona_config["mcp_servers"] if str(name).strip()]
+        bound_mcp_servers: list[dict[str, Any]] = []
+        if bound_names:
+            placeholders = ",".join("?" for _ in bound_names)
+            bound_mcp_servers = [dict(row) for row in connection.execute(f"SELECT * FROM mcp_servers WHERE enabled=1 AND name IN ({placeholders})", bound_names)]
         permission_row = connection.execute("SELECT value FROM app_settings WHERE key='tool_permissions'").fetchone()
         permissions = json.loads(permission_row["value"]) if permission_row else {"memory_read": "allow"}
         memory_sources = retrieve_memories(connection, body.content) if permissions.get("memory_read") == "allow" and persona_config["memory_enabled"] else []
@@ -1406,49 +1734,124 @@ async def chat(body: ChatIn) -> StreamingResponse:
                 except (json.JSONDecodeError, ValueError, TypeError):
                     yield json.dumps({"error": "这条 API 线路的自定义请求头不是有效 JSON"}, ensure_ascii=False) + "\n"
                     return
-                async with client.stream("POST", url, headers=headers, json=payload) as response:
-                    if response.status_code >= 400:
-                        detail = (await response.aread()).decode("utf-8", "replace")[:500]
-                        yield json.dumps({"error": f"API {response.status_code}: {detail}"}, ensure_ascii=False) + "\n"
-                        return
-                    if not provider["stream_enabled"]:
-                        data = json.loads((await response.aread()).decode("utf-8", "replace"))
+                direct_answer = False
+                if bound_mcp_servers:
+                    mcp_tools, mcp_bindings = await bound_mcp_catalog(bound_mcp_servers)
+                    if mcp_tools:
+                        probe_payload = dict(payload)
+                        probe_payload["stream"] = False
                         if provider["protocol"] == "anthropic":
-                            full = "".join(block.get("text", "") for block in data.get("content", []) if block.get("type") == "text")
-                            reasoning = "".join(block.get("thinking", "") for block in data.get("content", []) if block.get("type") == "thinking")
+                            probe_payload["tools"] = [{"name": tool["name"], "description": tool["description"], "input_schema": tool["input_schema"]} for tool in mcp_tools]
+                        else:
+                            probe_payload["tools"] = [{"type": "function", "function": {"name": tool["name"], "description": tool["description"], "parameters": tool["input_schema"]}} for tool in mcp_tools]
+                        probe = await client.post(url, headers=headers, json=probe_payload)
+                        if probe.status_code >= 400:
+                            yield json.dumps({"error": f"API {probe.status_code}: {probe.text[:500]}"}, ensure_ascii=False) + "\n"
+                            return
+                        data = probe.json()
+                        if provider["protocol"] == "anthropic":
+                            blocks = data.get("content", [])
+                            calls = [block for block in blocks if block.get("type") == "tool_use" and block.get("name") in mcp_bindings]
+                            if calls:
+                                results = []
+                                for call in calls[:8]:
+                                    server, original = mcp_bindings[call["name"]]
+                                    try:
+                                        policy = expanded_mcp_server(server).get("tool_policies", {}).get(original, "allow")
+                                        if policy == "ask":
+                                            raise PermissionError("该工具设置为“每次询问”，当前未获得用户确认")
+                                        result = await invoke_server_tool(server, original, call.get("input") or {})
+                                        content, is_error = mcp_result_text(result), False
+                                        record_mcp_audit(server["id"], original, "success")
+                                    except Exception as exc:
+                                        content, is_error = f"MCP 工具调用失败：{exc}", True
+                                        record_mcp_audit(server["id"], original, "blocked" if isinstance(exc, PermissionError) else "error", str(exc))
+                                    results.append({"type": "tool_result", "tool_use_id": call["id"], "content": content[:50000], "is_error": is_error})
+                                probe_payload.pop("tools", None)
+                                probe_payload["messages"] = [*probe_payload["messages"], {"role": "assistant", "content": blocks}, {"role": "user", "content": results}]
+                                payload = probe_payload
+                                payload["stream"] = bool(provider["stream_enabled"])
+                            else:
+                                full = "".join(str(block.get("text", "")) for block in blocks if block.get("type") == "text")
+                                reasoning = "".join(str(block.get("thinking", "")) for block in blocks if block.get("type") == "thinking")
+                                direct_answer = True
                         else:
                             message = data.get("choices", [{}])[0].get("message", {})
-                            full = message.get("content") or ""
-                            reasoning = message.get("reasoning_content") or message.get("reasoning") or ""
-                        if reasoning:
-                            yield json.dumps({"reasoning_delta": reasoning}, ensure_ascii=False) + "\n"
-                        if full:
-                            yield json.dumps({"delta": full}, ensure_ascii=False) + "\n"
-                    else:
-                        async for line in response.aiter_lines():
-                            if not line.startswith("data:"):
-                                continue
-                            raw = line[5:].strip()
-                            if not raw or raw == "[DONE]":
-                                continue
-                            try:
-                                event = json.loads(raw)
-                                if provider["protocol"] == "anthropic":
-                                    event_delta = event.get("delta", {})
-                                    delta = event_delta.get("text", "") if event.get("type") == "content_block_delta" else ""
-                                    reasoning_delta = event_delta.get("thinking", "")
-                                else:
-                                    choice_delta = event.get("choices", [{}])[0].get("delta", {})
-                                    delta = choice_delta.get("content") or ""
-                                    reasoning_delta = choice_delta.get("reasoning_content") or choice_delta.get("reasoning") or ""
-                            except (json.JSONDecodeError, IndexError, TypeError):
-                                continue
-                            if delta:
-                                full += delta
-                                yield json.dumps({"delta": delta}, ensure_ascii=False) + "\n"
-                            if reasoning_delta:
-                                reasoning += reasoning_delta
-                                yield json.dumps({"reasoning_delta": reasoning_delta}, ensure_ascii=False) + "\n"
+                            calls = [call for call in message.get("tool_calls", []) if call.get("function", {}).get("name") in mcp_bindings]
+                            if calls:
+                                tool_messages = []
+                                for call in calls[:8]:
+                                    function = call.get("function", {})
+                                    server, original = mcp_bindings[function["name"]]
+                                    try:
+                                        policy = expanded_mcp_server(server).get("tool_policies", {}).get(original, "allow")
+                                        if policy == "ask":
+                                            raise PermissionError("该工具设置为“每次询问”，当前未获得用户确认")
+                                        arguments = json.loads(function.get("arguments") or "{}")
+                                        result = await invoke_server_tool(server, original, arguments)
+                                        content = mcp_result_text(result)
+                                        record_mcp_audit(server["id"], original, "success")
+                                    except Exception as exc:
+                                        content = f"MCP 工具调用失败：{exc}"
+                                        record_mcp_audit(server["id"], original, "blocked" if isinstance(exc, PermissionError) else "error", str(exc))
+                                    tool_messages.append({"role": "tool", "tool_call_id": call["id"], "content": content[:50000]})
+                                probe_payload.pop("tools", None)
+                                probe_payload["messages"] = [*probe_payload["messages"], message, *tool_messages]
+                                payload = probe_payload
+                                payload["stream"] = bool(provider["stream_enabled"])
+                            else:
+                                full = message.get("content") or ""
+                                reasoning = message.get("reasoning_content") or message.get("reasoning") or ""
+                                direct_answer = True
+                        if direct_answer:
+                            if reasoning:
+                                yield json.dumps({"reasoning_delta": reasoning}, ensure_ascii=False) + "\n"
+                            if full:
+                                yield json.dumps({"delta": full}, ensure_ascii=False) + "\n"
+                if not direct_answer:
+                    async with client.stream("POST", url, headers=headers, json=payload) as response:
+                        if response.status_code >= 400:
+                            detail = (await response.aread()).decode("utf-8", "replace")[:500]
+                            yield json.dumps({"error": f"API {response.status_code}: {detail}"}, ensure_ascii=False) + "\n"
+                            return
+                        if not provider["stream_enabled"]:
+                            data = json.loads((await response.aread()).decode("utf-8", "replace"))
+                            if provider["protocol"] == "anthropic":
+                                full = "".join(block.get("text", "") for block in data.get("content", []) if block.get("type") == "text")
+                                reasoning = "".join(block.get("thinking", "") for block in data.get("content", []) if block.get("type") == "thinking")
+                            else:
+                                message = data.get("choices", [{}])[0].get("message", {})
+                                full = message.get("content") or ""
+                                reasoning = message.get("reasoning_content") or message.get("reasoning") or ""
+                            if reasoning:
+                                yield json.dumps({"reasoning_delta": reasoning}, ensure_ascii=False) + "\n"
+                            if full:
+                                yield json.dumps({"delta": full}, ensure_ascii=False) + "\n"
+                        else:
+                            async for line in response.aiter_lines():
+                                if not line.startswith("data:"):
+                                    continue
+                                raw = line[5:].strip()
+                                if not raw or raw == "[DONE]":
+                                    continue
+                                try:
+                                    event = json.loads(raw)
+                                    if provider["protocol"] == "anthropic":
+                                        event_delta = event.get("delta", {})
+                                        delta = event_delta.get("text", "") if event.get("type") == "content_block_delta" else ""
+                                        reasoning_delta = event_delta.get("thinking", "")
+                                    else:
+                                        choice_delta = event.get("choices", [{}])[0].get("delta", {})
+                                        delta = choice_delta.get("content") or ""
+                                        reasoning_delta = choice_delta.get("reasoning_content") or choice_delta.get("reasoning") or ""
+                                except (json.JSONDecodeError, IndexError, TypeError):
+                                    continue
+                                if delta:
+                                    full += delta
+                                    yield json.dumps({"delta": delta}, ensure_ascii=False) + "\n"
+                                if reasoning_delta:
+                                    reasoning += reasoning_delta
+                                    yield json.dumps({"reasoning_delta": reasoning_delta}, ensure_ascii=False) + "\n"
             if full:
                 assistant_id = str(uuid.uuid4())
                 generated_title = None
