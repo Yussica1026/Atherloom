@@ -253,7 +253,7 @@ class AppSettingsIn(BaseModel):
     display_name: str = Field(default="", max_length=40)
     proactive_questions: bool = False
     tool_permissions: dict[str, str] = Field(default_factory=lambda: {
-        "web_search": "allow", "memory_read": "allow", "memory_write": "ask",
+        "web_search": "allow", "file_read": "allow", "memory_read": "allow", "memory_write": "ask",
         "diary_write": "ask", "delete": "ask"
     })
     font_scale: int = Field(default=100, ge=85, le=130)
@@ -397,7 +397,7 @@ def bootstrap() -> dict[str, Any]:
         "default_summary_prompt": DEFAULT_SUMMARY_PROMPT,
         "display_name": settings_rows.get("display_name", ""),
         "proactive_questions": settings_rows.get("proactive_questions", "false") == "true",
-        "tool_permissions": json.loads(settings_rows.get("tool_permissions", '{"web_search":"allow","memory_read":"allow","memory_write":"ask","diary_write":"ask","delete":"ask"}')),
+        "tool_permissions": json.loads(settings_rows.get("tool_permissions", '{"web_search":"allow","file_read":"allow","memory_read":"allow","memory_write":"ask","diary_write":"ask","delete":"ask"}')),
         "font_scale": int(settings_rows.get("font_scale", "100")),
         "message_density": settings_rows.get("message_density", "comfortable"),
         "code_theme": settings_rows.get("code_theme", "auto"),
