@@ -4,6 +4,7 @@ import android.Manifest;
 import android.app.Activity;
 import android.content.Intent;
 import android.content.Context;
+import android.content.ContentValues;
 import android.content.ClipboardManager;
 import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
@@ -11,6 +12,7 @@ import android.net.Uri;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
+import android.provider.MediaStore;
 import android.view.ViewGroup;
 import android.webkit.GeolocationPermissions;
 import android.webkit.JavascriptInterface;
@@ -41,6 +43,7 @@ public class MainActivity extends Activity {
     private static final int FILE_CHOOSER = 41, AUDIO_PERMISSION = 42;
     private WebView webView;
     private ValueCallback<Uri[]> fileCallback;
+    private Uri pendingCameraUri;
     private PermissionRequest pendingPermission;
 
     @Override public void onCreate(Bundle state) {
@@ -69,7 +72,23 @@ public class MainActivity extends Activity {
         webView.setWebChromeClient(new WebChromeClient() {
             @Override public boolean onShowFileChooser(WebView view, ValueCallback<Uri[]> callback, FileChooserParams params) {
                 if (fileCallback != null) fileCallback.onReceiveValue(null);
-                fileCallback = callback; startActivityForResult(params.createIntent(), FILE_CHOOSER); return true;
+                fileCallback = callback;
+                boolean imageCapture = params.isCaptureEnabled();
+                String[] accepted = params.getAcceptTypes();
+                if (accepted != null) for (String type : accepted) if (type != null && type.startsWith("image/")) imageCapture = imageCapture || params.isCaptureEnabled();
+                if (imageCapture) {
+                    ContentValues values = new ContentValues();
+                    values.put(MediaStore.Images.Media.DISPLAY_NAME, "atherloom-" + System.currentTimeMillis() + ".jpg");
+                    values.put(MediaStore.Images.Media.MIME_TYPE, "image/jpeg");
+                    pendingCameraUri = getContentResolver().insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values);
+                    Intent camera = new Intent(MediaStore.ACTION_IMAGE_CAPTURE);
+                    camera.putExtra(MediaStore.EXTRA_OUTPUT, pendingCameraUri);
+                    startActivityForResult(camera, FILE_CHOOSER);
+                } else {
+                    pendingCameraUri = null;
+                    startActivityForResult(params.createIntent(), FILE_CHOOSER);
+                }
+                return true;
             }
             @Override public void onPermissionRequest(PermissionRequest request) {
                 pendingPermission = request;
@@ -251,7 +270,13 @@ public class MainActivity extends Activity {
     }
     @Override protected void onActivityResult(int request, int result, Intent data) {
         super.onActivityResult(request, result, data);
-        if (request == FILE_CHOOSER && fileCallback != null) { fileCallback.onReceiveValue(WebChromeClient.FileChooserParams.parseResult(result, data)); fileCallback = null; }
+        if (request == FILE_CHOOSER && fileCallback != null) {
+            Uri[] resultUris = result == RESULT_OK && pendingCameraUri != null ? new Uri[]{pendingCameraUri} : WebChromeClient.FileChooserParams.parseResult(result, data);
+            if (result != RESULT_OK && pendingCameraUri != null) getContentResolver().delete(pendingCameraUri, null, null);
+            fileCallback.onReceiveValue(resultUris);
+            fileCallback = null;
+            pendingCameraUri = null;
+        }
     }
     @Override public void onRequestPermissionsResult(int request, String[] permissions, int[] results) {
         super.onRequestPermissionsResult(request, permissions, results);

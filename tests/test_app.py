@@ -58,6 +58,12 @@ class LocalClientTests(unittest.TestCase):
         self.assertEqual(refreshed["last_status"], "online")
         self.assertEqual(refreshed["tools"][0]["name"], "echo")
 
+    def test_android_camera_uses_image_capture_instead_of_generic_picker(self):
+        source = (app_module.ROOT / "android" / "app" / "src" / "main" / "java" / "app" / "atherloom" / "mobile" / "MainActivity.java").read_text(encoding="utf-8")
+        self.assertIn("MediaStore.ACTION_IMAGE_CAPTURE", source)
+        self.assertIn("MediaStore.EXTRA_OUTPUT", source)
+        self.assertIn("pendingCameraUri", source)
+
     def test_model_ids_are_normalized_and_deduplicated(self):
         payload = {"data": [{"id": "glm-5"}, {"id": "deepseek-chat"}, {"id": "glm-5"}, "custom-model", {}]}
         self.assertEqual(app_module.extract_model_ids(payload), ["custom-model", "deepseek-chat", "glm-5"])
