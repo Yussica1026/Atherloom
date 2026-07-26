@@ -143,7 +143,8 @@ def init_db() -> None:
             );
             CREATE TABLE IF NOT EXISTS mcp_audit (
               id TEXT PRIMARY KEY, server_id TEXT NOT NULL, tool_name TEXT NOT NULL,
-              status TEXT NOT NULL, detail TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL
+              status TEXT NOT NULL, detail TEXT NOT NULL DEFAULT '',
+              conversation_id TEXT, user_message_id TEXT, created_at TEXT NOT NULL
             );
             """
         )
@@ -192,6 +193,11 @@ def init_db() -> None:
         }.items():
             if column not in mcp_columns:
                 connection.execute(f"ALTER TABLE mcp_servers ADD COLUMN {column} {definition}")
+        mcp_audit_columns = {row["name"] for row in connection.execute("PRAGMA table_info(mcp_audit)")}
+        if "conversation_id" not in mcp_audit_columns:
+            connection.execute("ALTER TABLE mcp_audit ADD COLUMN conversation_id TEXT")
+        if "user_message_id" not in mcp_audit_columns:
+            connection.execute("ALTER TABLE mcp_audit ADD COLUMN user_message_id TEXT")
         connection.commit()
 
 
@@ -1043,6 +1049,7 @@ BUILTIN_TOOL_SPECS = {
                 "title": {"type": "string", "description": "简短明确的标题"},
                 "content": {"type": "string", "description": "忠实、完整且不臆测的记忆内容"},
                 "kind": {"type": "string", "enum": ["fact", "preference", "relationship", "promise", "event", "emotion", "summary", "diary", "other"]},
+                "source_message_id": {"type": "string", "description": "如果记忆来自某条具体消息，填写该消息 ID，以便回溯原话"},
             },
             "required": ["title", "content"],
         },
@@ -1135,7 +1142,21 @@ async def invoke_builtin_tool(name: str, arguments: dict[str, Any]) -> dict[str,
                 rows = connection.execute("SELECT * FROM memories WHERE deleted_at IS NULL ORDER BY starred DESC,updated_at DESC LIMIT 20").fetchall()
         return {"memories": [{"memory_id": row["id"], "title": row["title"], "content": row["content"], "kind": row["kind"], "updated_at": row["updated_at"]} for row in rows]}
     if name == "memory_create":
-        body = MemoryIn(title=str(arguments.get("title", "")).strip(), content=str(arguments.get("content", "")).strip(), kind=str(arguments.get("kind") or "fact"))
+        source_message_id = str(arguments.get("source_message_id") or arguments.get("_source_message_id") or "").strip() or None
+        source_conversation_id = str(arguments.get("_conversation_id") or "").strip() or None
+        if source_message_id:
+            with closing(db()) as connection:
+                source = connection.execute("SELECT conversation_id FROM messages WHERE id=?", (source_message_id,)).fetchone()
+            if not source:
+                raise ValueError("source_message_id 找不到对应消息")
+            source_conversation_id = source["conversation_id"]
+        body = MemoryIn(
+            title=str(arguments.get("title", "")).strip(),
+            content=str(arguments.get("content", "")).strip(),
+            kind=str(arguments.get("kind") or "fact"),
+            source_conversation_id=source_conversation_id,
+            source_message_id=source_message_id,
+        )
         saved = create_memory(body)
         return {"created": True, "memory_id": saved["id"], "title": saved["title"], "kind": saved["kind"]}
     if name == "memory_update":
@@ -1245,12 +1266,35 @@ async def refresh_mcp_server(server_id: str) -> dict[str, Any]:
 @app.get("/api/mcp-audit")
 def list_mcp_audit(limit: int = 100) -> list[dict[str, Any]]:
     with closing(db()) as connection:
-        return [dict(row) for row in connection.execute("SELECT a.*,COALESCE(s.name, CASE WHEN a.server_id='__builtin__' THEN 'Atherloom 内置工具' ELSE NULL END) server_name FROM mcp_audit a LEFT JOIN mcp_servers s ON s.id=a.server_id ORDER BY a.created_at DESC LIMIT ?", (max(1,min(limit,500)),))]
+        return [dict(row) for row in connection.execute(
+            """SELECT a.*,
+                      COALESCE(s.name, CASE WHEN a.server_id='__builtin__' THEN 'Atherloom 内置工具' ELSE NULL END) server_name,
+                      c.title conversation_title,
+                      m.content user_message_content
+               FROM mcp_audit a
+               LEFT JOIN mcp_servers s ON s.id=a.server_id
+               LEFT JOIN conversations c ON c.id=a.conversation_id
+               LEFT JOIN messages m ON m.id=a.user_message_id
+               ORDER BY a.created_at DESC LIMIT ?""",
+            (max(1, min(limit, 500)),),
+        )]
 
 
-def record_mcp_audit(server_id: str, tool_name: str, status: str, detail: str = "") -> None:
+def record_mcp_audit(
+    server_id: str,
+    tool_name: str,
+    status: str,
+    detail: str = "",
+    conversation_id: str | None = None,
+    user_message_id: str | None = None,
+) -> None:
     with closing(db()) as connection:
-        connection.execute("INSERT INTO mcp_audit VALUES (?,?,?,?,?,?)", (str(uuid.uuid4()),server_id,tool_name,status,detail[:2000],now_iso()))
+        connection.execute(
+            """INSERT INTO mcp_audit
+               (id,server_id,tool_name,status,detail,conversation_id,user_message_id,created_at)
+               VALUES (?,?,?,?,?,?,?,?)""",
+            (str(uuid.uuid4()), server_id, tool_name, status, detail[:2000], conversation_id, user_message_id, now_iso()),
+        )
         connection.commit()
 
 
@@ -1305,6 +1349,34 @@ def search_conversations(q: str = "") -> list[dict[str, Any]]:
                LEFT JOIN messages m ON m.conversation_id=c.id
                WHERE c.title LIKE ? OR m.content LIKE ?
                ORDER BY c.updated_at DESC LIMIT 50""", (like, like)
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
+@app.get("/api/messages/search")
+def search_messages(q: str = "", role: str = "", limit: int = 100) -> list[dict[str, Any]]:
+    term = q.strip()
+    normalized_role = role.strip().lower()
+    if not term:
+        return []
+    if normalized_role and normalized_role not in {"user", "assistant", "system"}:
+        raise HTTPException(422, "role 只能是 user、assistant 或 system")
+    conditions = ["m.content LIKE ?", "t.message_id IS NULL"]
+    parameters: list[Any] = [f"%{term}%"]
+    if normalized_role:
+        conditions.append("m.role=?")
+        parameters.append(normalized_role)
+    parameters.append(max(1, min(limit, 500)))
+    with closing(db()) as connection:
+        rows = connection.execute(
+            f"""SELECT m.*, c.title conversation_title
+                FROM messages m
+                JOIN conversations c ON c.id=m.conversation_id
+                LEFT JOIN message_trash t ON t.message_id=m.id
+                WHERE {' AND '.join(conditions)}
+                ORDER BY m.created_at DESC, m.id DESC
+                LIMIT ?""",
+            parameters,
         ).fetchall()
     return [dict(row) for row in rows]
 
@@ -2219,12 +2291,14 @@ async def chat(body: ChatIn) -> StreamingResponse:
                                         tool_arguments = dict(call.get("input") or {})
                                         if server.get("transport") == "builtin":
                                             tool_arguments["_persona_key"] = motivation_key(body.persona_id)
+                                            tool_arguments["_conversation_id"] = body.conversation_id
+                                            tool_arguments["_source_message_id"] = user_id
                                         result = await invoke_server_tool(server, original, tool_arguments)
                                         content, is_error = mcp_result_text(result), False
-                                        record_mcp_audit(server["id"], original, "success")
+                                        record_mcp_audit(server["id"], original, "success", conversation_id=body.conversation_id, user_message_id=user_id)
                                     except Exception as exc:
                                         content, is_error = f"MCP 工具调用失败：{exc}", True
-                                        record_mcp_audit(server["id"], original, "blocked" if isinstance(exc, PermissionError) else "error", str(exc))
+                                        record_mcp_audit(server["id"], original, "blocked" if isinstance(exc, PermissionError) else "error", str(exc), body.conversation_id, user_id)
                                     results.append({"type": "tool_result", "tool_use_id": call["id"], "content": content[:50000], "is_error": is_error})
                                 probe_payload.pop("tools", None)
                                 probe_payload["messages"] = [*probe_payload["messages"], {"role": "assistant", "content": blocks}, {"role": "user", "content": results}]
@@ -2242,12 +2316,14 @@ async def chat(body: ChatIn) -> StreamingResponse:
                                         arguments = json.loads(function.get("arguments") or "{}")
                                         if server.get("transport") == "builtin":
                                             arguments["_persona_key"] = motivation_key(body.persona_id)
+                                            arguments["_conversation_id"] = body.conversation_id
+                                            arguments["_source_message_id"] = user_id
                                         result = await invoke_server_tool(server, original, arguments)
                                         content = mcp_result_text(result)
-                                        record_mcp_audit(server["id"], original, "success")
+                                        record_mcp_audit(server["id"], original, "success", conversation_id=body.conversation_id, user_message_id=user_id)
                                     except Exception as exc:
                                         content = f"MCP 工具调用失败：{exc}"
-                                        record_mcp_audit(server["id"], original, "blocked" if isinstance(exc, PermissionError) else "error", str(exc))
+                                        record_mcp_audit(server["id"], original, "blocked" if isinstance(exc, PermissionError) else "error", str(exc), body.conversation_id, user_id)
                                     dsml_results.append({"tool": function["name"], "result": content[:50000]})
                                 result_prompt = (
                                     "<tool_results>\n"
@@ -2285,12 +2361,14 @@ async def chat(body: ChatIn) -> StreamingResponse:
                                         arguments = json.loads(function.get("arguments") or "{}")
                                         if server.get("transport") == "builtin":
                                             arguments["_persona_key"] = motivation_key(body.persona_id)
+                                            arguments["_conversation_id"] = body.conversation_id
+                                            arguments["_source_message_id"] = user_id
                                         result = await invoke_server_tool(server, original, arguments)
                                         content = mcp_result_text(result)
-                                        record_mcp_audit(server["id"], original, "success")
+                                        record_mcp_audit(server["id"], original, "success", conversation_id=body.conversation_id, user_message_id=user_id)
                                     except Exception as exc:
                                         content = f"MCP 工具调用失败：{exc}"
-                                        record_mcp_audit(server["id"], original, "blocked" if isinstance(exc, PermissionError) else "error", str(exc))
+                                        record_mcp_audit(server["id"], original, "blocked" if isinstance(exc, PermissionError) else "error", str(exc), body.conversation_id, user_id)
                                     if call.get("_dsml"):
                                         dsml_results.append({"tool": function["name"], "result": content[:50000]})
                                     else:
