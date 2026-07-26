@@ -168,7 +168,7 @@
       let user;
       if(body.reuse_user_message_id) user=history.find(item=>item.id===body.reuse_user_message_id);
       if(!user){user={id:uid(),role:"user",content:body.content,attachments:body.attachments||[],created_at:now};history.push(user);}
-      const persona=read("personas",[]).find(item=>item.id===body.persona_id),personaConfig=persona?.config||{},memorySources=personaConfig.memory_enabled===false?[]:relevantMemories(body.content),worldbookEntries=activeWorldbookEntries(body.worldbook_ids||[],[...history,{role:"user",content:body.content}]);
+      const persona=read("personas",[]).find(item=>item.id===body.persona_id),personaConfig=persona?.config||{},memorySources=personaConfig.memory_enabled===false?[]:relevantMemories(body.content),worldbookEntries=activeWorldbookEntries(body.worldbook_ids||[],history);
       const personaContext=persona?.prompt?.trim()?`<assistant_persona active="true">\n${persona.prompt}\n</assistant_persona>`:"";
       const memoryContext=memorySources.length?`<relevant_memories>\n${memorySources.map(item=>`[memory:${item.id}] ${item.title}\n${item.content}`).join("\n\n")}\n</relevant_memories>`:"";
       const questionContext=settings().proactive_questions?'用户允许你在合适时主动提问、自然追问或发起新话题。需要用户选择时，先自然地说一句引导语，再在回复末尾严格输出 <questions>[{"question":"问题","options":["选项一","选项二","选项三"]}]</questions>；可包含 1 至 4 个问题，每题 2 至 5 个简短选项，不要在标签外重复选项。用户明确要求你提问时必须使用此格式。不要机械地每轮都提问。':"除非完成当前请求确实缺少必要信息，否则不要主动反问或发起问卷；优先直接回应用户。";

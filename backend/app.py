@@ -1600,6 +1600,11 @@ def attachment_content(text: str, attachments: list[dict[str, Any]], protocol: s
     return parts
 
 
+def append_pending_user(messages: list[dict[str, Any]], body: ChatIn) -> None:
+    if not body.reuse_user_message_id:
+        messages.append({"role": "user", "content": body.content})
+
+
 def provider_models_endpoint(base_url: str, protocol: str) -> str:
     base = base_url.rstrip("/")
     if protocol == "anthropic":
@@ -1845,7 +1850,7 @@ async def chat(body: ChatIn) -> StreamingResponse:
             )
         connection.execute("UPDATE conversations SET provider_id=?, persona_id=?, updated_at=? WHERE id=?", (body.provider_id, body.persona_id, created, body.conversation_id))
         connection.commit()
-    messages.append({"role": "user", "content": body.content})
+    append_pending_user(messages, body)
 
     async def stream():
         full = ""
