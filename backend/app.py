@@ -420,12 +420,18 @@ class RoleplayStoryIn(BaseModel):
     title: str = Field(min_length=1, max_length=120)
     player_name: str = Field(min_length=1, max_length=80)
     premise: str = Field(default="", max_length=30000)
+    preset: str = Field(default="custom", max_length=40)
     narrator_provider_id: str
     cast: list[RoleplayCastIn] = Field(default_factory=list, min_length=1, max_length=12)
+    worldbook_ids: list[str] = Field(default_factory=list, max_length=20)
 
 
 class RoleplayTurnIn(BaseModel):
     player_input: str = Field(min_length=1, max_length=30000)
+
+
+class RoleplayTurnStateIn(BaseModel):
+    favorite: bool
 
 
 class RoleplayStateIn(BaseModel):
@@ -2653,6 +2659,26 @@ def require_roleplay_provider(connection: sqlite3.Connection, provider_id: str) 
     return provider
 
 
+def roleplay_worldbook_context(connection: sqlite3.Connection, worldbook_ids: list[str]) -> str:
+    if not worldbook_ids:
+        return ""
+    placeholders = ",".join("?" for _ in worldbook_ids)
+    rows = connection.execute(
+        f"SELECT name,entries_json FROM worldbooks WHERE enabled=1 AND id IN ({placeholders})",
+        worldbook_ids,
+    ).fetchall()
+    parts = []
+    for row in rows:
+        entries = json.loads(row["entries_json"] or "[]")
+        content = "\n".join(
+            f"- {entry.get('name', '设定')}：{entry.get('content', '')}"
+            for entry in entries if entry.get("enabled", True) and str(entry.get("content", "")).strip()
+        )
+        if content:
+            parts.append(f"《{row['name']}》\n{content}")
+    return "\n\n".join(parts)
+
+
 async def roleplay_model_once(provider: sqlite3.Row, system: str, prompt: str) -> str:
     headers = provider_headers(provider["protocol"], provider["api_key"], provider["custom_headers"])
     messages = [{"role": "user", "content": prompt}]
@@ -2705,7 +2731,8 @@ def create_roleplay_story(body: RoleplayStoryIn) -> dict[str, Any]:
         state = {
             "turn_number": 0, "scene": "尚未开场", "rolling_summary": "",
             "last_excerpt": "", "unresolved_hooks": [],
-            "fictional_archive": True,
+            "fictional_archive": True, "preset": body.preset,
+            "worldbook_ids": body.worldbook_ids,
         }
         connection.execute(
             "INSERT INTO roleplay_stories VALUES (?,?,?,?,?,?,?,?,?,?)",
@@ -2716,6 +2743,81 @@ def create_roleplay_story(body: RoleplayStoryIn) -> dict[str, Any]:
         connection.commit()
         row = connection.execute("SELECT * FROM roleplay_stories WHERE id=?", (story_id,)).fetchone()
         return roleplay_story_dict(connection, row, True)
+
+
+@app.put("/api/roleplay/stories/{story_id}")
+def update_roleplay_story(story_id: str, body: RoleplayStoryIn) -> dict[str, Any]:
+    cast = [item.model_dump() for item in body.cast]
+    with closing(db()) as connection:
+        row = connection.execute("SELECT * FROM roleplay_stories WHERE id=?", (story_id,)).fetchone()
+        if not row:
+            raise HTTPException(404, "剧场故事不存在")
+        require_roleplay_provider(connection, body.narrator_provider_id)
+        for actor in cast:
+            require_roleplay_provider(connection, actor["provider_id"])
+        state = json.loads(row["state_json"] or "{}")
+        state["preset"] = body.preset
+        state["worldbook_ids"] = body.worldbook_ids
+        updated = now_iso()
+        connection.execute(
+            """UPDATE roleplay_stories
+               SET title=?,player_name=?,premise=?,narrator_provider_id=?,cast_json=?,state_json=?,updated_at=?
+               WHERE id=?""",
+            (body.title, body.player_name, body.premise, body.narrator_provider_id,
+             json.dumps(cast, ensure_ascii=False), json.dumps(state, ensure_ascii=False), updated, story_id),
+        )
+        connection.commit()
+        saved = connection.execute("SELECT * FROM roleplay_stories WHERE id=?", (story_id,)).fetchone()
+        return roleplay_story_dict(connection, saved, True)
+
+
+@app.post("/api/roleplay/stories/{story_id}/opening")
+async def open_roleplay_story(story_id: str) -> dict[str, Any]:
+    with closing(db()) as connection:
+        row = connection.execute("SELECT * FROM roleplay_stories WHERE id=?", (story_id,)).fetchone()
+        if not row:
+            raise HTTPException(404, "剧场故事不存在")
+        story = roleplay_story_dict(connection, row, True)
+        existing = next((turn for turn in story["turns"] if turn["turn_number"] == 0), None)
+        if existing:
+            return existing
+        narrator = require_roleplay_provider(connection, row["narrator_provider_id"])
+        worldbook = roleplay_worldbook_context(connection, story["state"].get("worldbook_ids", []))
+    cast = "、".join(actor["name"] for actor in story["cast"])
+    system = (
+        "你是小说旁白。请写一段有气味、光影、声音与人物张力的中文开场正文，让故事自然开始。"
+        f"玩家角色叫“{story['player_name']}”。绝不能替玩家角色行动、说话、感受、回忆或作决定；"
+        "可以让环境变化、让其他角色出现或说话，并在结尾把选择权留给玩家。"
+        "不要解释规则，不要写标题，不要出现 AI、用户、玩家等幕后词。"
+        "输出必须使用剧场稿格式：每段以“旁白：”或“角色全名：”开头；第一段必须以“旁白：”开头。"
+        "旁白段负责环境、动作衔接与气氛，角色段只写该角色自己的言行。不要输出没有署名的括号动作。"
+    )
+    prompt = (
+        f"故事：{story['title']}\n类型预设：{story['state'].get('preset', 'custom')}\n"
+        f"设定：{story['premise']}\n登场角色：{cast}\n"
+        f"{'世界书：' + worldbook if worldbook else ''}"
+    )
+    prose = await roleplay_model_once(narrator, system, prompt)
+    checkpoint = {"turn_number": 0, "scene": prose[-600:], "last_player_input": "", "participating_characters": [], "favorite": False}
+    created, turn_id = now_iso(), str(uuid.uuid4())
+    next_state = {
+        **story["state"], "scene": checkpoint["scene"], "last_excerpt": prose[-1200:],
+        "rolling_summary": f"开场：{prose}", "fictional_archive": True,
+    }
+    with closing(db()) as connection:
+        connection.execute(
+            "INSERT INTO roleplay_turns VALUES (?,?,?,?,?,?,?,?)",
+            (turn_id, story_id, 0, "（旁白开场）", "[]", prose, json.dumps(checkpoint, ensure_ascii=False), created),
+        )
+        connection.execute(
+            "UPDATE roleplay_stories SET state_json=?,updated_at=? WHERE id=?",
+            (json.dumps(next_state, ensure_ascii=False), created, story_id),
+        )
+        connection.commit()
+    return {
+        "id": turn_id, "story_id": story_id, "turn_number": 0, "player_input": "（旁白开场）",
+        "actor_drafts": [], "prose": prose, "checkpoint": checkpoint, "created_at": created,
+    }
 
 
 @app.get("/api/roleplay/stories/{story_id}")
@@ -2748,6 +2850,7 @@ async def play_roleplay_turn(story_id: str, body: RoleplayTurnIn) -> dict[str, A
             raise HTTPException(409, "这个故事已经收场；请先重新开启")
         story = roleplay_story_dict(connection, row, True)
         narrator = require_roleplay_provider(connection, row["narrator_provider_id"])
+        worldbook = roleplay_worldbook_context(connection, story["state"].get("worldbook_ids", []))
         actor_specs = []
         actor_providers = []
         for actor in story["cast"]:
@@ -2762,6 +2865,7 @@ async def play_roleplay_turn(story_id: str, body: RoleplayTurnIn) -> dict[str, A
     shared_context = (
         f"故事：{story['title']}\n玩家角色姓名：{story['player_name']}\n"
         f"剧情设定：{story['premise']}\n既有剧情摘要：{story['state'].get('rolling_summary', '')}\n"
+        f"{'世界书：' + worldbook + chr(10) if worldbook else ''}"
         f"最近正文：\n{archive or '尚未开场'}\n\n玩家这次明确输入：{body.player_input}"
     )
 
@@ -2786,7 +2890,9 @@ async def play_roleplay_turn(story_id: str, body: RoleplayTurnIn) -> dict[str, A
         "你是独立的小说旁白与场面调度者。请把角色提案编织成连贯、沉浸的中文小说正文并推进一小步剧情。"
         "可以描写环境、NPC与已列角色，但绝不能替玩家角色决定任何新动作、台词、感受、反应或内心；"
         "玩家角色只能执行玩家输入中明确写出的内容。不要出现“提案”“AI”“轮次”等幕后词。"
-        "结尾必须留下玩家可以自由回应的空间。只输出小说正文。"
+        "结尾必须留下玩家可以自由回应的空间。"
+        "输出必须使用剧场稿格式：每段以“旁白：”或实际“角色全名：”开头；至少包含一段旁白，"
+        "角色台词与动作必须写在对应角色全名下面。不要输出没有署名的括号动作，只输出剧场正文。"
     )
     prose = await roleplay_model_once(narrator, narrator_system, f"{shared_context}\n\n{draft_text}")
     turn_number = int(story["state"].get("turn_number", 0)) + 1
@@ -2805,6 +2911,8 @@ async def play_roleplay_turn(story_id: str, body: RoleplayTurnIn) -> dict[str, A
         "scene": prose[-600:],
         "last_player_input": body.player_input,
         "participating_characters": [item["name"] for item in drafts],
+        "rolling_summary": summary,
+        "favorite": False,
     }
     next_state = {
         **story["state"], "turn_number": turn_number, "scene": checkpoint["scene"],
@@ -2828,6 +2936,63 @@ async def play_roleplay_turn(story_id: str, body: RoleplayTurnIn) -> dict[str, A
         "player_input": body.player_input, "actor_drafts": drafts,
         "prose": prose, "checkpoint": checkpoint, "created_at": created,
     }
+
+
+@app.patch("/api/roleplay/stories/{story_id}/turns/{turn_number}")
+def update_roleplay_turn(story_id: str, turn_number: int, body: RoleplayTurnStateIn) -> dict[str, Any]:
+    with closing(db()) as connection:
+        row = connection.execute(
+            "SELECT * FROM roleplay_turns WHERE story_id=? AND turn_number=?", (story_id, turn_number)
+        ).fetchone()
+        if not row:
+            raise HTTPException(404, "剧场回合不存在")
+        checkpoint = json.loads(row["checkpoint_json"] or "{}")
+        checkpoint["favorite"] = body.favorite
+        connection.execute(
+            "UPDATE roleplay_turns SET checkpoint_json=? WHERE id=?",
+            (json.dumps(checkpoint, ensure_ascii=False), row["id"]),
+        )
+        connection.commit()
+        item = dict(row)
+        item["checkpoint"] = checkpoint
+        item["actor_drafts"] = json.loads(item.pop("actor_drafts_json") or "[]")
+        item.pop("checkpoint_json", None)
+        return item
+
+
+@app.delete("/api/roleplay/stories/{story_id}/turns/{turn_number}")
+def delete_latest_roleplay_turn(story_id: str, turn_number: int) -> dict[str, Any]:
+    with closing(db()) as connection:
+        latest = connection.execute(
+            "SELECT MAX(turn_number) AS number FROM roleplay_turns WHERE story_id=?", (story_id,)
+        ).fetchone()["number"]
+        if latest is None or turn_number != latest or turn_number <= 0:
+            raise HTTPException(409, "只能重写最新一回合，开场不能从这里删除")
+        connection.execute(
+            "DELETE FROM roleplay_turns WHERE story_id=? AND turn_number=?", (story_id, turn_number)
+        )
+        remaining = connection.execute(
+            "SELECT * FROM roleplay_turns WHERE story_id=? ORDER BY turn_number", (story_id,)
+        ).fetchall()
+        previous = remaining[-1] if remaining else None
+        checkpoint = json.loads(previous["checkpoint_json"] or "{}") if previous else {}
+        story_row = connection.execute("SELECT state_json FROM roleplay_stories WHERE id=?", (story_id,)).fetchone()
+        state = json.loads(story_row["state_json"] or "{}")
+        state.update({
+            "turn_number": max(0, turn_number - 1),
+            "scene": checkpoint.get("scene", "尚未开场"),
+            "last_excerpt": previous["prose"][-1200:] if previous else "",
+            "rolling_summary": "\n".join(
+                ("开场：" if row["turn_number"] == 0 else f"第{row['turn_number']}回合：") + row["prose"]
+                for row in remaining
+            )[-12000:],
+        })
+        connection.execute(
+            "UPDATE roleplay_stories SET state_json=?,updated_at=? WHERE id=?",
+            (json.dumps(state, ensure_ascii=False), now_iso(), story_id),
+        )
+        connection.commit()
+        return {"ok": True, "state": state}
 
 
 app.mount("/assets", StaticFiles(directory=FRONTEND / "assets"), name="assets")
