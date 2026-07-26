@@ -13,7 +13,7 @@
   <title>Atherloom</title>
   <link rel="manifest" href="manifest.json">
   <link rel="icon" href="assets/app-icon.svg" type="image/svg+xml">
-  <link rel="stylesheet" href="assets/app.css?v=0443">
+  <link rel="stylesheet" href="assets/app.css?v=0446">
   <script>document.documentElement.dataset.launchMode=performance.getEntriesByType("navigation")[0]?.type==="reload"?"refresh":"full";</script>
 </head>
 <body>
@@ -43,6 +43,11 @@
       <div class="sidebar-search"><span>⌕</span><input id="conversationSearch" placeholder="搜索对话" aria-label="搜索对话"></div>
       <nav class="history" id="history" aria-label="历史对话"></nav>
       <div class="sidebar-footer">
+        <button class="plugin-entry" id="openPlugins">
+          <span class="plugin-orbit" aria-hidden="true">✦</span>
+          <span><strong>插件中心</strong><small>记忆、欲望与 MCP</small></span>
+          <span aria-hidden="true">›</span>
+        </button>
         <button class="profile-row" id="openSettings">
           <span class="avatar" id="profileAvatar">·</span>
           <span><strong id="profileName">设置用户名</strong></span>
@@ -145,8 +150,10 @@
         <button data-tab="worldbooks">世界书</button>
         <button data-tab="summary">自动总结</button>
         <button data-tab="memory">记忆库</button>
+        <button data-tab="journal">日记与留言</button>
         <button data-tab="mcp">MCP</button>
         <button data-tab="tools">工具与权限</button>
+        <button data-tab="runtime">插件中心</button>
         <button data-tab="appearance">外观</button>
         <button data-tab="backup">备份与恢复</button>
       </nav>
@@ -164,8 +171,11 @@
             <label>温度 Temperature<input name="temperature" type="number" min="0" max="2" step="0.1" value="0.7"><small class="muted">越低越稳定；部分推理模型可能忽略此项。</small></label>
             <label>Top P<input name="top_p" type="number" min="0" max="1" step="0.05" value="1"></label>
             <label>最大输出 Tokens<input name="max_tokens" type="number" min="1" max="200000" step="1" value="4096"></label>
+            <label>图片能力<select name="vision_mode"><option value="auto">自动按协议选择</option><option value="openai">OpenAI image_url 格式</option><option value="anthropic">Claude base64 图片格式</option><option value="text">仅文本，不允许发送图片</option></select><small class="muted">第三方网关报“expected text”时请选择“仅文本”；支持看图但格式不同的线路可手动指定。</small></label>
+            <label>提示词缓存<select name="cache_mode" id="providerCacheMode"><option value="auto">自动按协议选择</option><option value="off">关闭</option><option value="anthropic">Claude 显式缓存</option><option value="openai">OpenAI 缓存键</option></select></label>
+            <label id="promptCacheKeyField" hidden>OpenAI 缓存键<input name="prompt_cache_key" maxlength="200" placeholder="例如：persona-default"><small class="muted">相同稳定前缀使用相同键；兼容网关不接受该字段时请选择“关闭”。</small></label>
             <label>自定义请求头（JSON）<textarea name="custom_headers" rows="4" placeholder='{"X-Custom-Header":"value"}'>{}</textarea></label>
-            <label class="check-label" id="promptCacheControl"><input name="prompt_cache" type="checkbox" checked> 启用 Anthropic 显式提示词缓存</label>
+            <label class="check-label" id="promptCacheControl"><input name="prompt_cache" type="checkbox" checked> 允许显式写入提示词缓存</label>
             <label class="check-label"><input name="thinking_enabled" type="checkbox" checked> 显示模型返回的思考过程（线路支持时）</label>
             <label class="check-label"><input name="stream_enabled" type="checkbox" checked> 流式输出<small class="muted">开启后，回复会边生成边显示。</small></label>
             <label class="check-label"><input name="enabled" type="checkbox" checked> 启用这条线路</label>
@@ -224,6 +234,33 @@
           <p class="privacy-note">自动总结提取的长期记忆会先进入待确认区；确认后才保存，不会直接污染正式记忆库。</p>
         </section>
 
+        <section class="tab" id="tab-journal">
+          <div class="section-heading"><div><h3>日记与留言</h3><p>与当前人格共享一块可以明确控制可见范围的空间。</p></div><span class="persona-scope" id="journalPersonaName">默认人格</span></div>
+          <div class="inner-space-tabs"><button type="button" class="active" data-inner-space="journal">日记</button><button type="button" data-inner-space="board">留言板</button></div>
+          <div id="journalSpace">
+            <form id="journalForm" class="edit-card visible">
+              <label>标题<input name="title" maxlength="120" required></label>
+              <label>日记空间<select name="space"><option value="user">我的私人日记</option><option value="shared">共同日记</option></select><small class="muted">AI 私人日记只能由 AI 自己写；密封内容不会显示正文。</small></label>
+              <label>正文<textarea name="content" rows="7" maxlength="30000" required></textarea></label>
+              <label class="check-label"><input name="visible_to_user" type="checkbox" checked> 给我看</label>
+              <label class="check-label"><input name="visible_to_ai" type="checkbox"> 给 AI 看</label>
+              <div class="form-actions"><button type="button" class="ghost" id="cancelJournalEdit" hidden>取消编辑</button><button class="primary">保存日记</button></div>
+            </form>
+            <p class="sealed-note" id="journalSealed" hidden></p>
+            <div id="journalList" class="journal-list"></div>
+          </div>
+          <div id="boardSpace" hidden>
+            <form id="boardForm" class="board-composer">
+              <textarea name="content" rows="3" maxlength="5000" placeholder="留一句想让对方下次看见的话……" required></textarea>
+              <label class="check-label"><input name="visible_to_ai" type="checkbox" checked> 给 AI 看</label>
+              <button class="primary">贴到留言板</button>
+            </form>
+            <p class="sealed-note" id="boardSealed" hidden></p>
+            <div id="boardList" class="board-list"></div>
+          </div>
+          <p class="privacy-note">关闭“给 AI 看”后，内容不会进入模型上下文。AI 私密且未勾选“给我看”的内容只显示密封数量，不显示正文。</p>
+        </section>
+
         <section class="tab" id="tab-mcp">
           <div class="section-heading"><div><h4 class="subheading">MCP 管理中心</h4><p class="muted">连接远程服务或在桌面后端启动本地 stdio 服务。</p></div><div class="provider-card-actions"><button type="button" class="ghost" id="importMcpServers">导入</button><button type="button" class="ghost" id="exportMcpServers">导出</button></div></div>
           <input id="mcpImportFile" type="file" accept="application/json,.json" hidden>
@@ -273,9 +310,34 @@
           <div class="setting-row"><div><strong>代码高亮主题</strong><small>为代码块单独选择显示方案</small></div><select id="codeTheme"><option value="auto">跟随主题</option><option value="light">浅色</option><option value="dark">深色</option><option value="contrast">高对比度</option></select></div>
         </section>
 
+        <section class="tab" id="tab-runtime">
+          <div class="plugin-heading"><span class="eyebrow">INNER PLUGINS</span><h3>插件中心</h3><p class="muted">集中查看记忆、欲望与 MCP。插件数据默认只保存在本机，并按人格隔离。</p></div>
+          <div id="pluginOverview" class="plugin-shelf"></div>
+          <div class="plugin-shortcuts"><button type="button" class="ghost" id="openMemoryFromPlugins">管理记忆</button><button type="button" class="ghost" id="openWritingFromPlugins">打开日记与留言</button><button type="button" class="ghost" id="openMcpFromPlugins">管理 MCP</button></div>
+          <div class="edit-card visible runtime-ledger">
+            <div class="section-heading"><div><h4 class="subheading">本轮请求检查</h4><p>发送前确认线路能力与注入来源。</p></div><button type="button" class="ghost" id="refreshRuntime">刷新</button></div>
+            <div id="requestDiagnostic" class="stack-list"></div>
+          </div>
+          <div class="edit-card visible">
+            <div class="setting-row"><div><strong>人格欲望系统</strong><small>九维驱动、念头与时间心跳按人格隔离</small></div><label class="switch"><input id="motivationEnabled" type="checkbox"><span></span></label></div>
+            <div class="setting-row"><div><strong>离线变化</strong><small>重新打开后如何处理经过的时间</small></div><select id="motivationOfflineMode"><option value="limited">少量补算</option><option value="realtime">按真实时间补算</option><option value="frozen">完全冻结</option></select></div>
+            <div id="motivationPanel" class="drive-grid"></div>
+            <div class="form-actions"><button type="button" class="ghost" id="motivationTick">运行一次心跳</button><button type="button" class="ghost" id="motivationReset">重置状态</button></div>
+          </div>
+          <div class="edit-card visible">
+            <h4 class="subheading">数据健康</h4>
+            <div id="dataHealth" class="stack-list"></div>
+          </div>
+          <div class="edit-card visible">
+            <h4 class="subheading">版本与更新</h4>
+            <div class="setting-row"><div><strong>Atherloom 本地候选版</strong><small id="runtimeVersion">尚未发布 · 修改不会自动上传</small></div><a class="ghost button-link" href="https://github.com/Yussica1026/Atherloom/releases" target="_blank" rel="noreferrer">查看发布页</a></div>
+          </div>
+        </section>
+
         <section class="tab" id="tab-backup">
           <h3>备份与恢复</h3><p class="muted">把本机对话、记忆、人格、设置和游戏存档打包保存。</p>
           <div class="edit-card visible">
+            <div class="backup-choices"><label class="check-label"><input type="checkbox" data-backup-part="conversations" checked> 对话与分支</label><label class="check-label"><input type="checkbox" data-backup-part="personas" checked> 人格与世界书</label><label class="check-label"><input type="checkbox" data-backup-part="memory" checked> 记忆与欲望</label><label class="check-label"><input type="checkbox" data-backup-part="settings" checked> 设置与 MCP</label><label class="check-label"><input type="checkbox" data-backup-part="games" checked> 游戏存档</label></div>
             <div class="setting-row"><div><strong>一键本地备份</strong><small>API Key 不写入明文备份；恢复后需重新添加线路</small></div><button class="primary" id="exportBackup" type="button">导出备份</button></div>
             <div class="setting-row"><div><strong>从备份恢复</strong><small>导入前会确认；同名本机数据将被备份内容替换</small></div><button class="ghost" id="chooseBackup" type="button">选择文件</button></div>
             <input id="backupFile" type="file" accept="application/json,.json" hidden>
@@ -295,11 +357,11 @@
   <div class="message-menu-backdrop" id="messageEditor" hidden><form class="message-editor" role="dialog" aria-label="修改消息"><h3>修改内容</h3><textarea id="messageEditContent" rows="7" required></textarea><div class="form-actions"><button type="button" class="ghost" id="cancelMessageEdit">取消</button><button class="primary">保存修改</button></div></form></div>
   <div class="message-menu-backdrop" id="instructionPicker" hidden><section class="message-editor instruction-picker" role="dialog" aria-label="指令注入"><h3>指令注入</h3><p class="muted">仅对当前聊天窗口生效，可随时取消。</p><div id="instructionBookList" class="instruction-book-list"></div><div class="form-actions"><button type="button" class="primary" id="closeInstructionPicker">完成</button></div></section></div>
   <div class="message-menu-backdrop" id="worldbookEntryEditor" hidden><form class="message-editor worldbook-entry-editor" role="dialog" aria-label="世界书条目"><h3>世界书条目</h3><label>条目名称<input name="name" maxlength="100" required></label><label>内容<textarea name="content" rows="8" required></textarea></label><label class="check-label"><input name="enabled" type="checkbox" checked>启用条目</label><label class="check-label"><input name="constant" type="checkbox">常驻激活</label><label>关键词（每行一个）<textarea name="keywords" rows="3"></textarea></label><div class="entry-options"><label class="check-label"><input name="use_regex" type="checkbox">使用正则</label><label class="check-label"><input name="case_sensitive" type="checkbox">区分大小写</label><label>扫描深度<input name="scan_depth" type="number" min="1" max="100" value="4"></label><label>注入位置<select name="position"><option value="system_before">系统提示前</option><option value="system_after" selected>系统提示后</option><option value="history_before">对话历史前</option><option value="history_after">对话历史后</option></select></label><label>注入角色<select name="role"><option value="system">系统</option><option value="user">用户</option><option value="assistant">助手</option></select></label><label>优先级<input name="priority" type="number" min="-9999" max="9999" value="0"></label></div><div class="form-actions"><button type="button" class="ghost" id="cancelWorldbookEntry">取消</button><button class="primary">保存条目</button></div></form></div>
-  <script src="assets/standalone.js?v=0445"></script>
-  <script src="assets/app.js?v=0443" defer></script>
+  <script src="assets/standalone.js?v=0446"></script>
+  <script src="assets/app.js?v=0446" defer></script>
   <script>
     if ('serviceWorker' in navigator) {
-      navigator.serviceWorker.register('service-worker.js?v=53', { updateViaCache: 'none' }).then(registration => registration.update());
+      navigator.serviceWorker.register('service-worker.js?v=54', { updateViaCache: 'none' }).then(registration => registration.update());
       navigator.serviceWorker.addEventListener('controllerchange', () => {
         if (!sessionStorage.getItem('atherloom:sw-reloaded-v47')) {
           sessionStorage.setItem('atherloom:sw-reloaded-v47', '1');
