@@ -13,7 +13,7 @@
   <title>Atherloom</title>
   <link rel="manifest" href="manifest.json">
   <link rel="icon" href="assets/app-icon.svg" type="image/svg+xml">
-  <link rel="stylesheet" href="assets/app.css?v=0452">
+  <link rel="stylesheet" href="assets/app.css?v=0453">
   <script>document.documentElement.dataset.launchMode=performance.getEntriesByType("navigation")[0]?.type==="reload"?"refresh":"full";</script>
 </head>
 <body>
@@ -240,7 +240,7 @@
             <label>显示名称<input name="name" required placeholder="例如：主线路"></label>
             <label>供应商 / 协议<select name="protocol" id="providerProtocol"><option value="openai">OpenAI 兼容</option><option value="anthropic">Anthropic Messages</option><option value="deepseek">DeepSeek</option><option value="glm">智谱 GLM</option></select></label>
             <label>官方或反代 Base URL<input name="base_url" required placeholder="https://proxy.example.com/v1"></label>
-            <label>API Key<span class="secret-field"><input name="api_key" type="password" autocomplete="new-password"><button type="button" id="pasteApiKey" aria-label="从剪贴板粘贴 API Key">粘贴</button><button type="button" id="toggleApiKey" aria-label="显示或隐藏 API Key">◉</button></span></label>
+            <label>API Key<span class="secret-field"><input name="api_key" type="password" autocomplete="new-password"><button type="button" id="pasteApiKey" aria-label="从剪贴板粘贴 API Key">粘贴</button><button type="button" id="toggleApiKey" aria-label="显示或隐藏 API Key">◉</button></span><small class="muted" id="providerKeyState">新线路需要填写 Key；保存后不会把明文重新显示出来。</small></label>
             <label>模型 ID<span class="model-field"><input name="model" required placeholder="可手填，也可从线路拉取"><button type="button" id="fetchModels">拉取模型</button></span><select id="providerModelSelect" class="model-choice" aria-label="选择已拉取的模型" hidden></select></label>
             <label>温度 Temperature<input name="temperature" type="number" min="0" max="2" step="0.1" value="0.7"><small class="muted">越低越稳定；部分推理模型可能忽略此项。</small></label>
             <label>Top P<input name="top_p" type="number" min="0" max="1" step="0.05" value="1"></label>
@@ -431,14 +431,14 @@
   <div class="message-menu-backdrop" id="messageEditor" hidden><form class="message-editor" role="dialog" aria-label="修改消息"><h3>修改内容</h3><textarea id="messageEditContent" rows="7" required></textarea><div class="form-actions"><button type="button" class="ghost" id="cancelMessageEdit">取消</button><button class="primary">保存修改</button></div></form></div>
   <div class="message-menu-backdrop" id="instructionPicker" hidden><section class="message-editor instruction-picker" role="dialog" aria-label="指令注入"><h3>指令注入</h3><p class="muted">仅对当前聊天窗口生效，可随时取消。</p><div id="instructionBookList" class="instruction-book-list"></div><div class="form-actions"><button type="button" class="primary" id="closeInstructionPicker">完成</button></div></section></div>
   <div class="message-menu-backdrop" id="worldbookEntryEditor" hidden><form class="message-editor worldbook-entry-editor" role="dialog" aria-label="世界书条目"><h3>世界书条目</h3><label>条目名称<input name="name" maxlength="100" required></label><label>内容<textarea name="content" rows="8" required></textarea></label><label class="check-label"><input name="enabled" type="checkbox" checked>启用条目</label><label class="check-label"><input name="constant" type="checkbox">常驻激活</label><label>关键词（每行一个）<textarea name="keywords" rows="3"></textarea></label><div class="entry-options"><label class="check-label"><input name="use_regex" type="checkbox">使用正则</label><label class="check-label"><input name="case_sensitive" type="checkbox">区分大小写</label><label>扫描深度<input name="scan_depth" type="number" min="1" max="100" value="4"></label><label>注入位置<select name="position"><option value="system_before">系统提示前</option><option value="system_after" selected>系统提示后</option><option value="history_before">对话历史前</option><option value="history_after">对话历史后</option></select></label><label>注入角色<select name="role"><option value="system">系统</option><option value="user">用户</option><option value="assistant">助手</option></select></label><label>优先级<input name="priority" type="number" min="-9999" max="9999" value="0"></label></div><div class="form-actions"><button type="button" class="ghost" id="cancelWorldbookEntry">取消</button><button class="primary">保存条目</button></div></form></div>
-  <script src="assets/standalone.js?v=0452"></script>
-  <script src="assets/app.js?v=0452" defer></script>
+  <script src="assets/standalone.js?v=0453"></script>
+  <script src="assets/app.js?v=0453" defer></script>
   <script>
     if ('serviceWorker' in navigator) {
-      navigator.serviceWorker.register('service-worker.js?v=60', { updateViaCache: 'none' }).then(registration => registration.update());
+      navigator.serviceWorker.register('service-worker.js?v=61', { updateViaCache: 'none' }).then(registration => registration.update());
       navigator.serviceWorker.addEventListener('controllerchange', () => {
-        if (!sessionStorage.getItem('atherloom:sw-reloaded-v48')) {
-          sessionStorage.setItem('atherloom:sw-reloaded-v48', '1');
+        if (!sessionStorage.getItem('atherloom:sw-reloaded-v49')) {
+          sessionStorage.setItem('atherloom:sw-reloaded-v49', '1');
           location.reload();
         }
       });
