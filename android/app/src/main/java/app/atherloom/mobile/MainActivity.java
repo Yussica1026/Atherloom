@@ -119,7 +119,12 @@ public class MainActivity extends Activity {
             try {
                 JSONObject provider = new JSONObject(raw);
                 String id = provider.optString("id"); if (id.isEmpty()) id = java.util.UUID.randomUUID().toString();
-                if (provider.optString("api_key").isEmpty()) { JSONObject existing = new JSONObject(secrets.getString("provider:" + id, "{}")); if (!existing.optString("api_key").isEmpty()) provider.put("api_key", existing.optString("api_key")); }
+                if (provider.optString("api_key").isEmpty()) {
+                    JSONObject existing = new JSONObject(secrets.getString("provider:" + id, "{}"));
+                    if (existing.optString("api_key").isEmpty() && !provider.optString("source_provider_id").isEmpty())
+                        existing = new JSONObject(secrets.getString("provider:" + provider.optString("source_provider_id"), "{}"));
+                    if (!existing.optString("api_key").isEmpty()) provider.put("api_key", existing.optString("api_key"));
+                }
                 provider.put("id", id); secrets.edit().putString("provider:" + id, provider.toString()).apply();
                 boolean hasKey = !provider.optString("api_key").isEmpty();
                 provider.remove("api_key"); provider.put("has_api_key", hasKey); return provider.toString();
@@ -151,6 +156,10 @@ public class MainActivity extends Activity {
             HttpURLConnection connection = null;
             try {
                 JSONObject provider = new JSONObject(raw); String protocol = provider.optString("protocol", "openai");
+                if (provider.optString("api_key").isEmpty() && !provider.optString("provider_id").isEmpty()) {
+                    JSONObject saved = new JSONObject(secrets.getString("provider:" + provider.optString("provider_id"), "{}"));
+                    if (!saved.optString("api_key").isEmpty()) provider.put("api_key", saved.optString("api_key"));
+                }
                 String base = provider.getString("base_url").replaceAll("/+$", "");
                 connection = (HttpURLConnection)new URL(base + "/models").openConnection(); connection.setRequestMethod("GET"); connection.setConnectTimeout(25000); connection.setReadTimeout(30000);
                 if (protocol.equals("anthropic")) { connection.setRequestProperty("x-api-key", provider.optString("api_key")); connection.setRequestProperty("anthropic-version", "2023-06-01"); }

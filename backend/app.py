@@ -185,6 +185,7 @@ class ProviderIn(BaseModel):
     temperature: float = Field(default=0.7, ge=0, le=2)
     top_p: float = Field(default=1.0, ge=0, le=1)
     max_tokens: int = Field(default=4096, ge=1, le=200000)
+    source_provider_id: str | None = None
 
 
 class ProviderProbe(BaseModel):
@@ -192,6 +193,7 @@ class ProviderProbe(BaseModel):
     base_url: str
     api_key: str = ""
     custom_headers: str = "{}"
+    provider_id: str | None = None
 
 
 class MessageSelectionIn(BaseModel):
@@ -521,9 +523,15 @@ def save_provider(body: ProviderIn) -> dict[str, Any]:
     elif protocol == "openai" and ("bigmodel.cn" in signature or body.model.lower().startswith("glm-")):
         protocol = "glm"
     with closing(db()) as connection:
+        api_key = body.api_key
+        if not api_key and body.source_provider_id:
+            source = connection.execute("SELECT api_key FROM providers WHERE id=?", (body.source_provider_id,)).fetchone()
+            if not source:
+                raise HTTPException(404, "用于复制的 API 线路不存在")
+            api_key = source["api_key"]
         connection.execute(
             "INSERT INTO providers(id,name,protocol,base_url,api_key,model,enabled,custom_headers,prompt_cache,thinking_enabled,stream_enabled,temperature,top_p,max_tokens,created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (provider_id, body.name, protocol, body.base_url.rstrip("/"), body.api_key, body.model, int(body.enabled), body.custom_headers, int(body.prompt_cache), int(body.thinking_enabled), int(body.stream_enabled), body.temperature, body.top_p, body.max_tokens, now_iso()),
+            (provider_id, body.name, protocol, body.base_url.rstrip("/"), api_key, body.model, int(body.enabled), body.custom_headers, int(body.prompt_cache), int(body.thinking_enabled), int(body.stream_enabled), body.temperature, body.top_p, body.max_tokens, now_iso()),
         )
         connection.commit()
         row = connection.execute("SELECT * FROM providers WHERE id=?", (provider_id,)).fetchone()
@@ -1499,7 +1507,7 @@ def active_worldbook_entries(connection: sqlite3.Connection, ids: list[str], mes
         for entry in book["entries"]:
             if not entry.get("enabled",True): continue
             depth=max(1,int(entry.get("scan_depth") or 4));source="\n".join(str(item.get("content", "")) for item in messages[-depth:]);keywords=entry.get("keywords") or []
-            matched=bool(entry.get("constant"))
+            matched=bool(entry.get("constant")) or not keywords
             for keyword in keywords:
                 try:
                     if entry.get("use_regex") and re.search(keyword,source,0 if entry.get("case_sensitive") else re.IGNORECASE): matched=True
@@ -1626,7 +1634,14 @@ def extract_model_ids(payload: Any) -> list[str]:
 
 @app.post("/api/providers/models")
 async def list_provider_models(body: ProviderProbe) -> dict[str, Any]:
-    headers = provider_headers(body.protocol, body.api_key, body.custom_headers)
+    api_key = body.api_key
+    if not api_key and body.provider_id:
+        with closing(db()) as connection:
+            saved = connection.execute("SELECT api_key FROM providers WHERE id=?", (body.provider_id,)).fetchone()
+        if not saved:
+            raise HTTPException(404, "API 线路不存在")
+        api_key = saved["api_key"]
+    headers = provider_headers(body.protocol, api_key, body.custom_headers)
     try:
         async with httpx.AsyncClient(timeout=20) as client:
             response = await client.get(provider_models_endpoint(body.base_url, body.protocol), headers=headers)
@@ -1649,7 +1664,14 @@ async def test_provider(body: ProviderIn) -> dict[str, Any]:
         protocol = "deepseek"
     elif protocol == "openai" and ("bigmodel.cn" in signature or body.model.lower().startswith("glm-")):
         protocol = "glm"
-    headers = provider_headers(protocol, body.api_key, body.custom_headers)
+    api_key = body.api_key
+    if not api_key and body.source_provider_id:
+        with closing(db()) as connection:
+            saved = connection.execute("SELECT api_key FROM providers WHERE id=?", (body.source_provider_id,)).fetchone()
+        if not saved:
+            raise HTTPException(404, "API 线路不存在")
+        api_key = saved["api_key"]
+    headers = provider_headers(protocol, api_key, body.custom_headers)
     url = provider_models_endpoint(body.base_url, protocol)
     try:
         async with httpx.AsyncClient(timeout=20) as client:
