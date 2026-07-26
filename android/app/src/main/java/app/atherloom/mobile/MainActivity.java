@@ -30,6 +30,7 @@ import androidx.security.crypto.EncryptedSharedPreferences;
 import androidx.security.crypto.MasterKey;
 import org.json.JSONArray;
 import org.json.JSONObject;
+import org.json.JSONTokener;
 import java.io.BufferedReader;
 import java.io.InputStream;
 import java.io.InputStreamReader;
@@ -39,6 +40,8 @@ import java.net.URL;
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
 import java.util.Iterator;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 public class MainActivity extends Activity {
     private static final int FILE_CHOOSER = 41, AUDIO_PERMISSION = 42;
@@ -258,6 +261,7 @@ public class MainActivity extends Activity {
                 JSONObject data = new JSONObject(response); String content; JSONArray toolCalls=new JSONArray(); Object rawAssistant;
                 if (protocol.equals("anthropic")) { StringBuilder text = new StringBuilder(); JSONArray blocks=data.optJSONArray("content"); rawAssistant=blocks==null?new JSONArray():blocks;if(blocks!=null)for(int i=0;i<blocks.length();i++){JSONObject block=blocks.getJSONObject(i);if("text".equals(block.optString("type")))text.append(block.optString("text"));if("tool_use".equals(block.optString("type")))toolCalls.put(new JSONObject().put("id",block.optString("id")).put("name",block.optString("name")).put("arguments",block.optJSONObject("input")==null?new JSONObject():block.optJSONObject("input")));} content=text.toString(); }
                 else {JSONObject message=data.getJSONArray("choices").getJSONObject(0).getJSONObject("message");rawAssistant=message;content=nullableString(message, "content");JSONArray calls=message.optJSONArray("tool_calls");if(calls!=null)for(int i=0;i<calls.length();i++){JSONObject call=calls.getJSONObject(i),function=call.optJSONObject("function");if(function!=null)toolCalls.put(new JSONObject().put("id",call.optString("id")).put("name",function.optString("name")).put("arguments",new JSONObject(function.optString("arguments","{}"))));}}
+                if(toolCalls.length()==0)toolCalls=parseDsmlToolCalls(content);
                 JSONObject responseMessage = protocol.equals("anthropic") ? null : data.getJSONArray("choices").getJSONObject(0).getJSONObject("message");
                 String reasoning = protocol.equals("anthropic") ? "" : nullableString(responseMessage, "reasoning_content"); if (reasoning.isEmpty()) reasoning=nullableString(responseMessage, "reasoning");
                 return new JSONObject().put("ok", true).put("content", content).put("reasoning", reasoning).put("model", provider.optString("model")).put("tool_calls",toolCalls).put("raw_assistant",rawAssistant).toString();
@@ -325,6 +329,39 @@ public class MainActivity extends Activity {
 
         private static String nullableString(JSONObject object, String key) {
             return object == null || !object.has(key) || object.isNull(key) ? "" : object.optString(key, "");
+        }
+
+        private static JSONArray parseDsmlToolCalls(String content) throws Exception {
+            JSONArray calls = new JSONArray();
+            String marker = "[|｜]\\s*DSML\\s*[|｜]";
+            Pattern invokePattern = Pattern.compile("<" + marker + "\\s*invoke\\b([^>]*)>([\\s\\S]*?)<" + marker + "\\s*/\\s*invoke\\s*>", Pattern.CASE_INSENSITIVE);
+            Pattern parameterPattern = Pattern.compile("<" + marker + "\\s*parameter\\b([^>]*)>([\\s\\S]*?)<" + marker + "\\s*/\\s*parameter\\s*>", Pattern.CASE_INSENSITIVE);
+            Pattern namePattern = Pattern.compile("\\bname\\s*=\\s*[\"']([^\"']+)[\"']", Pattern.CASE_INSENSITIVE);
+            Matcher invoke = invokePattern.matcher(content == null ? "" : content);
+            while (invoke.find()) {
+                Matcher toolName = namePattern.matcher(invoke.group(1));
+                if (!toolName.find()) continue;
+                JSONObject arguments = new JSONObject();
+                Matcher parameter = parameterPattern.matcher(invoke.group(2));
+                while (parameter.find()) {
+                    Matcher parameterName = namePattern.matcher(parameter.group(1));
+                    if (!parameterName.find()) continue;
+                    String rawValue = parameter.group(2).trim();
+                    boolean stringValue = !Pattern.compile("\\bstring\\s*=\\s*[\"']false[\"']", Pattern.CASE_INSENSITIVE).matcher(parameter.group(1)).find();
+                    Object value = rawValue;
+                    if (!stringValue) {
+                        try { value = new JSONTokener(rawValue).nextValue(); }
+                        catch (Exception ignored) { value = rawValue; }
+                    }
+                    arguments.put(parameterName.group(1).trim(), value);
+                }
+                calls.put(new JSONObject()
+                    .put("id", "dsml-" + java.util.UUID.randomUUID())
+                    .put("name", toolName.group(1).trim())
+                    .put("arguments", arguments)
+                    .put("source", "dsml"));
+            }
+            return calls;
         }
 
         private static String read(InputStream stream) throws Exception { if(stream==null)return ""; StringBuilder text=new StringBuilder(); try(BufferedReader reader=new BufferedReader(new InputStreamReader(stream,StandardCharsets.UTF_8))){String line;while((line=reader.readLine())!=null)text.append(line).append('\n');} return text.toString().trim(); }

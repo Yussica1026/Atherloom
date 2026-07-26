@@ -83,6 +83,22 @@ class LocalClientTests(unittest.TestCase):
         denied, _ = app_module.builtin_tool_catalog({"web_search":"deny","memory_read":"ask","memory_write":"deny"})
         self.assertEqual(denied, [])
 
+    def test_deepseek_dsml_tool_call_is_parsed(self):
+        content = (
+            '<｜DSML｜tool_calls><｜DSML｜invoke name="atherloom_web_search">'
+            '<｜DSML｜parameter name="query" string="true">2026年 猫 趣闻<｜DSML｜/parameter>'
+            '<｜DSML｜parameter name="max_results" string="false">5<｜DSML｜/parameter>'
+            '<｜DSML｜/invoke><｜DSML｜/tool_calls>'
+        )
+        calls = app_module.parse_dsml_tool_calls(content)
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0]["function"]["name"], "atherloom_web_search")
+        self.assertEqual(
+            app_module.json.loads(calls[0]["function"]["arguments"]),
+            {"query": "2026年 猫 趣闻", "max_results": 5},
+        )
+        self.assertTrue(calls[0]["_dsml"])
+
     def test_one_click_ai_tools_control_exists(self):
         html = (app_module.ROOT / "frontend" / "index.html").read_text(encoding="utf-8")
         script = (app_module.ROOT / "frontend" / "assets" / "app.js").read_text(encoding="utf-8")
@@ -94,6 +110,7 @@ class LocalClientTests(unittest.TestCase):
         self.assertIn("toolFollowupMessages", standalone)
         self.assertIn("webSearch(String raw)", android)
         self.assertIn('payload.put("tools",tools)', android)
+        self.assertIn("parseDsmlToolCalls", android)
 
     def test_android_camera_uses_image_capture_instead_of_generic_picker(self):
         source = (app_module.ROOT / "android" / "app" / "src" / "main" / "java" / "app" / "atherloom" / "mobile" / "MainActivity.java").read_text(encoding="utf-8")
