@@ -141,6 +141,41 @@ public class MainActivity extends Activity {
 
         @JavascriptInterface public String deleteProvider(String id) { secrets.edit().remove("provider:" + id).apply(); return "{\"ok\":true}"; }
 
+        @JavascriptInterface public String saveMcpServer(String raw) {
+            try {
+                JSONObject server=new JSONObject(raw);String id=server.optString("id");if(id.isEmpty())id=java.util.UUID.randomUUID().toString();
+                JSONObject existing=new JSONObject(secrets.getString("mcp:"+id,"{}"));
+                if(server.optString("token").isEmpty()&&!existing.optString("token").isEmpty())server.put("token",existing.optString("token"));
+                server.put("id",id);secrets.edit().putString("mcp:"+id,server.toString()).apply();
+                boolean hasToken=!server.optString("token").isEmpty();server.remove("token");server.put("has_token",hasToken);return server.toString();
+            }catch(Exception error){return failure(error);}
+        }
+
+        @JavascriptInterface public String listMcpServers() {
+            JSONArray output=new JSONArray();
+            try{for(String key:secrets.getAll().keySet())if(key.startsWith("mcp:")){JSONObject item=new JSONObject(secrets.getString(key,"{}"));boolean hasToken=!item.optString("token").isEmpty();item.remove("token");item.put("has_token",hasToken);output.put(item);}}catch(Exception error){return failure(error);}
+            return output.toString();
+        }
+
+        @JavascriptInterface public String deleteMcpServer(String id){secrets.edit().remove("mcp:"+id).apply();return "{\"ok\":true}";}
+
+        @JavascriptInterface public String mcpRequest(String raw) {
+            HttpURLConnection connection=null;
+            try{
+                JSONObject request=new JSONObject(raw),server=new JSONObject(secrets.getString("mcp:"+request.getString("server_id"),"{}"));
+                if(server.length()==0)throw new Exception("MCP 服务不存在");
+                String endpoint=server.optString("url");if(!endpoint.startsWith("https://")&&!endpoint.startsWith("http://"))throw new Exception("MCP 地址必须使用 HTTP 或 HTTPS");
+                connection=(HttpURLConnection)new URL(endpoint).openConnection();connection.setRequestMethod("POST");connection.setDoOutput(true);connection.setConnectTimeout(25000);connection.setReadTimeout(60000);connection.setRequestProperty("Content-Type","application/json");connection.setRequestProperty("Accept","application/json, text/event-stream");
+                String token=server.optString("token");if(!token.isEmpty())connection.setRequestProperty("Authorization","Bearer "+token);
+                String session=request.optString("session_id");if(!session.isEmpty())connection.setRequestProperty("Mcp-Session-Id",session);
+                JSONObject headers=server.optJSONObject("headers");if(headers!=null)for(Iterator<String> keys=headers.keys();keys.hasNext();){String name=keys.next();connection.setRequestProperty(name,headers.optString(name));}
+                try(OutputStream output=connection.getOutputStream()){output.write(request.getJSONObject("payload").toString().getBytes(StandardCharsets.UTF_8));}
+                int status=connection.getResponseCode();String text=read(status>=400?connection.getErrorStream():connection.getInputStream());if(status>=400)throw new Exception("MCP HTTP "+status+" · "+text.substring(0,Math.min(300,text.length())));
+                if(text.startsWith("event:")||text.startsWith("data:")){String latest="";for(String line:text.split("\\r?\\n"))if(line.startsWith("data:")&&!line.substring(5).trim().isEmpty())latest=line.substring(5).trim();text=latest;}
+                JSONObject result=text.isEmpty()?new JSONObject():new JSONObject(text);return new JSONObject().put("ok",true).put("response",result).put("session_id",connection.getHeaderField("Mcp-Session-Id")==null?session:connection.getHeaderField("Mcp-Session-Id")).toString();
+            }catch(Exception error){return failure(error);}finally{if(connection!=null)connection.disconnect();}
+        }
+
         @JavascriptInterface public String getClipboard() {
             ClipboardManager clipboard = (ClipboardManager) context.getSystemService(Context.CLIPBOARD_SERVICE);
             if (clipboard == null || !clipboard.hasPrimaryClip() || clipboard.getPrimaryClip() == null || clipboard.getPrimaryClip().getItemCount() == 0) return "";
@@ -292,7 +327,7 @@ public class MainActivity extends Activity {
             return object == null || !object.has(key) || object.isNull(key) ? "" : object.optString(key, "");
         }
 
-        private static String read(InputStream stream) throws Exception { if(stream==null)return ""; StringBuilder text=new StringBuilder(); try(BufferedReader reader=new BufferedReader(new InputStreamReader(stream,StandardCharsets.UTF_8))){String line;while((line=reader.readLine())!=null)text.append(line);} return text.toString(); }
+        private static String read(InputStream stream) throws Exception { if(stream==null)return ""; StringBuilder text=new StringBuilder(); try(BufferedReader reader=new BufferedReader(new InputStreamReader(stream,StandardCharsets.UTF_8))){String line;while((line=reader.readLine())!=null)text.append(line).append('\n');} return text.toString().trim(); }
         private static String failure(Exception error) { try { return new JSONObject().put("ok",false).put("error",error.getMessage()).toString(); } catch(Exception ignored){ return "{\"ok\":false,\"error\":\"unknown\"}"; } }
     }
 
