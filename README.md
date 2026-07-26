@@ -8,7 +8,6 @@ Atherloom 是一个为私人陪伴与共同生活设计的 AI 空间。
 
 ---
 
-**编：叶枔枖、阿栈、长余**  
-**写：阿栈**
+本项目由本地协作工具辅助开发。
 
 Source available for viewing. All rights reserved. No permission is granted to copy, modify, redistribute, or use this project without authorization.
