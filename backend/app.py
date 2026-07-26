@@ -664,6 +664,13 @@ def save_provider(body: ProviderIn) -> dict[str, Any]:
             if not source:
                 raise HTTPException(404, "用于复制的 API 线路不存在")
             api_key = source["api_key"]
+        if not api_key:
+            source = connection.execute(
+                "SELECT api_key FROM providers WHERE protocol=? AND rtrim(base_url,'/')=? AND api_key<>'' ORDER BY created_at DESC LIMIT 1",
+                (protocol, body.base_url.rstrip("/")),
+            ).fetchone()
+            if source:
+                api_key = source["api_key"]
         connection.execute(
             "INSERT INTO providers(id,name,protocol,base_url,api_key,model,enabled,custom_headers,prompt_cache,thinking_enabled,stream_enabled,temperature,top_p,max_tokens,created_at,vision_mode,cache_mode,prompt_cache_key) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (provider_id, body.name, protocol, body.base_url.rstrip("/"), api_key, body.model, int(body.enabled), body.custom_headers, int(body.prompt_cache), int(body.thinking_enabled), int(body.stream_enabled), body.temperature, body.top_p, body.max_tokens, now_iso(), body.vision_mode, body.cache_mode, body.prompt_cache_key),

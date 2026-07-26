@@ -126,6 +126,14 @@ public class MainActivity extends Activity {
                     JSONObject existing = new JSONObject(secrets.getString("provider:" + id, "{}"));
                     if (existing.optString("api_key").isEmpty() && !provider.optString("source_provider_id").isEmpty())
                         existing = new JSONObject(secrets.getString("provider:" + provider.optString("source_provider_id"), "{}"));
+                    if (existing.optString("api_key").isEmpty()) {
+                        for (String keyName : secrets.getAll().keySet()) if (keyName.startsWith("provider:")) {
+                            JSONObject candidate = new JSONObject(secrets.getString(keyName, "{}"));
+                            if (candidate.optString("protocol").equals(provider.optString("protocol"))
+                                && candidate.optString("base_url").replaceAll("/+$", "").equals(provider.optString("base_url").replaceAll("/+$", ""))
+                                && !candidate.optString("api_key").isEmpty()) { existing = candidate; break; }
+                        }
+                    }
                     if (!existing.optString("api_key").isEmpty()) provider.put("api_key", existing.optString("api_key"));
                 }
                 provider.put("id", id); secrets.edit().putString("provider:" + id, provider.toString()).apply();

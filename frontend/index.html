@@ -13,7 +13,7 @@
   <title>Atherloom</title>
   <link rel="manifest" href="manifest.json">
   <link rel="icon" href="assets/app-icon.svg" type="image/svg+xml">
-  <link rel="stylesheet" href="assets/app.css?v=0446">
+  <link rel="stylesheet" href="assets/app.css?v=0447">
   <script>document.documentElement.dataset.launchMode=performance.getEntriesByType("navigation")[0]?.type==="reload"?"refresh":"full";</script>
 </head>
 <body>
@@ -43,11 +43,6 @@
       <div class="sidebar-search"><span>⌕</span><input id="conversationSearch" placeholder="搜索对话" aria-label="搜索对话"></div>
       <nav class="history" id="history" aria-label="历史对话"></nav>
       <div class="sidebar-footer">
-        <button class="plugin-entry" id="openPlugins">
-          <span class="plugin-orbit" aria-hidden="true">✦</span>
-          <span><strong>插件中心</strong><small>记忆、欲望与 MCP</small></span>
-          <span aria-hidden="true">›</span>
-        </button>
         <button class="profile-row" id="openSettings">
           <span class="avatar" id="profileAvatar">·</span>
           <span><strong id="profileName">设置用户名</strong></span>
@@ -62,10 +57,15 @@
         <button class="mobile-menu" id="mobileMenu" aria-label="打开菜单">☰</button>
         <button class="conversation-title" id="titleButton">新对话⌄</button>
         <div class="top-actions">
+          <button class="icon-button" title="聊天状态" aria-label="打开或关闭聊天状态" id="toggleChatStatus">◌</button>
           <button class="icon-button" title="语音通话" aria-label="语音通话" id="openCall"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7.2 3.8 9.6 7c.4.5.3 1.2-.2 1.6L8 9.8a14.8 14.8 0 0 0 6.2 6.2l1.2-1.4c.4-.5 1.1-.6 1.6-.2l3.2 2.4c.5.4.7 1 .4 1.6-.7 1.4-2.2 2.3-3.8 2.1C10 19.7 4.3 14 3.5 7.2 3.3 5.6 4.2 4.1 5.6 3.4c.6-.3 1.2-.1 1.6.4Z"></path></svg></button>
         </div>
       </header>
 
+      <aside class="chat-status-strip" id="chatStatusStrip" hidden>
+        <div class="chat-status-head"><div><span>当前人格状态</span><strong id="chatStatusPersona">默认人格</strong></div><button id="closeChatStatus" aria-label="关闭状态栏">×</button></div>
+        <div class="chat-status-body" id="chatStatusBody"></div>
+      </aside>
       <section class="chat-scroll" id="chatScroll">
         <div class="welcome" id="welcome">
           <div class="sun-mark" aria-hidden="true"><svg viewBox="0 0 32 32"><circle cx="16" cy="16" r="4"></circle><path d="M16 2v6M16 24v6M2 16h6M24 16h6M6.1 6.1l4.2 4.2M21.7 21.7l4.2 4.2M25.9 6.1l-4.2 4.2M10.3 21.7l-4.2 4.2"></path></svg></div>
@@ -140,6 +140,9 @@
     <button class="close-button call-close" id="closeCall">×</button><div class="call-orb" id="callOrb">A</div><h2>语音通话</h2><p id="callStatus">点击开始后，我会听你说话并朗读模型回复。</p><div id="callTranscript" class="call-transcript"></div><div class="call-actions"><button class="primary" id="startCall">开始通话</button><button class="ghost" id="endCall" disabled>结束</button></div>
   </section>
 
+  <div class="sticky-inbox" id="stickyInbox" hidden>
+    <article class="sticky-letter"><header><span id="stickyAuthor">留言</span><button id="closeStickyInbox" aria-label="关闭留言">×</button></header><p id="stickyContent"></p><footer><span id="stickyCounter"></span><div><button class="ghost" id="stickyLater">稍后看</button><button class="primary" id="stickyNext">下一张</button></div></footer></article>
+  </div>
   <div class="backdrop" id="backdrop" hidden></div>
   <aside class="settings-panel" id="settingsPanel" aria-hidden="true">
     <header><div><span class="eyebrow">LOCAL WORKSPACE</span><h2>设置</h2></div><button class="close-button" data-close>×</button></header>
@@ -357,11 +360,11 @@
   <div class="message-menu-backdrop" id="messageEditor" hidden><form class="message-editor" role="dialog" aria-label="修改消息"><h3>修改内容</h3><textarea id="messageEditContent" rows="7" required></textarea><div class="form-actions"><button type="button" class="ghost" id="cancelMessageEdit">取消</button><button class="primary">保存修改</button></div></form></div>
   <div class="message-menu-backdrop" id="instructionPicker" hidden><section class="message-editor instruction-picker" role="dialog" aria-label="指令注入"><h3>指令注入</h3><p class="muted">仅对当前聊天窗口生效，可随时取消。</p><div id="instructionBookList" class="instruction-book-list"></div><div class="form-actions"><button type="button" class="primary" id="closeInstructionPicker">完成</button></div></section></div>
   <div class="message-menu-backdrop" id="worldbookEntryEditor" hidden><form class="message-editor worldbook-entry-editor" role="dialog" aria-label="世界书条目"><h3>世界书条目</h3><label>条目名称<input name="name" maxlength="100" required></label><label>内容<textarea name="content" rows="8" required></textarea></label><label class="check-label"><input name="enabled" type="checkbox" checked>启用条目</label><label class="check-label"><input name="constant" type="checkbox">常驻激活</label><label>关键词（每行一个）<textarea name="keywords" rows="3"></textarea></label><div class="entry-options"><label class="check-label"><input name="use_regex" type="checkbox">使用正则</label><label class="check-label"><input name="case_sensitive" type="checkbox">区分大小写</label><label>扫描深度<input name="scan_depth" type="number" min="1" max="100" value="4"></label><label>注入位置<select name="position"><option value="system_before">系统提示前</option><option value="system_after" selected>系统提示后</option><option value="history_before">对话历史前</option><option value="history_after">对话历史后</option></select></label><label>注入角色<select name="role"><option value="system">系统</option><option value="user">用户</option><option value="assistant">助手</option></select></label><label>优先级<input name="priority" type="number" min="-9999" max="9999" value="0"></label></div><div class="form-actions"><button type="button" class="ghost" id="cancelWorldbookEntry">取消</button><button class="primary">保存条目</button></div></form></div>
-  <script src="assets/standalone.js?v=0446"></script>
-  <script src="assets/app.js?v=0446" defer></script>
+  <script src="assets/standalone.js?v=0447"></script>
+  <script src="assets/app.js?v=0447" defer></script>
   <script>
     if ('serviceWorker' in navigator) {
-      navigator.serviceWorker.register('service-worker.js?v=54', { updateViaCache: 'none' }).then(registration => registration.update());
+      navigator.serviceWorker.register('service-worker.js?v=55', { updateViaCache: 'none' }).then(registration => registration.update());
       navigator.serviceWorker.addEventListener('controllerchange', () => {
         if (!sessionStorage.getItem('atherloom:sw-reloaded-v47')) {
           sessionStorage.setItem('atherloom:sw-reloaded-v47', '1');
