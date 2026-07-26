@@ -29,7 +29,7 @@ await check("message rows never replay a full-list fade during streaming", `(()=
 await check("welcome mark uses themeable SVG", `!!document.querySelector('.sun-mark svg') && getComputedStyle(document.querySelector('.sun-mark')).color === 'rgb(201, 100, 66)'`);
 await check("launch screen uses the A stroke and star sequence", `(async()=>{const html=await fetch('/').then(response=>response.text());return html.includes('launch-a launch-stroke')&&html.includes('launch-sweep launch-stroke')&&html.includes('class="launch-star"')})()`);
 await check("launch screen can be skipped", `(async()=>typeof dismissLaunchScreen==='function'&&(await fetch('/').then(response=>response.text())).includes('id="launchScreen"'))()`);
-await check("versioned service worker updater is present", `document.documentElement.innerHTML.includes('service-worker.js?v=56') && document.documentElement.innerHTML.includes("updateViaCache: 'none'")`);
+await check("versioned service worker updater is present", `document.documentElement.innerHTML.includes('service-worker.js?v=57') && document.documentElement.innerHTML.includes("updateViaCache: 'none'")`);
 await check("welcome and composer helper copy stay minimal", `!document.querySelector('#welcome p') && !document.querySelector('#prompt').hasAttribute('placeholder') && !document.querySelector('.disclaimer')`);
 await check("morning greeting follows local time", `renderTimeGreeting(new Date(2026,6,19,8,0)) === '早上好，今天想聊些什么？'`);
 await check("afternoon greeting follows local time", `renderTimeGreeting(new Date(2026,6,19,16,0)) === '下午好，想聊些什么？'`);
@@ -137,6 +137,10 @@ await check("small text book opens without blocking", `(async()=>{await openLoca
 await check("Android PDF is safely blocked", `(async()=>{window.AtherloomNative={showNotice(){}};await openLocalBook(new File(['%PDF'], 'test.pdf', {type:'application/pdf'}));delete window.AtherloomNative;return document.querySelector('#bookStatus').textContent.includes('安全拦截') && document.querySelector('#bookReader').textContent.includes('安卓暂不在应用内打开 PDF')})()`);
 await evaluate(`document.querySelector('#closeMedia').click(); document.querySelector('#openCinema').click()`); await wait(100);
 await check("cinema room opens", `!document.querySelector('#mediaSpace').hidden && !document.querySelector('#cinemaRoom').hidden`);
+await check("cinema supports local video links and subtitles", `!!document.querySelector('#movieInput')&&!!document.querySelector('#movieLink')&&!!document.querySelector('#subtitleInput')&&!!document.querySelector('#watchQuestionForm')`);
+await check("subtitle parser keeps a timed evidence window", `(()=>{const cues=parseWatchSubtitles('1\\n00:00:01,000 --> 00:00:03,000\\n第一句\\n\\n2\\n00:00:04.000 --> 00:00:06.000\\n第二句');return cues.length===2&&cues[0].start===1&&cues[1].text==='第二句'})()`);
+await check("watch question sends hidden no-spoiler evidence", `generateReply.toString().includes('media_context:mediaContext')&&document.querySelector('#watchNoSpoilers').checked&&document.querySelector('#watchQuestionForm').onsubmit.toString().includes('watchCues.filter(cue=>cue.start<=time)')`);
+await check("watch reroll preserves the same evidence", `handleMessageAction.toString().includes('message.media_context||message.retry_media_context')&&generateReply.toString().includes('assistant.retry_media_context=mediaContext')`);
 await evaluate(`document.querySelector('#closeMedia').click()`);
 await command("Page.navigate", { url: `http://127.0.0.1:8876/?standalone=1&branch-smoke=${Date.now()}` });
 await wait(900);
