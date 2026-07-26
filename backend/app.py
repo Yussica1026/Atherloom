@@ -1937,6 +1937,8 @@ async def test_provider(body: ProviderIn) -> dict[str, Any]:
         if not saved:
             raise HTTPException(404, "API 线路不存在")
         api_key = saved["api_key"]
+    if not api_key:
+        raise HTTPException(422, "API Key is required unless the saved route already has one")
     headers = provider_headers(protocol, api_key, body.custom_headers)
     url = provider_models_endpoint(body.base_url, protocol)
     try:
@@ -1945,6 +1947,15 @@ async def test_provider(body: ProviderIn) -> dict[str, Any]:
     except httpx.RequestError as exc:
         raise HTTPException(502, f"无法连接：{exc}") from exc
     if response.status_code == 404:
+        endpoint = provider_endpoint(body.base_url, protocol)
+        probe = {"model": body.model, "max_tokens": 1, "messages": [{"role": "user", "content": "Hi"}]}
+        try:
+            async with httpx.AsyncClient(timeout=20) as client:
+                response = await client.post(endpoint, headers=headers, json=probe)
+        except httpx.RequestError as exc:
+            raise HTTPException(502, f"Connection failed: {exc}") from exc
+        if response.status_code >= 400:
+            raise HTTPException(response.status_code, f"Validation failed: HTTP {response.status_code} - {response.text[:240]}")
         return {"ok": True, "reachable": True, "models_supported": False, "message": "网关可以访问，但未提供模型列表接口"}
     if response.status_code >= 400:
         raise HTTPException(response.status_code, f"验证失败：HTTP {response.status_code} · {response.text[:240]}")

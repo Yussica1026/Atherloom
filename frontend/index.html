@@ -364,7 +364,7 @@
   <script src="assets/app.js?v=0447" defer></script>
   <script>
     if ('serviceWorker' in navigator) {
-      navigator.serviceWorker.register('service-worker.js?v=55', { updateViaCache: 'none' }).then(registration => registration.update());
+      navigator.serviceWorker.register('service-worker.js?v=56', { updateViaCache: 'none' }).then(registration => registration.update());
       navigator.serviceWorker.addEventListener('controllerchange', () => {
         if (!sessionStorage.getItem('atherloom:sw-reloaded-v47')) {
           sessionStorage.setItem('atherloom:sw-reloaded-v47', '1');
