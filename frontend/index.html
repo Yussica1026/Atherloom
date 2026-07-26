@@ -13,7 +13,7 @@
   <title>Atherloom</title>
   <link rel="manifest" href="manifest.json">
   <link rel="icon" href="assets/app-icon.svg" type="image/svg+xml">
-  <link rel="stylesheet" href="assets/app.css?v=0462">
+  <link rel="stylesheet" href="assets/app.css?v=0464">
   <script>document.documentElement.dataset.launchMode=performance.getEntriesByType("navigation")[0]?.type==="reload"?"refresh":"full";</script>
 </head>
 <body>
@@ -213,7 +213,7 @@
           <button class="primary roleplay-open-curtain">保存并开场</button>
         </form>
         <section id="roleplayStage" class="roleplay-stage" hidden>
-          <header class="roleplay-manuscript-head"><div><span id="roleplayTurnLabel">尚未开场</span><h3 id="roleplayTitle"></h3><p id="roleplayPlayer"></p><small id="roleplayBindings"></small></div><div class="roleplay-stage-actions"><button class="ghost" id="openRoleplayBackstage" type="button">幕后讨论</button><button class="ghost" id="editRoleplayStory" type="button">故事设置</button><button class="ghost" id="clearRoleplayStory" type="button">清屏重开</button><button class="ghost" id="regenerateRoleplayOpening" type="button">重新生成开场白</button><button class="ghost" id="retryRoleplayOpening" type="button" hidden>生成开场白</button><button class="ghost" id="showRoleplaySummary" type="button">剧情档案</button><button class="ghost" id="exportRoleplayTxt" type="button">导出 TXT</button><button class="ghost" id="finishRoleplay" type="button">收场</button></div></header>
+          <header class="roleplay-manuscript-head"><div><span id="roleplayTurnLabel">尚未开场</span><h3 id="roleplayTitle"></h3><p id="roleplayPlayer"></p><small id="roleplayPremise"></small><small id="roleplayBindings"></small></div><div class="roleplay-stage-actions"><button class="ghost" id="openRoleplayBackstage" type="button">幕后讨论</button><button class="ghost" id="editRoleplayStory" type="button">故事设置</button><button class="ghost" id="clearRoleplayStory" type="button">清屏重开</button><button class="ghost" id="regenerateRoleplayOpening" type="button">重新生成开场白</button><button class="ghost" id="retryRoleplayOpening" type="button" hidden>生成开场白</button><button class="ghost" id="showRoleplaySummary" type="button">剧情档案</button><button class="ghost" id="exportRoleplayTxt" type="button">导出 TXT</button><button class="ghost" id="finishRoleplay" type="button">收场</button></div></header>
           <aside id="roleplaySummary" class="roleplay-summary" hidden><header><strong>自动剧情档案</strong><button type="button" id="closeRoleplaySummary">×</button></header><p></p></aside>
           <article id="roleplayManuscript" class="roleplay-manuscript"></article>
           <form id="roleplayTurnForm" class="roleplay-turn-form">
@@ -224,7 +224,7 @@
       </section>
     </main>
     <aside class="roleplay-backstage" id="roleplayBackstage" hidden aria-label="幕后讨论">
-      <header><div><span>OUT OF CHARACTER</span><strong>幕后讨论</strong><small>这里不扮演角色，也不会写进小说正文。</small></div><button type="button" id="closeRoleplayBackstage" aria-label="收起幕后讨论">×</button></header>
+      <header><div><span>OUT OF CHARACTER</span><strong>幕后讨论</strong><small>这里不扮演角色，也不会写进小说正文。</small></div><div class="roleplay-backstage-head-actions"><button type="button" id="rerollRoleplayBackstage">重 Roll</button><button type="button" id="clearRoleplayBackstage">清空</button><button type="button" id="closeRoleplayBackstage" aria-label="收起幕后讨论">×</button></div></header>
       <div class="roleplay-backstage-log" id="roleplayBackstageLog"></div>
       <form id="roleplayBackstageForm"><textarea rows="3" required placeholder="例如：下一幕慢一点，沈长卿现在真正担心什么？"></textarea><div><small id="roleplayBackstageStatus">和当前故事的旁白本体讨论</small><button class="primary">发送</button></div></form>
     </aside>
@@ -453,14 +453,14 @@
   <div class="message-menu-backdrop" id="messageEditor" hidden><form class="message-editor" role="dialog" aria-label="修改消息"><h3>修改内容</h3><textarea id="messageEditContent" rows="7" required></textarea><div class="form-actions"><button type="button" class="ghost" id="cancelMessageEdit">取消</button><button class="primary">保存修改</button></div></form></div>
   <div class="message-menu-backdrop" id="instructionPicker" hidden><section class="message-editor instruction-picker" role="dialog" aria-label="指令注入"><h3>指令注入</h3><p class="muted">仅对当前聊天窗口生效，可随时取消。</p><div id="instructionBookList" class="instruction-book-list"></div><div class="form-actions"><button type="button" class="primary" id="closeInstructionPicker">完成</button></div></section></div>
   <div class="message-menu-backdrop" id="worldbookEntryEditor" hidden><form class="message-editor worldbook-entry-editor" role="dialog" aria-label="世界书条目"><h3>世界书条目</h3><label>条目名称<input name="name" maxlength="100" required></label><label>内容<textarea name="content" rows="8" required></textarea></label><label class="check-label"><input name="enabled" type="checkbox" checked>启用条目</label><label class="check-label"><input name="constant" type="checkbox">常驻激活</label><label>关键词（每行一个）<textarea name="keywords" rows="3"></textarea></label><div class="entry-options"><label class="check-label"><input name="use_regex" type="checkbox">使用正则</label><label class="check-label"><input name="case_sensitive" type="checkbox">区分大小写</label><label>扫描深度<input name="scan_depth" type="number" min="1" max="100" value="4"></label><label>注入位置<select name="position"><option value="system_before">系统提示前</option><option value="system_after" selected>系统提示后</option><option value="history_before">对话历史前</option><option value="history_after">对话历史后</option></select></label><label>注入角色<select name="role"><option value="system">系统</option><option value="user">用户</option><option value="assistant">助手</option></select></label><label>优先级<input name="priority" type="number" min="-9999" max="9999" value="0"></label></div><div class="form-actions"><button type="button" class="ghost" id="cancelWorldbookEntry">取消</button><button class="primary">保存条目</button></div></form></div>
-  <script src="assets/standalone.js?v=0462"></script>
-  <script src="assets/app.js?v=0462" defer></script>
+  <script src="assets/standalone.js?v=0464"></script>
+  <script src="assets/app.js?v=0464" defer></script>
   <script>
     if ('serviceWorker' in navigator) {
-      navigator.serviceWorker.register('service-worker.js?v=70', { updateViaCache: 'none' }).then(registration => registration.update());
+      navigator.serviceWorker.register('service-worker.js?v=72', { updateViaCache: 'none' }).then(registration => registration.update());
       navigator.serviceWorker.addEventListener('controllerchange', () => {
-        if (!sessionStorage.getItem('atherloom:sw-reloaded-v58')) {
-          sessionStorage.setItem('atherloom:sw-reloaded-v58', '1');
+        if (!sessionStorage.getItem('atherloom:sw-reloaded-v60')) {
+          sessionStorage.setItem('atherloom:sw-reloaded-v60', '1');
           location.reload();
         }
       });
