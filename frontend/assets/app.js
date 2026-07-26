@@ -28,7 +28,7 @@ function renderMarkdown(value) {
   for(const line of lines){const block=line.match(/^\u0000BLOCK(\d+)\u0000$/);if(block){closeList();html.push(codeBlocks[Number(block[1])]);continue;}const heading=line.match(/^(#{1,4})\s+(.+)$/);if(heading){closeList();const level=heading[1].length;html.push(`<h${level}>${heading[2]}</h${level}>`);continue;}const item=line.match(/^\s*([-*+] |\d+\. )(.+)$/);if(item){const type=/\d/.test(item[1])?"ol":"ul";if(list!==type){closeList();list=type;html.push(`<${type}>`);}html.push(`<li>${item[2]}</li>`);continue;}closeList();if(/^\s*---+\s*$/.test(line)){html.push("<hr>");continue;}if(line.startsWith("&gt; ")){html.push(`<blockquote>${line.slice(5)}</blockquote>`);continue;}if(line.trim())html.push(`<p>${line}</p>`);else html.push("");}closeList();return html.join("\n");
 }
 function activeProvider() { return state.providers.find(p => p.id === state.provider) || state.providers[0]; }
-function activePersona() { return state.personas.find(p => p.id === state.persona); }
+function activePersona() { const conversation=state.conversations.find(item=>item.id===state.current),personaId=state.persona||conversation?.persona_id;return state.personas.find(p => p.id === personaId); }
 function activePersonaName() { return activePersona()?.name?.trim() || "当前人格"; }
 function currentBusy(){return !!state.current&&state.generating.has(state.current);}
 function generationDot(conversationId){return state.generating.has(conversationId)?`<i class="generation-dot" aria-label="正在生成"></i>`:"";}
@@ -480,7 +480,7 @@ async function generateReply(content, reuseUserMessageId = null, attachments = [
 function motivationPersonaKey(){return state.persona||"__default__";}
 function chatStatusKey(){return `atherloom:chat-status:${state.current||"new"}`;}
 async function renderChatStatus(){
-  $("#chatStatusPersona").textContent=activePersonaName();const provider=activeProvider();
+  const personaName=activePersonaName(),named=!!activePersona()?.name?.trim();$("#chatStatusTitle").textContent=named?`${personaName}的状态`:"当前人格状态";$("#chatStatusPersona").textContent=personaName;const provider=activeProvider();
   try{const motivation=await api(`/api/motivation/${encodeURIComponent(motivationPersonaKey())}`),drives=motivation.state?.drives||{},top=Object.entries(drives).sort((a,b)=>b[1]-a[1]).slice(0,3),labels=motivation.drives||{},worldbooks=selectedWorldbookIds().length;
     $("#chatStatusBody").innerHTML=[...top.map(([key,value])=>[labels[key]?.label||key,`${Number(value).toFixed(0)}/100`]),["记忆",`${state.memories.length} 条`],["世界书",`${worldbooks} 本`],["MCP",`${state.mcp_servers.filter(item=>item.enabled).length} 个`],["模型",provider?.model||"未选择"],["输出",provider?.stream_enabled===false?"非流式":"流式"]].map(([name,value])=>`<div class="status-chip"><span>${escapeHtml(name)}</span><strong>${escapeHtml(value)}</strong></div>`).join("");
   }catch(error){$("#chatStatusBody").innerHTML=`<p class="muted">${escapeHtml(error.message)}</p>`;}
