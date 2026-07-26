@@ -28,8 +28,8 @@ await check("persona picker remains visible on compact phone", `getComputedStyle
 await check("message rows never replay a full-list fade during streaming", `(()=>{const row=document.createElement('article');row.className='message';document.body.appendChild(row);const ok=getComputedStyle(row).animationName==='none';row.remove();return ok})()`);
 await check("welcome mark uses themeable SVG", `!!document.querySelector('.sun-mark svg') && getComputedStyle(document.querySelector('.sun-mark')).color === 'rgb(201, 100, 66)'`);
 await check("launch screen uses the A stroke and star sequence", `(async()=>{const html=await fetch('/').then(response=>response.text());return html.includes('launch-a launch-stroke')&&html.includes('launch-sweep launch-stroke')&&html.includes('class="launch-star"')})()`);
-await check("launch screen can be skipped", `typeof dismissLaunchScreen === 'function' && document.querySelector('#launchScreen').onclick === dismissLaunchScreen`);
-await check("versioned service worker updater is present", `document.documentElement.innerHTML.includes('service-worker.js?v=49') && document.documentElement.innerHTML.includes("updateViaCache: 'none'")`);
+await check("launch screen can be skipped", `(async()=>typeof dismissLaunchScreen==='function'&&(await fetch('/').then(response=>response.text())).includes('id="launchScreen"'))()`);
+await check("versioned service worker updater is present", `document.documentElement.innerHTML.includes('service-worker.js?v=50') && document.documentElement.innerHTML.includes("updateViaCache: 'none'")`);
 await check("welcome and composer helper copy stay minimal", `!document.querySelector('#welcome p') && !document.querySelector('#prompt').hasAttribute('placeholder') && !document.querySelector('.disclaimer')`);
 await check("morning greeting follows local time", `renderTimeGreeting(new Date(2026,6,19,8,0)) === '早上好，今天想聊些什么？'`);
 await check("afternoon greeting follows local time", `renderTimeGreeting(new Date(2026,6,19,16,0)) === '下午好，想聊些什么？'`);
@@ -94,6 +94,7 @@ await check("structured assistant questions render tappable choices", `(()=>{con
 await check("message menu offers delete current version", `!!document.querySelector('#deleteMessageVersion') && document.querySelector('#deleteMessageVersion').textContent.includes('删除本版本')`);
 await check("message menu offers edit and delete all versions", `!!document.querySelector('#editMessage') && document.querySelector('#deleteAllMessageVersions').textContent.includes('删除全部版本')`);
 await check("user and assistant messages expose edit and reroll", `document.querySelectorAll('.message [data-action=edit]').length===2 && document.querySelectorAll('.message [data-action=regenerate]').length===2`);
+await check("reroll reuses the original user message id", `generateReply.toString().includes('reuse_user_message_id:reuseUserMessageId')&&!generateReply.toString().includes("messages.push({ role: 'user'")`);
 await evaluate(`state.messages=window.__smokeMessages;state.version_selection=window.__smokeVersions;delete window.__smokeMessages;delete window.__smokeVersions;renderMessages()`);
   await evaluate(`document.querySelector('#settingsPanel [data-close]').click()`); await wait(100);
 }

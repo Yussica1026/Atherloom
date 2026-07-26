@@ -192,6 +192,18 @@ class LocalClientTests(unittest.TestCase):
         self.assertEqual(openai[1]["image_url"]["url"], data)
         self.assertEqual(anthropic[1]["source"]["data"], "YWJj")
 
+    def test_reroll_context_contains_original_user_message_once(self):
+        provider = self.client.post("/api/providers", json={"name":"测试","protocol":"openai","base_url":"https://example.com/v1","model":"m"}).json()
+        conversation = self.client.post("/api/conversations", json={"provider_id":provider["id"]}).json()
+        user_id = str(uuid.uuid4())
+        with app_module.closing(app_module.db()) as connection:
+            connection.execute("INSERT INTO messages VALUES(?, ?, 'user', ?, ?, ?, ?, '', NULL)", (user_id, conversation["id"], "不要重复我", provider["id"], "m", app_module.now_iso()))
+            connection.commit()
+            body = app_module.ChatIn(conversation_id=conversation["id"], content="不要重复我", provider_id=provider["id"], reuse_user_message_id=user_id)
+            _, _, messages = app_module.load_chat_context(connection, body, connection.execute("SELECT created_at FROM messages WHERE id=?", (user_id,)).fetchone()["created_at"])
+        app_module.append_pending_user(messages, body)
+        self.assertEqual([item["content"] for item in messages if item["role"] == "user"].count("不要重复我"), 1)
+
     def test_provider_endpoint_avoids_duplicate_v1(self):
         self.assertEqual(app_module.provider_endpoint("https://api.anthropic.com", "anthropic"), "https://api.anthropic.com/v1/messages")
         self.assertEqual(app_module.provider_endpoint("https://proxy.example/v1", "anthropic"), "https://proxy.example/v1/messages")
