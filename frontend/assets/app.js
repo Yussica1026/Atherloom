@@ -655,8 +655,11 @@ function renderWatchMoment(){
   $("#subtitleRibbon").innerHTML=nearby.length?nearby.map(cue=>`<p class="${cue.start<=time&&cue.end>=time?"current":""}"><time>${watchClock(cue.start)}</time>${escapeHtml(cue.text)}</p>`).join(""):`<p>${watchCues.length?"这一刻没有对白。":"添加字幕后，AI 才能可靠地陪你看到这一幕。"}</p>`;
 }
 function loadMovieSource(src,title,key){
-  const player=$("#moviePlayer");player.src=src;watchSource={title,kind:src.startsWith("blob:")?"local":"url"};movieProgressKey=key;$("#watchTitle").textContent=title;$("#movieStatus").textContent=`${title} · 进度保存在本机`;$("#watchEmpty").hidden=true;
-  player.onloadedmetadata=()=>{player.currentTime=Math.min(Number(localStorage.getItem(key)||0),Math.max(0,player.duration-1));renderWatchMoment();};
+  const player=$("#moviePlayer"),empty=$("#watchEmpty");player.pause();player.removeAttribute("src");player.load();player.preload="auto";player.src=src;watchSource={title,kind:src.startsWith("blob:")?"local":"url"};movieProgressKey=key;$("#watchTitle").textContent=title;$("#movieStatus").textContent=`正在读取 ${title}…`;empty.hidden=true;
+  player.onloadedmetadata=()=>{const saved=Number(localStorage.getItem(key)||0),end=Number.isFinite(player.duration)?Math.max(0,player.duration-1):0;player.currentTime=Math.min(saved,end);renderWatchMoment();};
+  player.onloadeddata=()=>{if(!player.videoWidth||!player.videoHeight){$("#movieStatus").textContent=`${title} 没有可显示的视频画面，可能只有音轨或视频编码不受浏览器支持`;empty.innerHTML="<span>!</span><strong>读到了时长，但没有画面</strong><small>请换用 MP4（H.264 视频 + AAC 音频）后重试</small>";empty.hidden=false;return;}$("#movieStatus").textContent=`${title} · ${player.videoWidth}×${player.videoHeight} · 进度保存在本机`;empty.hidden=true;};
+  player.onerror=()=>{const code=player.error?.code||0,hints={1:"视频读取被中止",2:"视频文件或链接读取失败",3:"浏览器无法解码这个视频",4:"浏览器不支持该视频格式"};$("#movieStatus").textContent=hints[code]||"视频无法播放";empty.innerHTML=`<span>!</span><strong>${escapeHtml(hints[code]||"视频无法播放")}</strong><small>推荐使用 MP4（H.264 视频 + AAC 音频）；在线视频还需要允许跨域访问</small>`;empty.hidden=false;};
+  player.load();
   player.ontimeupdate=()=>{renderWatchMoment();if(Math.floor(player.currentTime)%5===0)localStorage.setItem(key,String(player.currentTime));};
 }
 $("#chooseMovie").onclick=()=>$("#movieInput").click();

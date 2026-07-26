@@ -74,9 +74,23 @@ class LocalClientTests(unittest.TestCase):
         names = {tool["name"] for tool in tools}
         self.assertEqual(names, {"atherloom_web_search", "atherloom_memory_search", "atherloom_memory_create", "atherloom_memory_update"})
         self.assertEqual(bindings["atherloom_memory_update"][1], "memory_update")
-        created = asyncio.run(app_module.invoke_builtin_tool("memory_create", {"title":"饮品","content":"用户喜欢热牛奶","kind":"preference"}))
+        conversation = self.client.post("/api/conversations", json={"title": "来源测试"}).json()
+        source_message_id = "source-message"
+        with app_module.closing(app_module.db()) as connection:
+            connection.execute(
+                "INSERT INTO messages VALUES (?, ?, 'user', ?, NULL, NULL, ?, '', NULL)",
+                (source_message_id, conversation["id"], "我喜欢热牛奶", app_module.now_iso()),
+            )
+            connection.commit()
+        created = asyncio.run(app_module.invoke_builtin_tool("memory_create", {
+            "title":"饮品", "content":"用户喜欢热牛奶", "kind":"preference",
+            "source_message_id": source_message_id,
+        }))
         found = asyncio.run(app_module.invoke_builtin_tool("memory_search", {"query":"热牛奶"}))
         self.assertEqual(found["memories"][0]["memory_id"], created["memory_id"])
+        saved = self.client.get("/api/memories", params={"q": "热牛奶"}).json()[0]
+        self.assertEqual(saved["source_message_id"], source_message_id)
+        self.assertEqual(saved["source_conversation_id"], conversation["id"])
         updated = asyncio.run(app_module.invoke_builtin_tool("memory_update", {"memory_id":created["memory_id"],"content":"用户现在喜欢温牛奶"}))
         self.assertTrue(updated["updated"])
         self.assertEqual(self.client.get("/api/memories?q=温牛奶").json()[0]["id"], created["memory_id"])
@@ -267,6 +281,43 @@ class LocalClientTests(unittest.TestCase):
         self.assertEqual(renamed.json()["title"], "旅行计划")
         results = self.client.get("/api/search", params={"q": "旅行"}).json()
         self.assertEqual(results[0]["id"], created["id"])
+
+    def test_messages_can_be_searched_by_body_and_role(self):
+        conversation = self.client.post("/api/conversations", json={"title": "旧日谈话"}).json()
+        created = app_module.now_iso()
+        with app_module.closing(app_module.db()) as connection:
+            connection.execute(
+                "INSERT INTO messages VALUES (?, ?, 'user', ?, NULL, NULL, ?, '', NULL)",
+                ("message-user", conversation["id"], "枔枔问起桂花", created),
+            )
+            connection.execute(
+                "INSERT INTO messages VALUES (?, ?, 'assistant', ?, NULL, NULL, ?, '', ?)",
+                ("message-assistant", conversation["id"], "C 说桂花落在窗边", created, "message-user"),
+            )
+            connection.commit()
+        results = self.client.get("/api/messages/search", params={"q": "桂花", "role": "assistant"}).json()
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0]["id"], "message-assistant")
+        self.assertEqual(results[0]["conversation_title"], "旧日谈话")
+        self.assertEqual(self.client.get("/api/messages/search", params={"q": "桂花", "role": "invalid"}).status_code, 422)
+
+    def test_mcp_audit_links_to_triggering_message(self):
+        conversation = self.client.post("/api/conversations", json={"title": "审计会话"}).json()
+        with app_module.closing(app_module.db()) as connection:
+            connection.execute(
+                "INSERT INTO messages VALUES (?, ?, 'user', ?, NULL, NULL, ?, '', NULL)",
+                ("audit-user-message", conversation["id"], "请查一下真实资料", app_module.now_iso()),
+            )
+            connection.commit()
+        app_module.record_mcp_audit(
+            "__builtin__", "web_search", "success",
+            conversation_id=conversation["id"], user_message_id="audit-user-message",
+        )
+        row = self.client.get("/api/mcp-audit").json()[0]
+        self.assertEqual(row["conversation_id"], conversation["id"])
+        self.assertEqual(row["user_message_id"], "audit-user-message")
+        self.assertEqual(row["conversation_title"], "审计会话")
+        self.assertEqual(row["user_message_content"], "请查一下真实资料")
 
     def test_auto_title_setting_and_local_title(self):
         saved = self.client.put("/api/settings", json={"auto_title_mode": "model"}).json()
