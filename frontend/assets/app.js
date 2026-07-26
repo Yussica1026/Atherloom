@@ -335,6 +335,7 @@ async function bootstrap() {
   renderProfile(); renderTimeGreeting(); renderHistory(); renderSettings(); renderPickers(); renderMcpAudit(); updateMcpTransportFields();
   const startup=startupConversationPlan(activePersona(),state.conversations);
   if(startup.mode==="new"&&state.provider)await newConversation();else if(startup.conversationId)await openConversation(startup.conversationId);
+  await loadUnreadStickyNotes();
 }
 
 function renderFavorites() {
@@ -356,7 +357,7 @@ async function newConversation() {
   const conversation = await api("/api/conversations", { method: "POST", body: JSON.stringify({ provider_id: state.provider, persona_id: state.persona }) });
   state.conversations.unshift(conversation); state.current = conversation.id; state.messages = [];state.message_cache.set(conversation.id,state.messages);
   if(state.persona)localStorage.setItem("atherloom:last-persona",state.persona);localStorage.setItem("atherloom:last-conversation",conversation.id);
-  renderCurrentTitle();renderHistory();renderMessages();restoreCurrentDraft();renderInjectionTray();
+  renderCurrentTitle();renderHistory();renderMessages();restoreCurrentDraft();renderInjectionTray();setChatStatus(localStorage.getItem(chatStatusKey())==="1");
 }
 
 async function openConversation(id) {
@@ -367,7 +368,7 @@ async function openConversation(id) {
   if(state.persona)localStorage.setItem("atherloom:last-persona",state.persona);localStorage.setItem("atherloom:last-conversation",id);
   state.messages = messages;state.message_cache.set(id,messages);
   state.version_selection={};for(const message of state.messages)if(message.role==="assistant"&&message.parent_message_id&&message.selected){const versions=state.messages.filter(item=>item.role==="assistant"&&item.parent_message_id===message.parent_message_id);state.version_selection[message.parent_message_id]=versions.indexOf(message);}
-  renderCurrentTitle();renderHistory();renderMessages();renderPickers();restoreCurrentDraft();renderInjectionTray();
+  renderCurrentTitle();renderHistory();renderMessages();renderPickers();restoreCurrentDraft();renderInjectionTray();setChatStatus(localStorage.getItem(chatStatusKey())==="1");
 }
 
 async function sendMessage() {
@@ -421,6 +422,19 @@ async function generateReply(content, reuseUserMessageId = null, attachments = [
 }
 
 function motivationPersonaKey(){return state.persona||"__default__";}
+function chatStatusKey(){return `atherloom:chat-status:${state.current||"new"}`;}
+async function renderChatStatus(){
+  $("#chatStatusPersona").textContent=activePersonaName();const provider=activeProvider();
+  try{const motivation=await api(`/api/motivation/${encodeURIComponent(motivationPersonaKey())}`),drives=motivation.state?.drives||{},top=Object.entries(drives).sort((a,b)=>b[1]-a[1]).slice(0,3),labels=motivation.drives||{},worldbooks=selectedWorldbookIds().length;
+    $("#chatStatusBody").innerHTML=[...top.map(([key,value])=>[labels[key]?.label||key,`${Number(value).toFixed(0)}/100`]),["记忆",`${state.memories.length} 条`],["世界书",`${worldbooks} 本`],["MCP",`${state.mcp_servers.filter(item=>item.enabled).length} 个`],["模型",provider?.model||"未选择"],["输出",provider?.stream_enabled===false?"非流式":"流式"]].map(([name,value])=>`<div class="status-chip"><span>${escapeHtml(name)}</span><strong>${escapeHtml(value)}</strong></div>`).join("");
+  }catch(error){$("#chatStatusBody").innerHTML=`<p class="muted">${escapeHtml(error.message)}</p>`;}
+}
+async function setChatStatus(open){$("#chatStatusStrip").hidden=!open;localStorage.setItem(chatStatusKey(),open?"1":"0");if(open)await renderChatStatus();}
+let stickyQueue=[],stickyIndex=0;
+function showStickyNote(){if(stickyIndex>=stickyQueue.length){$("#stickyInbox").hidden=true;return;}const note=stickyQueue[stickyIndex];$("#stickyAuthor").textContent=`${note.persona_name} 留给你的话`;$("#stickyContent").textContent=note.content;$("#stickyCounter").textContent=`${stickyIndex+1} / ${stickyQueue.length} · ${new Date(note.created_at).toLocaleString()}`;$("#stickyNext").textContent=stickyIndex+1<stickyQueue.length?"下一张":"收好";$("#stickyInbox").hidden=false;}
+async function loadUnreadStickyNotes(){
+  const seen=new Set(JSON.parse(localStorage.getItem("atherloom:seen-board-notes")||"[]")),personas=[{id:null,name:"默认人格"},...state.personas],results=await Promise.all(personas.map(async persona=>{try{const data=await api(`/api/board/${encodeURIComponent(persona.id||"__default__")}`);return (data.messages||[]).filter(item=>item.author==="ai"&&!seen.has(item.id)).map(item=>({...item,persona_name:persona.name}));}catch{return [];}}));stickyQueue=results.flat().sort((a,b)=>String(a.created_at).localeCompare(String(b.created_at))).slice(0,12);stickyIndex=0;if(stickyQueue.length)showStickyNote();
+}
 async function loadInnerWriting(){
   const key=encodeURIComponent(motivationPersonaKey()),[journals,board]=await Promise.all([api(`/api/journals/${key}`),api(`/api/board/${key}`)]);
   state.journals=journals.entries||[];state.board_messages=board.messages||[];
@@ -437,6 +451,7 @@ async function loadInnerWriting(){
 async function renderRuntimePanel(){
   const provider=activeProvider(),worldbooks=selectedWorldbookIds().map(id=>state.worldbooks.find(item=>item.id===id)).filter(Boolean),lastAssistant=[...state.messages].reverse().find(item=>item.role==="assistant");
   $("#pluginOverview").innerHTML=[["记忆系统",activePersona()?.config?.memory_enabled===false?"已停用":`运行中 · ${state.memories.length} 条记忆`,"memory","忆"],["欲望系统",$("#motivationEnabled").checked?"已启用":"可按人格启用","desire","欲"],["日记",state.journals.length?`${state.journals.length} 篇可见`:"私人或共同书写","journal","记"],["留言板",state.board_messages.length?`${state.board_messages.length} 条可见`:"给彼此留句话","board","笺"],["MCP",state.mcp_servers.length?`${state.mcp_servers.filter(item=>item.enabled).length} 个已启用`:"尚未添加","mcp","M"]].map(([name,status,kind,glyph])=>`<article class="plugin-card" data-plugin="${kind}"><span class="plugin-glyph">${glyph}</span><div><strong>${name}</strong><small>${status}</small></div><i></i></article>`).join("");
+  document.querySelectorAll("#pluginOverview [data-plugin]").forEach(card=>{card.tabIndex=0;card.onclick=()=>{if(card.dataset.plugin==="memory")switchTab("memory");else if(card.dataset.plugin==="journal"||card.dataset.plugin==="board")switchTab("journal");else if(card.dataset.plugin==="mcp")switchTab("mcp");else card.scrollIntoView({behavior:"smooth",block:"center"});};card.onkeydown=event=>{if(event.key==="Enter"||event.key===" "){event.preventDefault();card.click();}};});
   const capabilities=provider?`${provider.vision_mode==="text"?"仅文本":provider.vision_mode==="anthropic"?"Claude 图片":provider.vision_mode==="openai"?"OpenAI 图片":"自动图片"} · ${provider.thinking_enabled!==false?"可显示思考":"隐藏思考"} · ${provider.stream_enabled!==false?"流式":"非流式"} · 缓存 ${provider.cache_mode||"auto"}`:"尚未选择线路";
   $("#requestDiagnostic").innerHTML=`<div class="list-card"><div><strong>线路能力</strong><small>${escapeHtml(capabilities)}</small></div></div><div class="list-card"><div><strong>注入来源</strong><small>世界书 ${worldbooks.length} 本 · 本轮记忆 ${lastAssistant?.memory_sources?.length||0} 条 · 附件 ${state.attachments.length} 个</small></div></div><div class="list-card"><div><strong>人格与历史</strong><small>${escapeHtml(activePersonaName())} · ${activePersona()?.config?.history_enabled===false?"仅当前消息":"参考聊天历史"}</small></div></div>`;
   const duplicates=state.memories.length-new Set(state.memories.map(item=>`${item.kind}:${item.title.trim().toLowerCase()}:${item.content.trim().toLowerCase()}`)).size,brokenProviders=state.providers.filter(item=>!item.has_api_key||!item.model).length,brokenMcp=state.mcp_servers.filter(item=>item.enabled&&item.last_status&&item.last_status!=="online").length;
@@ -512,6 +527,12 @@ async function restoreLocalBackup(file) {
 }
 
 let settingsSaveTimer;
+function appSettingsPayload(){
+  return {auto_title_mode:$("#autoTitleMode").value,summary_enabled:$("#summaryEnabled").checked,summary_trigger_rounds:Number($("#summaryRounds").value),summary_prompt:$("#summaryPrompt").value,display_name:$("#displayName").value.trim(),proactive_questions:$("#proactiveQuestions").checked,font_scale:Number($("#fontScale").value),message_density:$("#messageDensity").value,code_theme:$("#codeTheme").value,memory_strategy:$("#memoryStrategy").value,stream_speed:$("#streamSpeed").value,tool_permissions:Object.fromEntries([...document.querySelectorAll("[data-permission]")].map(select=>[select.dataset.permission,select.value]))};
+}
+async function persistAppSettingsNow(){
+  clearTimeout(settingsSaveTimer);state.settings=await api("/api/settings",{method:"PUT",body:JSON.stringify(appSettingsPayload())});applyAppearance();renderProfile();renderTimeGreeting();$("#summarySaveState").textContent="已保存到本地";$("#toolSaveState").textContent="AI 工具权限已保存并生效";return state.settings;
+}
 function saveAppSettings() {
   clearTimeout(settingsSaveTimer);
   $("#summarySaveState").textContent = "等待保存…";
@@ -577,12 +598,12 @@ $("#memoryStrategy").onchange = saveAppSettings;
 $("#resetSummaryPrompt").onclick = () => { $("#summaryPrompt").value = $("#summaryPrompt").dataset.defaultPrompt; saveAppSettings(); };
 document.querySelectorAll("[data-permission]").forEach(select => select.onchange = saveAppSettings);
 $("#enableAiTools").onclick = () => {
-  for (const name of ["web_search", "file_read", "memory_read", "memory_write"]) {
+  for (const name of ["web_search", "file_read", "memory_read", "memory_write", "diary_write"]) {
     const select = document.querySelector(`[data-permission="${name}"]`);
     if (select) select.value = "allow";
   }
-  saveAppSettings();
-  $("#toolSaveState").textContent = "正在开启联网、读文件和记忆读写…";
+  $("#toolSaveState").textContent = "正在开启联网、文件、记忆和日记工具…";
+  persistAppSettingsNow().catch(error=>{$("#toolSaveState").textContent=`保存失败：${error.message}`;});
 };
 document.querySelectorAll("[data-bulk-permission]").forEach(button => button.onclick = () => {
   const permission = button.dataset.bulkPermission;
@@ -595,6 +616,9 @@ $("#openSettings").onclick = () => openSettings();
 $("#openGames").onclick = openGameLibrary; $("#closeGames").onclick = () => $("#gameLibrary").hidden = true;
 $("#openFavorites").onclick=openFavorites;$("#closeFavorites").onclick=()=>$("#favoritesSpace").hidden=true;
 $("#openReading").onclick=()=>openMedia("reading");$("#openCinema").onclick=()=>openMedia("cinema");$("#closeMedia").onclick=()=>{$("#mediaSpace").hidden=true;$("#moviePlayer").pause();};
+$("#toggleChatStatus").onclick=()=>setChatStatus($("#chatStatusStrip").hidden);$("#closeChatStatus").onclick=()=>setChatStatus(false);
+$("#stickyNext").onclick=()=>{const note=stickyQueue[stickyIndex],seen=new Set(JSON.parse(localStorage.getItem("atherloom:seen-board-notes")||"[]"));if(note)seen.add(note.id);localStorage.setItem("atherloom:seen-board-notes",JSON.stringify([...seen].slice(-500)));stickyIndex++;showStickyNote();};
+$("#stickyLater").onclick=$("#closeStickyInbox").onclick=()=>{$("#stickyInbox").hidden=true;};
 $("#openCall").onclick=openVoiceCall;$("#closeCall").onclick=()=>{endVoiceCall();$("#callSpace").hidden=true;};$("#startCall").onclick=()=>startVoiceCall().catch(error=>{$("#callStatus").textContent=`无法开始：${error.message}`;});$("#endCall").onclick=endVoiceCall;
 $("#closeMessageMenu").onclick=()=>$("#messageMenu").hidden=true;$("#messageMenu").onclick=event=>{if(event.target===$("#messageMenu"))$("#messageMenu").hidden=true;};
 $("#branchMessage").onclick=async()=>{const message=state.messages[Number($("#messageMenu").dataset.messageIndex)];$("#messageMenu").hidden=true;if(!message?.id)return;try{const conversation=await api(`/api/conversations/${state.current}/branch/${message.id}`,{method:"POST"});state.conversations.unshift(conversation);renderHistory();await openConversation(conversation.id);}catch(error){alert(`创建分支失败：${error.message}`);}};
@@ -612,7 +636,6 @@ $("#aiPlayOne").onclick=()=>aiPlayGame(1);$("#aiPlayThree").onclick=()=>aiPlayGa
 $("#backdrop").onclick = closeSettings; document.querySelectorAll("[data-close]").forEach(b => b.onclick = closeSettings);
 document.querySelectorAll(".settings-nav button").forEach(b => b.onclick = () => switchTab(b.dataset.tab));
 $("#openMcpFromTools").onclick=()=>switchTab("mcp");
-$("#openPlugins").onclick=()=>{openSettings("runtime");setSidebar(false);};
 $("#openMemoryFromPlugins").onclick=()=>switchTab("memory");
 $("#openWritingFromPlugins").onclick=()=>switchTab("journal");
 $("#openMcpFromPlugins").onclick=()=>switchTab("mcp");
@@ -651,7 +674,7 @@ $("#quickPhraseButton").onclick=e=>{e.stopPropagation();const phrases=activePers
 document.addEventListener("click", event => { if (!event.target.closest(".popover")) closePopovers(); if(!event.target.closest("#attachmentMenu")&&!event.target.closest("#attachmentButton"))$("#attachmentMenu").hidden=true; });
 document.addEventListener("keydown", event => { if (event.key === "Escape") closePopovers(); });
 function setSidebar(open){$("#sidebar").classList.toggle("open",open);$("#sidebarBackdrop").hidden=!open;}
-$("#mobileMenu").onclick=()=>setSidebar(true);$("#sidebarClose").onclick=()=>setSidebar(false);$("#sidebarToggle").onclick=()=>{if(innerWidth<=760)setSidebar(false);};$("#sidebarBackdrop").onclick=()=>setSidebar(false);document.querySelectorAll("#sidebar .new-chat,#sidebar .profile-row,#sidebar .plugin-entry,#sidebar .history-item").forEach(button=>button.addEventListener("click",()=>setSidebar(false)));
+$("#mobileMenu").onclick=()=>setSidebar(true);$("#sidebarClose").onclick=()=>setSidebar(false);$("#sidebarToggle").onclick=()=>{if(innerWidth<=760)setSidebar(false);};$("#sidebarBackdrop").onclick=()=>setSidebar(false);document.querySelectorAll("#sidebar .new-chat,#sidebar .profile-row,#sidebar .history-item").forEach(button=>button.addEventListener("click",()=>setSidebar(false)));
 window.AtherloomHandleBack=()=>{if(!$("#callSpace").hidden){endVoiceCall();$("#callSpace").hidden=true;return true;}if(!$("#mediaSpace").hidden){$("#mediaSpace").hidden=true;$("#moviePlayer").pause();return true;}if(!$("#favoritesSpace").hidden){$("#favoritesSpace").hidden=true;return true;}if(!$("#gameLibrary").hidden){$("#gameLibrary").hidden=true;return true;}if($("#settingsPanel").classList.contains("open")){closeSettings();return true;}if($("#sidebar").classList.contains("open")){setSidebar(false);return true;}if([...document.querySelectorAll(".popover")].some(item=>!item.hidden)){closePopovers();return true;}return false;};
 $("#themeSelect").onchange = e => { document.documentElement.dataset.theme = e.target.value === "system" ? "" : e.target.value; localStorage.setItem("theme", e.target.value); };
 $("#exportBackup").onclick = exportLocalBackup;

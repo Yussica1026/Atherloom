@@ -105,7 +105,7 @@ class LocalClientTests(unittest.TestCase):
         standalone = (app_module.ROOT / "frontend" / "assets" / "standalone.js").read_text(encoding="utf-8")
         android = (app_module.ROOT / "android" / "app" / "src" / "main" / "java" / "app" / "atherloom" / "mobile" / "MainActivity.java").read_text(encoding="utf-8")
         self.assertIn('id="enableAiTools"', html)
-        self.assertIn('["web_search", "file_read", "memory_read", "memory_write"]', script)
+        self.assertIn('["web_search", "file_read", "memory_read", "memory_write", "diary_write"]', script)
         self.assertIn("atherloom_memory_update", standalone)
         self.assertIn("toolFollowupMessages", standalone)
         self.assertIn("webSearch(String raw)", android)
@@ -183,6 +183,15 @@ class LocalClientTests(unittest.TestCase):
         self.assertTrue(copied["has_api_key"])
         with app_module.closing(app_module.db()) as connection:
             self.assertEqual(connection.execute("SELECT api_key FROM providers WHERE id=?", (copied["id"],)).fetchone()["api_key"], "secret")
+
+    def test_same_gateway_new_model_reuses_saved_key_without_retyping(self):
+        first = self.client.post("/api/providers", json={"name":"DS Flash","protocol":"deepseek","base_url":"https://api.deepseek.com/","api_key":"secret","model":"v4-flash"}).json()
+        second = self.client.post("/api/providers", json={"name":"DS Pro","protocol":"deepseek","base_url":"https://api.deepseek.com","api_key":"","model":"v4-pro"}).json()
+        self.assertNotEqual(first["id"], second["id"])
+        self.assertEqual(second["model"], "v4-pro")
+        self.assertTrue(second["has_api_key"])
+        with app_module.closing(app_module.db()) as connection:
+            self.assertEqual(connection.execute("SELECT api_key FROM providers WHERE id=?", (second["id"],)).fetchone()["api_key"], "secret")
 
     def test_provider_model_list_reuses_saved_key(self):
         created = self.client.post("/api/providers", json={"name":"DS","protocol":"deepseek","base_url":"https://api.deepseek.com","api_key":"secret","model":"flash"}).json()
