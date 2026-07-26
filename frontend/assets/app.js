@@ -255,12 +255,13 @@ async function handleMessageAction(article, action) {
   }
   if (action === "regenerate") {
     let userId=message.role === "user" ? message.id : message.parent_message_id;
+    const mediaContext=message.media_context||message.retry_media_context||"";
     if(!userId&&message.role==="assistant"){
       const index=state.messages.indexOf(message);
       userId=[...state.messages.slice(0,index)].reverse().find(item=>item.role==="user")?.id||null;
     }
     if(message.role==="assistant"&&!message.id)state.messages.splice(state.messages.indexOf(message),1);
-    return generateReply(message.retry_content || "",userId);
+    return generateReply(message.retry_content || "",userId,[],mediaContext);
   }
 }
 
@@ -411,7 +412,7 @@ function createStreamPresenter(message, animated, messages=state.messages, conve
   };
 }
 
-async function generateReply(content, reuseUserMessageId = null, attachments = []) {
+async function generateReply(content, reuseUserMessageId = null, attachments = [], mediaContext = "") {
   const conversationId=state.current,messages=state.messages,provider=activeProvider(),personaId=state.persona,worldbookIds=selectedWorldbookIds(),controller=new AbortController();
   if (!provider) return openSettings("providers");
   if(reuseUserMessageId){
@@ -427,11 +428,11 @@ async function generateReply(content, reuseUserMessageId = null, attachments = [
   let presenter;
   try {
     const gameContext=reuseUserMessageId?"":await prepareChatGameContext(content);
-    const response = await fetch("/api/chat", { method: "POST",headers: { "Content-Type": "application/json" },signal:controller.signal,body: JSON.stringify({ conversation_id:conversationId,content: content || "重新生成",attachments,provider_id: provider.id,persona_id:personaId,reuse_user_message_id:reuseUserMessageId,local_time: localTimeContext(),game_context:gameContext,worldbook_ids:worldbookIds }) });
+    const response = await fetch("/api/chat", { method: "POST",headers: { "Content-Type": "application/json" },signal:controller.signal,body: JSON.stringify({ conversation_id:conversationId,content: content || "重新生成",attachments,provider_id: provider.id,persona_id:personaId,reuse_user_message_id:reuseUserMessageId,local_time: localTimeContext(),game_context:gameContext,media_context:mediaContext,worldbook_ids:worldbookIds }) });
     if (!response.ok) throw new Error(`请求失败 ${response.status}`);
     const reader=response.body.getReader(),decoder=new TextDecoder();presenter=createStreamPresenter(assistant,assistant.streaming,messages,conversationId);let pending="";
     while(true){const {value,done}=await reader.read();if(done)break;pending+=decoder.decode(value,{stream:true});const lines=pending.split("\n");pending=lines.pop();for(const line of lines){if(!line)continue;const event=JSON.parse(line);if(event.error)throw new Error(event.error);let structureUpdated=false;if(event.memory_sources){assistant.memory_sources=event.memory_sources;structureUpdated=true;}if(typeof event.delta==="string"&&event.delta!=="null")presenter.push(event.delta);if(typeof event.reasoning_delta==="string"&&event.reasoning_delta!=="null"){assistant.reasoning+=event.reasoning_delta;structureUpdated=true;}if(structureUpdated)updateStreamingMessage(assistant,messages,conversationId);if(event.done){await presenter.finish();assistant.pending=false;assistant.streaming=false;assistant.id=event.assistant_id;assistant.parent_message_id=event.user_id;const pendingUser=[...messages].reverse().find(m=>m.role==="user"&&!m.id);if(pendingUser)pendingUser.id=event.user_id;if(event.title){const conversation=state.conversations.find(c=>c.id===conversationId);if(conversation)conversation.title=event.title;}if(state.current===conversationId){renderCurrentTitle();renderMessages();}renderHistory();}}}
-  } catch (error) {presenter?.cancel();assistant.pending=false;assistant.streaming=false;if(error.name==="AbortError"){if(!assistant.content)assistant.content="已停止生成";}else{assistant.retry_content=content;assistant.content=`连接失败：${error.message}`;if(!reuseUserMessageId){try{const fresh=await api(`/api/conversations/${conversationId}/messages`),persisted=[...fresh].reverse().find(item=>item.role==="user"&&item.content===content);if(persisted)persisted.attachments=attachments;messages.splice(0,messages.length,...fresh,assistant);}catch{}}}if(state.current===conversationId)renderMessages();}
+  } catch (error) {presenter?.cancel();assistant.pending=false;assistant.streaming=false;if(error.name==="AbortError"){if(!assistant.content)assistant.content="已停止生成";}else{assistant.retry_content=content;assistant.retry_media_context=mediaContext;assistant.content=`连接失败：${error.message}`;if(!reuseUserMessageId){try{const fresh=await api(`/api/conversations/${conversationId}/messages`),persisted=[...fresh].reverse().find(item=>item.role==="user"&&item.content===content);if(persisted)persisted.attachments=attachments;messages.splice(0,messages.length,...fresh,assistant);}catch{}}}if(state.current===conversationId)renderMessages();}
   finally{state.generating.delete(conversationId);state.generation_controllers.delete(conversationId);renderHistory();if(state.current===conversationId){renderCurrentTitle();updateComposerState();}}
 }
 
@@ -642,7 +643,32 @@ $("#messageEditor form").onsubmit=async event=>{event.preventDefault();const edi
 $("#deleteMessageVersion").onclick=async()=>{const index=Number($("#messageMenu").dataset.messageIndex),message=state.messages[index];if(!message?.id)return;const note=message.role==="user"?"删除这条消息时，它下面的全部 AI 回答也会删除。":"只删除当前显示的这个 AI 回答版本。";if(!confirm(`${note}\n\n确定继续吗？`))return;await api(`/api/messages/${message.id}`,{method:"DELETE"});state.messages=state.messages.filter(item=>item.id!==message.id&&(message.role!=="user"||item.parent_message_id!==message.id));if(message.parent_message_id)delete state.version_selection[message.parent_message_id];if(message.role==="user")delete state.version_selection[message.id];$("#messageMenu").hidden=true;renderMessages();};
 $("#deleteAllMessageVersions").onclick=async()=>{const index=Number($("#messageMenu").dataset.messageIndex),message=state.messages[index];if(!message?.id)return;const parentId=message.role==="assistant"?message.parent_message_id:message.id,note=message.role==="assistant"?"删除这条提问下的全部 AI 回答版本？你的提问会保留。":"删除你的这条消息以及它下面的全部 AI 回答？";if(!confirm(note))return;await api(`/api/messages/${message.id}/versions`,{method:"DELETE"});state.messages=state.messages.filter(item=>message.role==="assistant"?item.parent_message_id!==parentId:item.id!==message.id&&item.parent_message_id!==message.id);delete state.version_selection[parentId];$("#messageMenu").hidden=true;renderMessages();};
 $("#chooseBook").onclick=()=>$("#bookInput").click();$("#bookInput").onchange=async event=>{const file=event.target.files?.[0];event.target.value="";await openLocalBook(file);};
-let movieUrl;$("#chooseMovie").onclick=()=>$("#movieInput").click();$("#movieInput").onchange=event=>{const file=event.target.files?.[0];if(!file)return;if(movieUrl)URL.revokeObjectURL(movieUrl);movieUrl=URL.createObjectURL(file);const player=$("#moviePlayer"),key=`atherloom:movie:${file.name}:${file.size}`;player.src=movieUrl;$("#movieStatus").textContent=`${file.name} · 进度保存在本机`;player.onloadedmetadata=()=>{player.currentTime=Math.min(Number(localStorage.getItem(key)||0),Math.max(0,player.duration-1));};player.ontimeupdate=()=>{if(Math.floor(player.currentTime)%5===0)localStorage.setItem(key,String(player.currentTime));};};
+let movieUrl,movieProgressKey,watchCues=[],watchSource={title:"私人放映室",kind:"local"};
+const watchClock=seconds=>{seconds=Math.max(0,Number(seconds)||0);const h=Math.floor(seconds/3600),m=Math.floor(seconds%3600/60),s=Math.floor(seconds%60);return [h?String(h).padStart(2,"0"):null,String(m).padStart(2,"0"),String(s).padStart(2,"0")].filter(Boolean).join(":");};
+function parseSubtitleTime(value){const parts=String(value).trim().replace(",",".").split(":").map(Number);return parts.length===3?parts[0]*3600+parts[1]*60+parts[2]:parts[0]*60+parts[1];}
+function parseWatchSubtitles(raw){
+  return String(raw).replace(/\r/g,"").replace(/^WEBVTT[^\n]*\n+/,"").split(/\n{2,}/).map(block=>{const lines=block.split("\n").filter(Boolean);if(/^\d+$/.test(lines[0]||""))lines.shift();const timing=lines.shift()||"",match=timing.match(/([\d:,\.]+)\s*-->\s*([\d:,\.]+)/);if(!match)return null;return {start:parseSubtitleTime(match[1]),end:parseSubtitleTime(match[2]),text:lines.join(" ").replace(/<[^>]+>/g,"").trim()};}).filter(item=>item&&item.text).sort((a,b)=>a.start-b.start);
+}
+function renderWatchMoment(){
+  const time=$("#moviePlayer").currentTime||0;$("#watchTime").textContent=watchClock(time);
+  const nearby=watchCues.filter(cue=>cue.start<=time&&cue.end>=Math.max(0,time-18)).slice(-4);
+  $("#subtitleRibbon").innerHTML=nearby.length?nearby.map(cue=>`<p class="${cue.start<=time&&cue.end>=time?"current":""}"><time>${watchClock(cue.start)}</time>${escapeHtml(cue.text)}</p>`).join(""):`<p>${watchCues.length?"这一刻没有对白。":"添加字幕后，AI 才能可靠地陪你看到这一幕。"}</p>`;
+}
+function loadMovieSource(src,title,key){
+  const player=$("#moviePlayer");player.src=src;watchSource={title,kind:src.startsWith("blob:")?"local":"url"};movieProgressKey=key;$("#watchTitle").textContent=title;$("#movieStatus").textContent=`${title} · 进度保存在本机`;$("#watchEmpty").hidden=true;
+  player.onloadedmetadata=()=>{player.currentTime=Math.min(Number(localStorage.getItem(key)||0),Math.max(0,player.duration-1));renderWatchMoment();};
+  player.ontimeupdate=()=>{renderWatchMoment();if(Math.floor(player.currentTime)%5===0)localStorage.setItem(key,String(player.currentTime));};
+}
+$("#chooseMovie").onclick=()=>$("#movieInput").click();
+$("#movieInput").onchange=event=>{const file=event.target.files?.[0];event.target.value="";if(!file)return;if(movieUrl)URL.revokeObjectURL(movieUrl);movieUrl=URL.createObjectURL(file);loadMovieSource(movieUrl,file.name,`atherloom:movie:${file.name}:${file.size}`);};
+$("#openMovieLink").onclick=()=>{const value=$("#movieLink").value.trim();if(!/^https?:\/\//i.test(value))return $("#movieStatus").textContent="请输入 http 或 https 视频直链";loadMovieSource(value,new URL(value).pathname.split("/").pop()||"在线视频",`atherloom:movie-url:${value}`);};
+$("#chooseSubtitle").onclick=()=>$("#subtitleInput").click();
+$("#subtitleInput").onchange=async event=>{const file=event.target.files?.[0];event.target.value="";if(!file)return;watchCues=parseWatchSubtitles(await file.text());$("#subtitleStatus").textContent=watchCues.length?`${file.name} · ${watchCues.length} 条字幕`:"没有识别到 SRT/VTT 时间轴";renderWatchMoment();};
+$("#watchQuestionForm").onsubmit=async event=>{
+  event.preventDefault();const question=$("#watchQuestion").value.trim();if(!question)return;if(!activeProvider())return openSettings("providers");if(!state.current)await newConversation();
+  const time=$("#moviePlayer").currentTime||0,evidence=watchCues.filter(cue=>cue.start<=time).slice(-18),context=[`影片：${watchSource.title}`,`当前播放点：${watchClock(time)}`,`证据范围：只包含播放点之前的字幕`,evidence.length?`最近字幕：\n${evidence.map(cue=>`[${watchClock(cue.start)}] ${cue.text}`).join("\n")}`:"当前没有可用字幕证据。不得猜测画面或后续剧情。",$("#watchNoSpoilers").checked?"严格禁止引用播放点之后的情节。":""].filter(Boolean).join("\n");
+  $("#watchQuestion").value="";$("#mediaSpace").hidden=true;state.messages.push({role:"user",content:question,media_context:context});renderMessages();await generateReply(question,null,[],context);
+};
 let favoriteSearchTimer;$("#favoriteSearch").oninput=event=>{clearTimeout(favoriteSearchTimer);favoriteSearchTimer=setTimeout(async()=>{state.favorites=await api(`/api/favorites?q=${encodeURIComponent(event.target.value.trim())}`);renderFavorites();},220);};
 document.querySelectorAll("[data-game-action]").forEach(button => button.onclick = () => playGame(button.dataset.gameAction, Number(button.dataset.amount || 1)));
 document.querySelectorAll("[data-claw-action]").forEach(button=>button.onclick=()=>playMiniGame("claw_machine",button.dataset.clawAction));document.querySelectorAll("[data-slot-amount]").forEach(button=>button.onclick=()=>playMiniGame("cloud_slots","spin",Number(button.dataset.slotAmount)));

@@ -243,6 +243,20 @@ class LocalClientTests(unittest.TestCase):
         app_module.append_pending_user(messages, body)
         self.assertEqual([item["content"] for item in messages if item["role"] == "user"].count("不要重复我"), 1)
 
+    def test_shared_watch_evidence_is_hidden_system_context(self):
+        provider = self.client.post("/api/providers", json={"name":"watch","protocol":"openai","base_url":"https://example.com/v1","model":"m"}).json()
+        conversation = self.client.post("/api/conversations", json={"provider_id":provider["id"]}).json()
+        body = app_module.ChatIn(
+            conversation_id=conversation["id"], content="这一幕是什么意思？",
+            provider_id=provider["id"], media_context="影片：测试片\n当前播放点：00:05\n[00:04] 门关上了",
+        )
+        with app_module.closing(app_module.db()) as connection:
+            _, _, messages = app_module.load_chat_context(connection, body)
+        system = "\n".join(str(item["content"]) for item in messages if item["role"] == "system")
+        self.assertIn("<shared_watch_evidence>", system)
+        self.assertIn("门关上了", system)
+        self.assertIn("不要剧透", system)
+
     def test_provider_endpoint_avoids_duplicate_v1(self):
         self.assertEqual(app_module.provider_endpoint("https://api.anthropic.com", "anthropic"), "https://api.anthropic.com/v1/messages")
         self.assertEqual(app_module.provider_endpoint("https://proxy.example/v1", "anthropic"), "https://proxy.example/v1/messages")

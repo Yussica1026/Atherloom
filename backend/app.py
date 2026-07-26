@@ -333,6 +333,7 @@ class ChatIn(BaseModel):
     attachments: list[dict[str, Any]] = Field(default_factory=list, max_length=8)
     local_time: str = Field(default="", max_length=80)
     game_context: str = Field(default="", max_length=2400)
+    media_context: str = Field(default="", max_length=16000)
     worldbook_ids: list[str] = Field(default_factory=list, max_length=50)
 
 
@@ -1813,12 +1814,13 @@ def load_chat_context(connection: sqlite3.Connection, body: ChatIn, cutoff: str 
     tool_context = f"该人格启用的本地能力偏好：{', '.join(tool_names)}。只有宿主实际提供的能力才可调用。" if tool_names else ""
     game_tool_context = "宿主提供云汀钓记、抓娃娃机和云纹老虎机游戏工具。用户要求你去玩时，宿主会在回复前执行工具并提供 <verified_game_result>。只有收到该结果才能声称自己玩过，并应自然讲述真实动作、收获与心里话；没有结果时不得虚构游戏经历。"
     game_context = f"<verified_game_result>\n{body.game_context}\n</verified_game_result>\n这是宿主刚刚真实执行的游戏结果。请以当前人格自然回应，可以主动谈起收获与心情，不要声称没有玩过。" if body.game_context else ""
+    media_context = f"<shared_watch_evidence>\n{body.media_context}\n</shared_watch_evidence>\n只能依据以上播放点之前的证据讨论当前影片；不要剧透、不要假装看见字幕未提供的画面。" if body.media_context else ""
     scan_messages=[*messages,{"role":"user","content":body.content}]
     entries=active_worldbook_entries(connection,body.worldbook_ids,scan_messages);before=[entry["content"] for entry in entries if entry.get("position")=="system_before"];after=[entry["content"] for entry in entries if entry.get("position")=="system_after" or entry.get("role")=="system" and str(entry.get("position","")).startswith("history_")]
     for entry in reversed([item for item in entries if item.get("position")=="history_before" and item.get("role")!="system"]): messages.insert(0,{"role":entry.get("role","user"),"content":entry["content"]})
     for entry in [item for item in entries if item.get("position")=="history_after" and item.get("role")!="system"]: messages.append({"role":entry.get("role","user"),"content":entry["content"]})
     worldbook_before="<worldbook_instructions>\n"+"\n\n".join(before)+"\n</worldbook_instructions>" if before else "";worldbook_after="<worldbook_instructions>\n"+"\n\n".join(after)+"\n</worldbook_instructions>" if after else ""
-    system_parts = [part for part in (worldbook_before,persona_prompt,worldbook_after,conversation["summary"] if persona_config["history_enabled"] else "", time_context, question_context, formatting_context, tool_context, game_tool_context, game_context) if part]
+    system_parts = [part for part in (worldbook_before,persona_prompt,worldbook_after,conversation["summary"] if persona_config["history_enabled"] else "", time_context, question_context, formatting_context, tool_context, game_tool_context, game_context, media_context) if part]
     if system_parts:
         messages.insert(0, {"role": "system", "content": "\n\n".join(system_parts)})
     return provider, persona_prompt, messages
