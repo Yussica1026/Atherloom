@@ -253,7 +253,15 @@ async function handleMessageAction(article, action) {
     const conversation = await api(`/api/conversations/${state.current}/branch/${message.id}`, { method: "POST" });
     state.conversations.unshift(conversation); renderHistory(); return openConversation(conversation.id);
   }
-  if (action === "regenerate") return generateReply(message.retry_content || "", message.role === "user" ? message.id : message.parent_message_id);
+  if (action === "regenerate") {
+    let userId=message.role === "user" ? message.id : message.parent_message_id;
+    if(!userId&&message.role==="assistant"){
+      const index=state.messages.indexOf(message);
+      userId=[...state.messages.slice(0,index)].reverse().find(item=>item.role==="user")?.id||null;
+    }
+    if(message.role==="assistant"&&!message.id)state.messages.splice(state.messages.indexOf(message),1);
+    return generateReply(message.retry_content || "",userId);
+  }
 }
 
 function openMessageEditor(message){if(!message)return;const editor=$("#messageEditor");editor.dataset.messageId=message.id||"";editor.dataset.messageIndex=String(state.messages.indexOf(message));$("#messageEditContent").value=message.content;editor.hidden=false;requestAnimationFrame(()=>$("#messageEditContent").focus());}
@@ -406,6 +414,12 @@ function createStreamPresenter(message, animated, messages=state.messages, conve
 async function generateReply(content, reuseUserMessageId = null, attachments = []) {
   const conversationId=state.current,messages=state.messages,provider=activeProvider(),personaId=state.persona,worldbookIds=selectedWorldbookIds(),controller=new AbortController();
   if (!provider) return openSettings("providers");
+  if(reuseUserMessageId){
+    for(let index=messages.length-1;index>=0;index--){
+      const item=messages[index];
+      if(item.role==="assistant"&&!item.id&&item.parent_message_id===reuseUserMessageId)messages.splice(index,1);
+    }
+  }
   state.generating.add(conversationId);state.generation_controllers.set(conversationId,controller);state.message_cache.set(conversationId,messages);renderHistory();renderCurrentTitle();updateComposerState();
   if(reuseUserMessageId)delete state.version_selection[reuseUserMessageId];
   messages.push({ role: "assistant", content: "", reasoning: "", model: provider.model, parent_message_id: reuseUserMessageId, pending: true, streaming: provider.stream_enabled!==false&&provider.stream_enabled!==0 });if(state.current===conversationId)renderMessages();
