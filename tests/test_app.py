@@ -27,6 +27,41 @@ class LocalClientTests(unittest.TestCase):
         payload = self.client.get("/api/bootstrap").json()
         self.assertEqual(payload["personas"], [])
 
+    def test_roleplay_story_keeps_independent_drafts_and_exact_checkpoint(self):
+        narrator = self.client.post("/api/providers", json={"name":"旁白","protocol":"openai","base_url":"https://example.com/v1","model":"n"}).json()
+        actor = self.client.post("/api/providers", json={"name":"角色","protocol":"openai","base_url":"https://example.com/v1","model":"a"}).json()
+        story = self.client.post("/api/roleplay/stories", json={
+            "title":"雾港来信","player_name":"阿遥","premise":"雨夜的旧车站",
+            "narrator_provider_id":narrator["id"],
+            "cast":[{"name":"沈砚清","provider_id":actor["id"],"description":"寡言"}],
+        }).json()
+        async def fake_model(provider, system, prompt):
+            return "雨落在旧站台上，沈砚清抬眼望来。" if "小说旁白" in system else "沈砚清会抬眼，但等阿遥先开口。"
+        with patch.object(app_module, "roleplay_model_once", side_effect=fake_model):
+            turn = self.client.post(f"/api/roleplay/stories/{story['id']}/turns", json={"player_input":"阿遥推开候车室的门。"}).json()
+        self.assertEqual(turn["turn_number"], 1)
+        self.assertEqual(turn["actor_drafts"][0]["name"], "沈砚清")
+        self.assertEqual(turn["checkpoint"]["last_player_input"], "阿遥推开候车室的门。")
+        saved = self.client.get(f"/api/roleplay/stories/{story['id']}").json()
+        self.assertEqual(saved["state"]["turn_number"], 1)
+        self.assertTrue(saved["state"]["fictional_archive"])
+        self.assertEqual(saved["turns"][0]["prose"], turn["prose"])
+
+    def test_roleplay_archive_is_fiction_labeled_for_later_chat(self):
+        provider = self.client.post("/api/providers", json={"name":"线路","protocol":"openai","base_url":"https://example.com/v1","model":"m"}).json()
+        story = self.client.post("/api/roleplay/stories", json={
+            "title":"月下书院","player_name":"叶临","narrator_provider_id":provider["id"],
+            "cast":[{"name":"沈砚清","provider_id":provider["id"]}],
+        }).json()
+        with app_module.closing(app_module.db()) as connection:
+            state={"turn_number":7,"scene":"停在藏书阁门前","rolling_summary":"沈砚清与叶临找到了旧钥匙。","fictional_archive":True}
+            connection.execute("UPDATE roleplay_stories SET state_json=? WHERE id=?", (app_module.json.dumps(state,ensure_ascii=False),story["id"]))
+            connection.commit()
+            context=app_module.relevant_roleplay_archive(connection,"沈砚清在书院玩到哪里了")
+        self.assertIn("<fictional_roleplay_archive>",context)
+        self.assertIn("精确停在第 7 回合",context)
+        self.assertIn("不得当作用户的现实经历",context)
+
     def test_worldbook_crud_and_selected_instruction_injection(self):
         provider = self.client.post("/api/providers", json={"name":"测试","protocol":"openai","base_url":"https://example.com/v1","model":"m"}).json()
         conversation = self.client.post("/api/conversations", json={"provider_id":provider["id"]}).json()
@@ -270,6 +305,21 @@ class LocalClientTests(unittest.TestCase):
         self.assertIn("<shared_watch_evidence>", system)
         self.assertIn("门关上了", system)
         self.assertIn("不要剧透", system)
+
+    def test_shared_reading_evidence_is_hidden_and_scoped(self):
+        provider = self.client.post("/api/providers", json={"name":"reader","protocol":"openai","base_url":"https://example.com/v1","model":"m"}).json()
+        conversation = self.client.post("/api/conversations", json={"provider_id":provider["id"]}).json()
+        body = app_module.ChatIn(
+            conversation_id=conversation["id"], content="这一段是什么意思？",
+            provider_id=provider["id"], media_context="书籍：测试书\n本地阅读位置：约 20%\n阅读片段：门关上了",
+        )
+        with app_module.closing(app_module.db()) as connection:
+            _, _, messages = app_module.load_chat_context(connection, body)
+        system = "\n".join(str(item["content"]) for item in messages if item["role"] == "system")
+        self.assertIn("<shared_reading_evidence>", system)
+        self.assertIn("门关上了", system)
+        self.assertIn("不要假装读过未提供的正文", system)
+        self.assertNotIn("<shared_watch_evidence>", system)
 
     def test_provider_endpoint_avoids_duplicate_v1(self):
         self.assertEqual(app_module.provider_endpoint("https://api.anthropic.com", "anthropic"), "https://api.anthropic.com/v1/messages")

@@ -5,6 +5,7 @@ import hashlib
 import html as html_lib
 import math
 import asyncio
+import binascii
 import os
 import re
 import sqlite3
@@ -17,12 +18,20 @@ from pathlib import Path
 from typing import Any
 
 import httpx
+from cryptography.exceptions import InvalidTag
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from backend.motivation import DRIVES, EVENTS, apply_event, context_summary, default_state, normalize, tick
+from backend.health import (
+    decrypt_sync_envelope,
+    encrypt_for_storage,
+    health_enabled,
+    load_health_summaries,
+    normalize_health_payload,
+)
 
 ROOT = Path(__file__).resolve().parents[1]
 FRONTEND = ROOT / "frontend"
@@ -146,6 +155,30 @@ def init_db() -> None:
               status TEXT NOT NULL, detail TEXT NOT NULL DEFAULT '',
               conversation_id TEXT, user_message_id TEXT, created_at TEXT NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS health_daily_summaries (
+              id TEXT PRIMARY KEY, device_id TEXT NOT NULL, day TEXT NOT NULL,
+              nonce BLOB NOT NULL, ciphertext BLOB NOT NULL, updated_at TEXT NOT NULL,
+              UNIQUE(device_id, day)
+            );
+            CREATE TABLE IF NOT EXISTS health_sync_audit (
+              id TEXT PRIMARY KEY, device_id TEXT NOT NULL, day TEXT NOT NULL,
+              status TEXT NOT NULL, detail TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS roleplay_stories (
+              id TEXT PRIMARY KEY, title TEXT NOT NULL, player_name TEXT NOT NULL,
+              premise TEXT NOT NULL DEFAULT '', narrator_provider_id TEXT NOT NULL,
+              cast_json TEXT NOT NULL DEFAULT '[]', state_json TEXT NOT NULL DEFAULT '{}',
+              status TEXT NOT NULL DEFAULT 'active', created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS roleplay_turns (
+              id TEXT PRIMARY KEY, story_id TEXT NOT NULL, turn_number INTEGER NOT NULL,
+              player_input TEXT NOT NULL, actor_drafts_json TEXT NOT NULL DEFAULT '[]',
+              prose TEXT NOT NULL, checkpoint_json TEXT NOT NULL DEFAULT '{}',
+              created_at TEXT NOT NULL, UNIQUE(story_id, turn_number)
+            );
+            CREATE INDEX IF NOT EXISTS health_daily_day ON health_daily_summaries(day DESC);
+            CREATE INDEX IF NOT EXISTS roleplay_story_updated ON roleplay_stories(updated_at DESC);
+            CREATE INDEX IF NOT EXISTS roleplay_turn_story ON roleplay_turns(story_id, turn_number);
             """
         )
         columns = {row["name"] for row in connection.execute("PRAGMA table_info(providers)")}
@@ -314,6 +347,13 @@ class MemoryState(BaseModel):
     trash: bool | None = None
 
 
+class HealthSyncEnvelope(BaseModel):
+    device_id: str = Field(min_length=8, max_length=120, pattern=r"^[A-Za-z0-9._-]+$")
+    day: str = Field(pattern=r"^\d{4}-\d{2}-\d{2}$")
+    nonce: str = Field(min_length=16, max_length=64)
+    ciphertext: str = Field(min_length=24, max_length=200000)
+
+
 class JournalIn(BaseModel):
     title: str = Field(min_length=1, max_length=120)
     content: str = Field(min_length=1, max_length=30000)
@@ -367,6 +407,29 @@ class AiGameTurnIn(BaseModel):
 
 class FavoriteIn(BaseModel):
     owner: str = Field(default="user", pattern="^(user|assistant)$")
+
+
+class RoleplayCastIn(BaseModel):
+    name: str = Field(min_length=1, max_length=80)
+    persona_id: str | None = None
+    provider_id: str
+    description: str = Field(default="", max_length=6000)
+
+
+class RoleplayStoryIn(BaseModel):
+    title: str = Field(min_length=1, max_length=120)
+    player_name: str = Field(min_length=1, max_length=80)
+    premise: str = Field(default="", max_length=30000)
+    narrator_provider_id: str
+    cast: list[RoleplayCastIn] = Field(default_factory=list, min_length=1, max_length=12)
+
+
+class RoleplayTurnIn(BaseModel):
+    player_input: str = Field(min_length=1, max_length=30000)
+
+
+class RoleplayStateIn(BaseModel):
+    status: str = Field(pattern="^(active|completed)$")
 
 
 app = FastAPI(title="Local Claude Style Client", docs_url=None, redoc_url=None)
@@ -1298,6 +1361,63 @@ def record_mcp_audit(
         connection.commit()
 
 
+@app.get("/api/health/status")
+def health_status() -> dict[str, Any]:
+    with closing(db()) as connection:
+        row = connection.execute(
+            "SELECT MAX(updated_at) last_sync,COUNT(*) record_count,COUNT(DISTINCT device_id) device_count FROM health_daily_summaries"
+        ).fetchone()
+    return {
+        "enabled": health_enabled(),
+        "last_sync": row["last_sync"],
+        "record_count": row["record_count"],
+        "device_count": row["device_count"],
+        "diagnostic": False,
+    }
+
+
+@app.post("/api/health/sync")
+def sync_health_summary(body: HealthSyncEnvelope) -> dict[str, Any]:
+    try:
+        payload = normalize_health_payload(
+            decrypt_sync_envelope(body.device_id, body.day, body.nonce, body.ciphertext)
+        )
+        nonce, ciphertext = encrypt_for_storage(body.device_id, body.day, payload)
+    except RuntimeError as error:
+        raise HTTPException(503, str(error)) from error
+    except (InvalidTag, binascii.Error, ValueError, json.JSONDecodeError, UnicodeDecodeError) as error:
+        with closing(db()) as connection:
+            connection.execute(
+                "INSERT INTO health_sync_audit VALUES (?,?,?,?,?,?)",
+                (str(uuid.uuid4()), body.device_id, body.day, "rejected", "invalid encrypted envelope", now_iso()),
+            )
+            connection.commit()
+        raise HTTPException(401, "健康摘要认证失败") from error
+    updated = now_iso()
+    with closing(db()) as connection:
+        connection.execute(
+            """INSERT INTO health_daily_summaries(id,device_id,day,nonce,ciphertext,updated_at)
+               VALUES (?,?,?,?,?,?)
+               ON CONFLICT(device_id,day) DO UPDATE SET
+               nonce=excluded.nonce,ciphertext=excluded.ciphertext,updated_at=excluded.updated_at""",
+            (str(uuid.uuid4()), body.device_id, body.day, nonce, ciphertext, updated),
+        )
+        connection.execute(
+            "INSERT INTO health_sync_audit VALUES (?,?,?,?,?,?)",
+            (str(uuid.uuid4()), body.device_id, body.day, "success", "", updated),
+        )
+        connection.commit()
+    return {"ok": True, "day": body.day, "updated_at": updated}
+
+
+@app.get("/api/health/summaries")
+def list_health_summaries(days: int = 30) -> list[dict[str, Any]]:
+    if not health_enabled():
+        return []
+    with closing(db()) as connection:
+        return load_health_summaries(connection, max(1, min(days, 365)))
+
+
 @app.post("/api/conversations")
 def create_conversation(body: ConversationIn) -> dict[str, Any]:
     conversation_id = str(uuid.uuid4())
@@ -1848,6 +1968,44 @@ def active_worldbook_entries(connection: sqlite3.Connection, ids: list[str], mes
     return sorted(active,key=lambda item:int(item.get("priority") or 0))
 
 
+def relevant_roleplay_archive(connection: sqlite3.Connection, query: str, limit: int = 2) -> str:
+    query_terms = text_bigrams(query)
+    if not query_terms:
+        return ""
+    ranked: list[tuple[int, sqlite3.Row, dict[str, Any], list[dict[str, Any]]]] = []
+    for row in connection.execute("SELECT * FROM roleplay_stories ORDER BY updated_at DESC"):
+        cast = json.loads(row["cast_json"] or "[]")
+        state = json.loads(row["state_json"] or "{}")
+        searchable = " ".join([
+            row["title"], row["player_name"], row["premise"],
+            " ".join(str(actor.get("name", "")) for actor in cast),
+            str(state.get("rolling_summary", "")),
+        ])
+        overlap = len(query_terms & text_bigrams(searchable))
+        explicit = any(name and name in query for name in [row["title"], row["player_name"], *[str(actor.get("name", "")) for actor in cast]])
+        if overlap >= 2 or explicit:
+            ranked.append((overlap + (10 if explicit else 0), row, state, cast))
+    if not ranked:
+        return ""
+    ranked.sort(key=lambda item: item[0], reverse=True)
+    archives = []
+    for _, row, state, cast in ranked[:limit]:
+        archives.append(
+            f"故事《{row['title']}》；玩家在故事中的名字：{row['player_name']}；"
+            f"登场角色：{', '.join(str(actor.get('name', '')) for actor in cast)}；"
+            f"状态：{'已收场' if row['status'] == 'completed' else '进行中'}；"
+            f"精确停在第 {state.get('turn_number', 0)} 回合。\n"
+            f"剧情档案：{state.get('rolling_summary', '')}\n"
+            f"最后场景：{state.get('scene', '')}"
+        )
+    return (
+        "<fictional_roleplay_archive>\n" + "\n\n".join(archives) +
+        "\n</fictional_roleplay_archive>\n"
+        "以上内容是明确标记的虚构角色剧场档案。可以据此回忆剧情和停场位置，"
+        "但不得当作用户的现实经历或现实长期记忆。"
+    )
+
+
 def load_chat_context(connection: sqlite3.Connection, body: ChatIn, cutoff: str | None = None) -> tuple[sqlite3.Row, str, list[dict[str, str]]]:
     provider = connection.execute("SELECT * FROM providers WHERE id=? AND enabled=1", (body.provider_id,)).fetchone()
     if not provider:
@@ -1886,13 +2044,17 @@ def load_chat_context(connection: sqlite3.Connection, body: ChatIn, cutoff: str 
     tool_context = f"该人格启用的本地能力偏好：{', '.join(tool_names)}。只有宿主实际提供的能力才可调用。" if tool_names else ""
     game_tool_context = "宿主提供云汀钓记、抓娃娃机和云纹老虎机游戏工具。用户要求你去玩时，宿主会在回复前执行工具并提供 <verified_game_result>。只有收到该结果才能声称自己玩过，并应自然讲述真实动作、收获与心里话；没有结果时不得虚构游戏经历。"
     game_context = f"<verified_game_result>\n{body.game_context}\n</verified_game_result>\n这是宿主刚刚真实执行的游戏结果。请以当前人格自然回应，可以主动谈起收获与心情，不要声称没有玩过。" if body.game_context else ""
-    media_context = f"<shared_watch_evidence>\n{body.media_context}\n</shared_watch_evidence>\n只能依据以上播放点之前的证据讨论当前影片；不要剧透、不要假装看见字幕未提供的画面。" if body.media_context else ""
+    if body.media_context and body.media_context.lstrip().startswith("书籍："):
+        media_context = f"<shared_reading_evidence>\n{body.media_context}\n</shared_reading_evidence>\n只能依据用户主动提供的本地阅读片段讨论本书；不要假装读过未提供的正文，也不要推断后续内容。"
+    else:
+        media_context = f"<shared_watch_evidence>\n{body.media_context}\n</shared_watch_evidence>\n只能依据以上播放点之前的证据讨论当前影片；不要剧透、不要假装看见字幕未提供的画面。" if body.media_context else ""
     scan_messages=[*messages,{"role":"user","content":body.content}]
     entries=active_worldbook_entries(connection,body.worldbook_ids,scan_messages);before=[entry["content"] for entry in entries if entry.get("position")=="system_before"];after=[entry["content"] for entry in entries if entry.get("position")=="system_after" or entry.get("role")=="system" and str(entry.get("position","")).startswith("history_")]
     for entry in reversed([item for item in entries if item.get("position")=="history_before" and item.get("role")!="system"]): messages.insert(0,{"role":entry.get("role","user"),"content":entry["content"]})
     for entry in [item for item in entries if item.get("position")=="history_after" and item.get("role")!="system"]: messages.append({"role":entry.get("role","user"),"content":entry["content"]})
     worldbook_before="<worldbook_instructions>\n"+"\n\n".join(before)+"\n</worldbook_instructions>" if before else "";worldbook_after="<worldbook_instructions>\n"+"\n\n".join(after)+"\n</worldbook_instructions>" if after else ""
-    system_parts = [part for part in (worldbook_before,persona_prompt,worldbook_after,conversation["summary"] if persona_config["history_enabled"] else "", time_context, question_context, formatting_context, tool_context, game_tool_context, game_context, media_context) if part]
+    roleplay_context = relevant_roleplay_archive(connection, body.content)
+    system_parts = [part for part in (worldbook_before,persona_prompt,worldbook_after,conversation["summary"] if persona_config["history_enabled"] else "", time_context, question_context, formatting_context, tool_context, game_tool_context, game_context, media_context, roleplay_context) if part]
     if system_parts:
         messages.insert(0, {"role": "system", "content": "\n\n".join(system_parts)})
     return provider, persona_prompt, messages
@@ -2468,6 +2630,204 @@ async def chat(body: ChatIn) -> StreamingResponse:
             yield json.dumps({"error": str(exc)}, ensure_ascii=False) + "\n"
 
     return StreamingResponse(stream(), media_type="application/x-ndjson")
+
+
+def roleplay_story_dict(connection: sqlite3.Connection, row: sqlite3.Row, include_turns: bool = False) -> dict[str, Any]:
+    item = dict(row)
+    item["cast"] = json.loads(item.pop("cast_json") or "[]")
+    item["state"] = json.loads(item.pop("state_json") or "{}")
+    if include_turns:
+        item["turns"] = []
+        for turn in connection.execute("SELECT * FROM roleplay_turns WHERE story_id=? ORDER BY turn_number", (row["id"],)):
+            turn_item = dict(turn)
+            turn_item["actor_drafts"] = json.loads(turn_item.pop("actor_drafts_json") or "[]")
+            turn_item["checkpoint"] = json.loads(turn_item.pop("checkpoint_json") or "{}")
+            item["turns"].append(turn_item)
+    return item
+
+
+def require_roleplay_provider(connection: sqlite3.Connection, provider_id: str) -> sqlite3.Row:
+    provider = connection.execute("SELECT * FROM providers WHERE id=? AND enabled=1", (provider_id,)).fetchone()
+    if not provider:
+        raise HTTPException(422, "角色剧场使用的 AI 线路不存在或已停用")
+    return provider
+
+
+async def roleplay_model_once(provider: sqlite3.Row, system: str, prompt: str) -> str:
+    headers = provider_headers(provider["protocol"], provider["api_key"], provider["custom_headers"])
+    messages = [{"role": "user", "content": prompt}]
+    if provider["protocol"] == "anthropic":
+        payload = {
+            "model": provider["model"], "max_tokens": provider["max_tokens"],
+            "temperature": provider["temperature"], "top_p": provider["top_p"],
+            "system": system, "messages": messages,
+        }
+    else:
+        payload = {
+            "model": provider["model"], "max_tokens": provider["max_tokens"],
+            "temperature": provider["temperature"], "top_p": provider["top_p"],
+            "messages": [{"role": "system", "content": system}, *messages],
+        }
+    async with httpx.AsyncClient(timeout=180) as client:
+        response = await client.post(
+            provider_endpoint(provider["base_url"], provider["protocol"]),
+            headers=headers, json=payload,
+        )
+    if response.status_code >= 400:
+        raise HTTPException(response.status_code, f"角色剧场线路返回 HTTP {response.status_code}：{response.text[:300]}")
+    data = response.json()
+    if provider["protocol"] == "anthropic":
+        result = "".join(block.get("text", "") for block in data.get("content", []) if block.get("type") == "text")
+    else:
+        result = data.get("choices", [{}])[0].get("message", {}).get("content", "")
+    if not str(result).strip():
+        raise HTTPException(502, "角色剧场线路没有返回正文")
+    return str(result).strip()
+
+
+@app.get("/api/roleplay/stories")
+def list_roleplay_stories() -> list[dict[str, Any]]:
+    with closing(db()) as connection:
+        rows = connection.execute("SELECT * FROM roleplay_stories ORDER BY updated_at DESC").fetchall()
+        return [roleplay_story_dict(connection, row) for row in rows]
+
+
+@app.post("/api/roleplay/stories")
+def create_roleplay_story(body: RoleplayStoryIn) -> dict[str, Any]:
+    story_id, created = str(uuid.uuid4()), now_iso()
+    cast = [item.model_dump() for item in body.cast]
+    with closing(db()) as connection:
+        require_roleplay_provider(connection, body.narrator_provider_id)
+        for actor in cast:
+            require_roleplay_provider(connection, actor["provider_id"])
+            if actor.get("persona_id") and not connection.execute("SELECT 1 FROM personas WHERE id=?", (actor["persona_id"],)).fetchone():
+                raise HTTPException(422, f"角色“{actor['name']}”绑定的人格不存在")
+        state = {
+            "turn_number": 0, "scene": "尚未开场", "rolling_summary": "",
+            "last_excerpt": "", "unresolved_hooks": [],
+            "fictional_archive": True,
+        }
+        connection.execute(
+            "INSERT INTO roleplay_stories VALUES (?,?,?,?,?,?,?,?,?,?)",
+            (story_id, body.title, body.player_name, body.premise, body.narrator_provider_id,
+             json.dumps(cast, ensure_ascii=False), json.dumps(state, ensure_ascii=False),
+             "active", created, created),
+        )
+        connection.commit()
+        row = connection.execute("SELECT * FROM roleplay_stories WHERE id=?", (story_id,)).fetchone()
+        return roleplay_story_dict(connection, row, True)
+
+
+@app.get("/api/roleplay/stories/{story_id}")
+def get_roleplay_story(story_id: str) -> dict[str, Any]:
+    with closing(db()) as connection:
+        row = connection.execute("SELECT * FROM roleplay_stories WHERE id=?", (story_id,)).fetchone()
+        if not row:
+            raise HTTPException(404, "剧场故事不存在")
+        return roleplay_story_dict(connection, row, True)
+
+
+@app.put("/api/roleplay/stories/{story_id}/state")
+def update_roleplay_state(story_id: str, body: RoleplayStateIn) -> dict[str, Any]:
+    with closing(db()) as connection:
+        if not connection.execute("SELECT 1 FROM roleplay_stories WHERE id=?", (story_id,)).fetchone():
+            raise HTTPException(404, "剧场故事不存在")
+        connection.execute("UPDATE roleplay_stories SET status=?,updated_at=? WHERE id=?", (body.status, now_iso(), story_id))
+        connection.commit()
+        row = connection.execute("SELECT * FROM roleplay_stories WHERE id=?", (story_id,)).fetchone()
+        return roleplay_story_dict(connection, row)
+
+
+@app.post("/api/roleplay/stories/{story_id}/turns")
+async def play_roleplay_turn(story_id: str, body: RoleplayTurnIn) -> dict[str, Any]:
+    with closing(db()) as connection:
+        row = connection.execute("SELECT * FROM roleplay_stories WHERE id=?", (story_id,)).fetchone()
+        if not row:
+            raise HTTPException(404, "剧场故事不存在")
+        if row["status"] != "active":
+            raise HTTPException(409, "这个故事已经收场；请先重新开启")
+        story = roleplay_story_dict(connection, row, True)
+        narrator = require_roleplay_provider(connection, row["narrator_provider_id"])
+        actor_specs = []
+        actor_providers = []
+        for actor in story["cast"]:
+            actor_specs.append(actor)
+            actor_providers.append(require_roleplay_provider(connection, actor["provider_id"]))
+
+    recent_turns = story["turns"][-12:]
+    archive = "\n\n".join(
+        f"第 {turn['turn_number']} 回合\n玩家输入：{turn['player_input']}\n小说正文：{turn['prose']}"
+        for turn in recent_turns
+    )
+    shared_context = (
+        f"故事：{story['title']}\n玩家角色姓名：{story['player_name']}\n"
+        f"剧情设定：{story['premise']}\n既有剧情摘要：{story['state'].get('rolling_summary', '')}\n"
+        f"最近正文：\n{archive or '尚未开场'}\n\n玩家这次明确输入：{body.player_input}"
+    )
+
+    async def actor_draft(actor: dict[str, Any], provider: sqlite3.Row) -> dict[str, str]:
+        persona_prompt = ""
+        if actor.get("persona_id"):
+            with closing(db()) as connection:
+                persona = connection.execute("SELECT prompt FROM personas WHERE id=?", (actor["persona_id"],)).fetchone()
+                persona_prompt = persona["prompt"] if persona else ""
+        system = (
+            f"你只扮演虚构角色“{actor['name']}”。角色设定：{actor.get('description', '')}\n{persona_prompt}\n"
+            "你独立判断该角色此刻可见的言行、情绪和意图，输出给旁白的角色提案，不写最终小说。\n"
+            f"绝不能替玩家角色“{story['player_name']}”决定动作、台词、感受或内心；"
+            "不得读取其他角色的隐藏想法，不得跳出角色评价用户。"
+        )
+        draft = await roleplay_model_once(provider, system, shared_context)
+        return {"name": actor["name"], "draft": draft, "provider_id": actor["provider_id"]}
+
+    drafts = await asyncio.gather(*(actor_draft(actor, provider) for actor, provider in zip(actor_specs, actor_providers)))
+    draft_text = "\n\n".join(f"【{item['name']}的独立提案】\n{item['draft']}" for item in drafts)
+    narrator_system = (
+        "你是独立的小说旁白与场面调度者。请把角色提案编织成连贯、沉浸的中文小说正文并推进一小步剧情。"
+        "可以描写环境、NPC与已列角色，但绝不能替玩家角色决定任何新动作、台词、感受、反应或内心；"
+        "玩家角色只能执行玩家输入中明确写出的内容。不要出现“提案”“AI”“轮次”等幕后词。"
+        "结尾必须留下玩家可以自由回应的空间。只输出小说正文。"
+    )
+    prose = await roleplay_model_once(narrator, narrator_system, f"{shared_context}\n\n{draft_text}")
+    turn_number = int(story["state"].get("turn_number", 0)) + 1
+    archive_system = (
+        "你维护一份虚构小说的连续剧情档案。把旧档案与本回合正文合并为一份从开场延续至今的中文摘要，"
+        "保留因果、人物关系变化、承诺、线索、未解决伏笔、地点和当前停场；不得把虚构事件写成现实。"
+        "不评价玩家，不添加正文中不存在的事实。控制在 3000 字以内，只输出档案正文。"
+    )
+    summary = await roleplay_model_once(
+        narrator, archive_system,
+        f"旧档案：\n{story['state'].get('rolling_summary', '') or '尚无'}\n\n"
+        f"第 {turn_number} 回合玩家输入：{body.player_input}\n本回合正文：\n{prose}",
+    )
+    checkpoint = {
+        "turn_number": turn_number,
+        "scene": prose[-600:],
+        "last_player_input": body.player_input,
+        "participating_characters": [item["name"] for item in drafts],
+    }
+    next_state = {
+        **story["state"], "turn_number": turn_number, "scene": checkpoint["scene"],
+        "last_excerpt": prose[-1200:], "rolling_summary": summary,
+        "fictional_archive": True,
+    }
+    turn_id, created = str(uuid.uuid4()), now_iso()
+    with closing(db()) as connection:
+        connection.execute(
+            "INSERT INTO roleplay_turns VALUES (?,?,?,?,?,?,?,?)",
+            (turn_id, story_id, turn_number, body.player_input, json.dumps(drafts, ensure_ascii=False),
+             prose, json.dumps(checkpoint, ensure_ascii=False), created),
+        )
+        connection.execute(
+            "UPDATE roleplay_stories SET state_json=?,updated_at=? WHERE id=?",
+            (json.dumps(next_state, ensure_ascii=False), created, story_id),
+        )
+        connection.commit()
+    return {
+        "id": turn_id, "story_id": story_id, "turn_number": turn_number,
+        "player_input": body.player_input, "actor_drafts": drafts,
+        "prose": prose, "checkpoint": checkpoint, "created_at": created,
+    }
 
 
 app.mount("/assets", StaticFiles(directory=FRONTEND / "assets"), name="assets")
