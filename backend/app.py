@@ -50,7 +50,10 @@ def init_db() -> None:
               base_url TEXT NOT NULL, api_key TEXT NOT NULL DEFAULT '', model TEXT NOT NULL,
               enabled INTEGER NOT NULL DEFAULT 1, custom_headers TEXT NOT NULL DEFAULT '{}',
               prompt_cache INTEGER NOT NULL DEFAULT 1, thinking_enabled INTEGER NOT NULL DEFAULT 1,
-              stream_enabled INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL
+              stream_enabled INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL,
+              vision_mode TEXT NOT NULL DEFAULT 'auto',
+              cache_mode TEXT NOT NULL DEFAULT 'auto',
+              prompt_cache_key TEXT NOT NULL DEFAULT ''
             );
             CREATE TABLE IF NOT EXISTS personas (
               id TEXT PRIMARY KEY, name TEXT NOT NULL, prompt TEXT NOT NULL,
@@ -97,7 +100,19 @@ def init_db() -> None:
             );
             CREATE TABLE IF NOT EXISTS motivation_states (
               persona_key TEXT PRIMARY KEY, enabled INTEGER NOT NULL DEFAULT 0,
-              state_json TEXT NOT NULL, updated_at TEXT NOT NULL
+              state_json TEXT NOT NULL, offline_mode TEXT NOT NULL DEFAULT 'limited',
+              updated_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS journal_entries (
+              id TEXT PRIMARY KEY, persona_key TEXT NOT NULL, title TEXT NOT NULL,
+              content TEXT NOT NULL, space TEXT NOT NULL DEFAULT 'user',
+              author TEXT NOT NULL DEFAULT 'user', visible_to_user INTEGER NOT NULL DEFAULT 1,
+              visible_to_ai INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS board_messages (
+              id TEXT PRIMARY KEY, persona_key TEXT NOT NULL, content TEXT NOT NULL,
+              author TEXT NOT NULL DEFAULT 'user', visible_to_user INTEGER NOT NULL DEFAULT 1,
+              visible_to_ai INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL
             );
             CREATE TABLE IF NOT EXISTS game_saves (
               game_id TEXT NOT NULL, persona_key TEXT NOT NULL, state_json TEXT NOT NULL,
@@ -147,6 +162,15 @@ def init_db() -> None:
             connection.execute("ALTER TABLE providers ADD COLUMN top_p REAL NOT NULL DEFAULT 1.0")
         if "max_tokens" not in columns:
             connection.execute("ALTER TABLE providers ADD COLUMN max_tokens INTEGER NOT NULL DEFAULT 4096")
+        if "vision_mode" not in columns:
+            connection.execute("ALTER TABLE providers ADD COLUMN vision_mode TEXT NOT NULL DEFAULT 'auto'")
+        if "cache_mode" not in columns:
+            connection.execute("ALTER TABLE providers ADD COLUMN cache_mode TEXT NOT NULL DEFAULT 'auto'")
+        if "prompt_cache_key" not in columns:
+            connection.execute("ALTER TABLE providers ADD COLUMN prompt_cache_key TEXT NOT NULL DEFAULT ''")
+        motivation_columns = {row["name"] for row in connection.execute("PRAGMA table_info(motivation_states)")}
+        if "offline_mode" not in motivation_columns:
+            connection.execute("ALTER TABLE motivation_states ADD COLUMN offline_mode TEXT NOT NULL DEFAULT 'limited'")
         message_columns = {row["name"] for row in connection.execute("PRAGMA table_info(messages)")}
         if "reasoning" not in message_columns:
             connection.execute("ALTER TABLE messages ADD COLUMN reasoning TEXT NOT NULL DEFAULT ''")
@@ -185,6 +209,9 @@ class ProviderIn(BaseModel):
     temperature: float = Field(default=0.7, ge=0, le=2)
     top_p: float = Field(default=1.0, ge=0, le=1)
     max_tokens: int = Field(default=4096, ge=1, le=200000)
+    vision_mode: str = Field(default="auto", pattern="^(auto|openai|anthropic|text)$")
+    cache_mode: str = Field(default="auto", pattern="^(auto|off|anthropic|openai)$")
+    prompt_cache_key: str = Field(default="", max_length=200)
     source_provider_id: str | None = None
 
 
@@ -281,6 +308,22 @@ class MemoryState(BaseModel):
     trash: bool | None = None
 
 
+class JournalIn(BaseModel):
+    title: str = Field(min_length=1, max_length=120)
+    content: str = Field(min_length=1, max_length=30000)
+    space: str = Field(default="user", pattern="^(user|shared|ai)$")
+    author: str = Field(default="user", pattern="^(user|ai)$")
+    visible_to_user: bool = True
+    visible_to_ai: bool = False
+
+
+class BoardMessageIn(BaseModel):
+    content: str = Field(min_length=1, max_length=5000)
+    author: str = Field(default="user", pattern="^(user|ai)$")
+    visible_to_user: bool = True
+    visible_to_ai: bool = True
+
+
 class ChatIn(BaseModel):
     conversation_id: str
     content: str = Field(min_length=1)
@@ -299,6 +342,7 @@ class MotivationEventIn(BaseModel):
 
 class MotivationEnabledIn(BaseModel):
     enabled: bool
+    offline_mode: str = Field(default="limited", pattern="^(limited|realtime|frozen)$")
 
 
 class GameActionIn(BaseModel):
@@ -513,6 +557,97 @@ def update_memory_state(memory_id: str, body: MemoryState) -> dict[str, Any]:
     return memory_dict(row)
 
 
+@app.get("/api/journals/{persona_key}")
+def list_journals(persona_key: str) -> dict[str, Any]:
+    with closing(db()) as connection:
+        rows = connection.execute(
+            "SELECT * FROM journal_entries WHERE persona_key=? AND visible_to_user=1 ORDER BY updated_at DESC",
+            (persona_key,),
+        ).fetchall()
+        sealed = connection.execute(
+            "SELECT COUNT(*) count FROM journal_entries WHERE persona_key=? AND visible_to_user=0",
+            (persona_key,),
+        ).fetchone()["count"]
+    return {"entries": [dict(row) for row in rows], "sealed_count": sealed}
+
+
+@app.post("/api/journals/{persona_key}")
+def create_journal(persona_key: str, body: JournalIn) -> dict[str, Any]:
+    entry_id, created = str(uuid.uuid4()), now_iso()
+    with closing(db()) as connection:
+        connection.execute(
+            "INSERT INTO journal_entries VALUES(?,?,?,?,?,?,?,?,?,?)",
+            (entry_id, persona_key, body.title, body.content, body.space, body.author,
+             int(body.visible_to_user), int(body.visible_to_ai), created, created),
+        )
+        connection.commit()
+        row = connection.execute("SELECT * FROM journal_entries WHERE id=?", (entry_id,)).fetchone()
+    return dict(row)
+
+
+@app.put("/api/journals/{persona_key}/{entry_id}")
+def update_journal(persona_key: str, entry_id: str, body: JournalIn) -> dict[str, Any]:
+    with closing(db()) as connection:
+        cursor = connection.execute(
+            "UPDATE journal_entries SET title=?,content=?,space=?,author=?,visible_to_user=?,visible_to_ai=?,updated_at=? "
+            "WHERE id=? AND persona_key=?",
+            (body.title, body.content, body.space, body.author, int(body.visible_to_user),
+             int(body.visible_to_ai), now_iso(), entry_id, persona_key),
+        )
+        if not cursor.rowcount:
+            raise HTTPException(404, "日记不存在")
+        connection.commit()
+        row = connection.execute("SELECT * FROM journal_entries WHERE id=?", (entry_id,)).fetchone()
+    return dict(row)
+
+
+@app.delete("/api/journals/{persona_key}/{entry_id}")
+def delete_journal(persona_key: str, entry_id: str) -> dict[str, bool]:
+    with closing(db()) as connection:
+        cursor = connection.execute("DELETE FROM journal_entries WHERE id=? AND persona_key=?", (entry_id, persona_key))
+        if not cursor.rowcount:
+            raise HTTPException(404, "日记不存在")
+        connection.commit()
+    return {"ok": True}
+
+
+@app.get("/api/board/{persona_key}")
+def list_board_messages(persona_key: str) -> dict[str, Any]:
+    with closing(db()) as connection:
+        rows = connection.execute(
+            "SELECT * FROM board_messages WHERE persona_key=? AND visible_to_user=1 ORDER BY created_at DESC LIMIT 200",
+            (persona_key,),
+        ).fetchall()
+        sealed = connection.execute(
+            "SELECT COUNT(*) count FROM board_messages WHERE persona_key=? AND visible_to_user=0",
+            (persona_key,),
+        ).fetchone()["count"]
+    return {"messages": [dict(row) for row in rows], "sealed_count": sealed}
+
+
+@app.post("/api/board/{persona_key}")
+def create_board_message(persona_key: str, body: BoardMessageIn) -> dict[str, Any]:
+    message_id, created = str(uuid.uuid4()), now_iso()
+    with closing(db()) as connection:
+        connection.execute(
+            "INSERT INTO board_messages VALUES(?,?,?,?,?,?,?)",
+            (message_id, persona_key, body.content, body.author, int(body.visible_to_user), int(body.visible_to_ai), created),
+        )
+        connection.commit()
+        row = connection.execute("SELECT * FROM board_messages WHERE id=?", (message_id,)).fetchone()
+    return dict(row)
+
+
+@app.delete("/api/board/{persona_key}/{message_id}")
+def delete_board_message(persona_key: str, message_id: str) -> dict[str, bool]:
+    with closing(db()) as connection:
+        cursor = connection.execute("DELETE FROM board_messages WHERE id=? AND persona_key=?", (message_id, persona_key))
+        if not cursor.rowcount:
+            raise HTTPException(404, "留言不存在")
+        connection.commit()
+    return {"ok": True}
+
+
 @app.post("/api/providers")
 def save_provider(body: ProviderIn) -> dict[str, Any]:
     provider_id = str(uuid.uuid4())
@@ -530,8 +665,8 @@ def save_provider(body: ProviderIn) -> dict[str, Any]:
                 raise HTTPException(404, "用于复制的 API 线路不存在")
             api_key = source["api_key"]
         connection.execute(
-            "INSERT INTO providers(id,name,protocol,base_url,api_key,model,enabled,custom_headers,prompt_cache,thinking_enabled,stream_enabled,temperature,top_p,max_tokens,created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (provider_id, body.name, protocol, body.base_url.rstrip("/"), api_key, body.model, int(body.enabled), body.custom_headers, int(body.prompt_cache), int(body.thinking_enabled), int(body.stream_enabled), body.temperature, body.top_p, body.max_tokens, now_iso()),
+            "INSERT INTO providers(id,name,protocol,base_url,api_key,model,enabled,custom_headers,prompt_cache,thinking_enabled,stream_enabled,temperature,top_p,max_tokens,created_at,vision_mode,cache_mode,prompt_cache_key) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (provider_id, body.name, protocol, body.base_url.rstrip("/"), api_key, body.model, int(body.enabled), body.custom_headers, int(body.prompt_cache), int(body.thinking_enabled), int(body.stream_enabled), body.temperature, body.top_p, body.max_tokens, now_iso(), body.vision_mode, body.cache_mode, body.prompt_cache_key),
         )
         connection.commit()
         row = connection.execute("SELECT * FROM providers WHERE id=?", (provider_id,)).fetchone()
@@ -545,8 +680,8 @@ def update_provider(provider_id: str, body: ProviderIn) -> dict[str, Any]:
         if not existing:
             raise HTTPException(404, "API 线路不存在")
         api_key = body.api_key or existing["api_key"]
-        connection.execute("""UPDATE providers SET name=?,protocol=?,base_url=?,api_key=?,model=?,enabled=?,custom_headers=?,prompt_cache=?,thinking_enabled=?,stream_enabled=?,temperature=?,top_p=?,max_tokens=? WHERE id=?""",
-            (body.name, body.protocol, body.base_url.rstrip("/"), api_key, body.model, int(body.enabled), body.custom_headers, int(body.prompt_cache), int(body.thinking_enabled), int(body.stream_enabled), body.temperature, body.top_p, body.max_tokens, provider_id))
+        connection.execute("""UPDATE providers SET name=?,protocol=?,base_url=?,api_key=?,model=?,enabled=?,custom_headers=?,prompt_cache=?,thinking_enabled=?,stream_enabled=?,temperature=?,top_p=?,max_tokens=?,vision_mode=?,cache_mode=?,prompt_cache_key=? WHERE id=?""",
+            (body.name, body.protocol, body.base_url.rstrip("/"), api_key, body.model, int(body.enabled), body.custom_headers, int(body.prompt_cache), int(body.thinking_enabled), int(body.stream_enabled), body.temperature, body.top_p, body.max_tokens, body.vision_mode, body.cache_mode, body.prompt_cache_key, provider_id))
         connection.commit()
         row = connection.execute("SELECT * FROM providers WHERE id=?", (provider_id,)).fetchone()
     return masked_provider(row)
@@ -918,6 +1053,28 @@ BUILTIN_TOOL_SPECS = {
             "required": ["memory_id"],
         },
     },
+    "journal_create": {
+        "permission": "diary_write",
+        "description": "写一篇 AI 日记或共同日记。可以对用户公开，也可以作为 AI 的密封私人日记。",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "title": {"type": "string"}, "content": {"type": "string"},
+                "space": {"type": "string", "enum": ["shared", "ai"]},
+                "visible_to_user": {"type": "boolean"},
+            },
+            "required": ["title", "content", "space", "visible_to_user"],
+        },
+    },
+    "board_create": {
+        "permission": "diary_write",
+        "description": "在当前人格的留言板给用户留一条短消息。",
+        "input_schema": {
+            "type": "object",
+            "properties": {"content": {"type": "string"}, "visible_to_user": {"type": "boolean"}},
+            "required": ["content", "visible_to_user"],
+        },
+    },
 }
 
 
@@ -988,6 +1145,22 @@ async def invoke_builtin_tool(name: str, arguments: dict[str, Any]) -> dict[str,
         )
         saved = update_memory(memory_id, body)
         return {"updated": True, "memory_id": saved["id"], "title": saved["title"], "kind": saved["kind"]}
+    if name == "journal_create":
+        persona_key = str(arguments.get("_persona_key") or "__default__")
+        saved = create_journal(persona_key, JournalIn(
+            title=str(arguments.get("title", "")).strip(),
+            content=str(arguments.get("content", "")).strip(),
+            space=str(arguments.get("space") or "ai"),
+            author="ai", visible_to_user=bool(arguments.get("visible_to_user")), visible_to_ai=True,
+        ))
+        return {"created": True, "journal_id": saved["id"], "sealed": not bool(saved["visible_to_user"])}
+    if name == "board_create":
+        persona_key = str(arguments.get("_persona_key") or "__default__")
+        saved = create_board_message(persona_key, BoardMessageIn(
+            content=str(arguments.get("content", "")).strip(), author="ai",
+            visible_to_user=bool(arguments.get("visible_to_user")), visible_to_ai=True,
+        ))
+        return {"created": True, "message_id": saved["id"], "sealed": not bool(saved["visible_to_user"])}
     raise ValueError(f"未知内置工具：{name}")
 
 
@@ -1487,37 +1660,59 @@ async def ai_game_turn(game_id: str, body: AiGameTurnIn) -> dict[str, Any]:
     return {"state": final_state, "decisions": decisions, "spent": body.max_spend - remaining}
 
 
-def load_motivation(connection: sqlite3.Connection, persona_id: str | None) -> tuple[bool, dict[str, Any]]:
+def load_motivation(connection: sqlite3.Connection, persona_id: str | None) -> tuple[bool, dict[str, Any], str]:
     row = connection.execute("SELECT * FROM motivation_states WHERE persona_key=?", (motivation_key(persona_id),)).fetchone()
     if not row:
-        return False, default_state()
-    return bool(row["enabled"]), normalize(json.loads(row["state_json"]))
+        return False, default_state(), "limited"
+    mode = row["offline_mode"] if "offline_mode" in row.keys() else "limited"
+    return bool(row["enabled"]), normalize(json.loads(row["state_json"])), mode
 
 
-def save_motivation(connection: sqlite3.Connection, persona_id: str | None, enabled: bool, state: dict[str, Any]) -> None:
+def save_motivation(connection: sqlite3.Connection, persona_id: str | None, enabled: bool, state: dict[str, Any], offline_mode: str = "limited") -> None:
     connection.execute(
-        "INSERT INTO motivation_states(persona_key,enabled,state_json,updated_at) VALUES(?,?,?,?) "
-        "ON CONFLICT(persona_key) DO UPDATE SET enabled=excluded.enabled,state_json=excluded.state_json,updated_at=excluded.updated_at",
-        (motivation_key(persona_id), int(enabled), json.dumps(normalize(state), ensure_ascii=False), now_iso()),
+        "INSERT INTO motivation_states(persona_key,enabled,state_json,offline_mode,updated_at) VALUES(?,?,?,?,?) "
+        "ON CONFLICT(persona_key) DO UPDATE SET enabled=excluded.enabled,state_json=excluded.state_json,"
+        "offline_mode=excluded.offline_mode,updated_at=excluded.updated_at",
+        (motivation_key(persona_id), int(enabled), json.dumps(normalize(state), ensure_ascii=False), offline_mode, now_iso()),
     )
+
+
+def catch_up_motivation(state: dict[str, Any], offline_mode: str) -> tuple[dict[str, Any], int]:
+    state = normalize(state)
+    if offline_mode == "frozen":
+        return state, 0
+    try:
+        last_tick = datetime.fromisoformat(state["last_tick"].replace("Z", "+00:00"))
+        elapsed = max(0, (datetime.now(timezone.utc) - last_tick).total_seconds())
+    except (TypeError, ValueError):
+        elapsed = 0
+    cap = 3 if offline_mode == "limited" else 96
+    steps = min(cap, int(elapsed // 1800))
+    for _ in range(steps):
+        state = tick(state)["state"]
+    return state, steps
 
 
 @app.get("/api/motivation/{persona_key}")
 def get_motivation(persona_key: str) -> dict[str, Any]:
     persona_id = None if persona_key == "__default__" else persona_key
     with closing(db()) as connection:
-        enabled, state = load_motivation(connection, persona_id)
-    return {"enabled": enabled, "state": state, "drives": DRIVES, "events": list(EVENTS)}
+        enabled, state, offline_mode = load_motivation(connection, persona_id)
+        state, catch_up_ticks = catch_up_motivation(state, offline_mode) if enabled else (state, 0)
+        if catch_up_ticks:
+            save_motivation(connection, persona_id, enabled, state, offline_mode)
+            connection.commit()
+    return {"enabled": enabled, "state": state, "offline_mode": offline_mode, "catch_up_ticks": catch_up_ticks, "drives": DRIVES, "events": list(EVENTS)}
 
 
 @app.put("/api/motivation/{persona_key}/enabled")
 def set_motivation_enabled(persona_key: str, body: MotivationEnabledIn) -> dict[str, Any]:
     persona_id = None if persona_key == "__default__" else persona_key
     with closing(db()) as connection:
-        _, state = load_motivation(connection, persona_id)
-        save_motivation(connection, persona_id, body.enabled, state)
+        _, state, _ = load_motivation(connection, persona_id)
+        save_motivation(connection, persona_id, body.enabled, state, body.offline_mode)
         connection.commit()
-    return {"enabled": body.enabled, "state": state}
+    return {"enabled": body.enabled, "state": state, "offline_mode": body.offline_mode}
 
 
 @app.post("/api/motivation/{persona_key}/event")
@@ -1526,9 +1721,9 @@ def motivation_event(persona_key: str, body: MotivationEventIn) -> dict[str, Any
         raise HTTPException(422, "未知的动机事件")
     persona_id = None if persona_key == "__default__" else persona_key
     with closing(db()) as connection:
-        enabled, state = load_motivation(connection, persona_id)
+        enabled, state, offline_mode = load_motivation(connection, persona_id)
         changes = apply_event(state, body.event)
-        save_motivation(connection, persona_id, enabled, state)
+        save_motivation(connection, persona_id, enabled, state, offline_mode)
         connection.commit()
     return {"enabled": enabled, "state": state, "changes": changes}
 
@@ -1537,11 +1732,22 @@ def motivation_event(persona_key: str, body: MotivationEventIn) -> dict[str, Any
 def motivation_tick(persona_key: str) -> dict[str, Any]:
     persona_id = None if persona_key == "__default__" else persona_key
     with closing(db()) as connection:
-        enabled, state = load_motivation(connection, persona_id)
+        enabled, state, offline_mode = load_motivation(connection, persona_id)
         result = tick(state)
-        save_motivation(connection, persona_id, enabled, result["state"])
+        save_motivation(connection, persona_id, enabled, result["state"], offline_mode)
         connection.commit()
     return {"enabled": enabled, **result}
+
+
+@app.post("/api/motivation/{persona_key}/reset")
+def motivation_reset(persona_key: str) -> dict[str, Any]:
+    persona_id = None if persona_key == "__default__" else persona_key
+    state = default_state()
+    with closing(db()) as connection:
+        enabled, _, offline_mode = load_motivation(connection, persona_id)
+        save_motivation(connection, persona_id, enabled, state, offline_mode)
+        connection.commit()
+    return {"enabled": enabled, "state": state, "drives": DRIVES, "events": list(EVENTS)}
 
 
 def active_worldbook_entries(connection: sqlite3.Connection, ids: list[str], messages: list[dict[str, str]]) -> list[dict[str, Any]]:
@@ -1620,10 +1826,13 @@ def provider_endpoint(base_url: str, protocol: str) -> str:
     return base + "/chat/completions"
 
 
-def attachment_content(text: str, attachments: list[dict[str, Any]], protocol: str) -> str | list[dict[str, Any]]:
+def attachment_content(text: str, attachments: list[dict[str, Any]], protocol: str, vision_mode: str = "auto") -> str | list[dict[str, Any]]:
     if not attachments:
         return text
-    if protocol == "anthropic":
+    if vision_mode == "text" and any(item.get("kind") == "image" for item in attachments):
+        raise HTTPException(422, "当前线路设置为仅文本，不能发送图片。请删除图片或切换到支持看图的线路。")
+    anthropic_images = vision_mode == "anthropic" or (vision_mode == "auto" and protocol == "anthropic")
+    if anthropic_images:
         blocks: list[dict[str, Any]] = [{"type": "text", "text": text}]
         for item in attachments:
             data = str(item.get("data", "")); encoded = data.split(",", 1)[1] if "," in data else ""
@@ -1878,8 +2087,27 @@ async def chat(body: ChatIn) -> StreamingResponse:
                 messages[0]["content"] += "\n\n" + memory_context
             else:
                 messages.insert(0, {"role": "system", "content": memory_context})
-        motivation_enabled, motivation_state = load_motivation(connection, body.persona_id)
+        inner_key = motivation_key(body.persona_id)
+        journal_rows = connection.execute(
+            "SELECT title,content,space,author FROM journal_entries WHERE persona_key=? AND visible_to_ai=1 ORDER BY updated_at DESC LIMIT 12",
+            (inner_key,),
+        ).fetchall()
+        board_rows = connection.execute(
+            "SELECT content,author FROM board_messages WHERE persona_key=? AND visible_to_ai=1 ORDER BY created_at DESC LIMIT 20",
+            (inner_key,),
+        ).fetchall()
+        if journal_rows or board_rows:
+            private_context = "<shared_journal_and_board>\n"
+            private_context += "\n".join(f"[diary:{row['space']}:{row['author']}] {row['title']}\n{row['content']}" for row in journal_rows)
+            private_context += "\n" + "\n".join(f"[board:{row['author']}] {row['content']}" for row in board_rows)
+            private_context += "\nOnly use entries explicitly marked visible_to_ai. Never reveal or infer sealed entries.\n</shared_journal_and_board>"
+            if messages and messages[0]["role"] == "system":
+                messages[0]["content"] += "\n\n" + private_context
+            else:
+                messages.insert(0, {"role": "system", "content": private_context})
+        motivation_enabled, motivation_state, motivation_offline_mode = load_motivation(connection, body.persona_id)
         if motivation_enabled:
+            motivation_state, _ = catch_up_motivation(motivation_state, motivation_offline_mode)
             apply_event(motivation_state, "contact_message")
             motivation_result = tick(motivation_state)
             motivation_context = context_summary(motivation_result["state"])
@@ -1887,7 +2115,7 @@ async def chat(body: ChatIn) -> StreamingResponse:
                 messages[0]["content"] += "\n\n" + motivation_context
             else:
                 messages.insert(0, {"role": "system", "content": motivation_context})
-            save_motivation(connection, body.persona_id, True, motivation_result["state"])
+            save_motivation(connection, body.persona_id, True, motivation_result["state"], motivation_offline_mode)
         if not body.reuse_user_message_id:
             connection.execute(
                 "INSERT INTO messages VALUES (?, ?, 'user', ?, ?, ?, ?, '', NULL)",
@@ -1908,17 +2136,20 @@ async def chat(body: ChatIn) -> StreamingResponse:
                 if body.attachments:
                     for message in reversed(provider_messages):
                         if message["role"] == "user":
-                            message["content"] = attachment_content(body.content, body.attachments, provider["protocol"])
+                            message["content"] = attachment_content(body.content, body.attachments, provider["protocol"], provider["vision_mode"])
                             break
                 if provider["protocol"] == "anthropic":
                     system = "\n\n".join(m["content"] for m in provider_messages if m["role"] == "system")
                     payload = {"model": provider["model"], "max_tokens": provider["max_tokens"], "temperature": provider["temperature"], "top_p": provider["top_p"], "stream": bool(provider["stream_enabled"]), "messages": [m for m in provider_messages if m["role"] != "system"]}
                     if system:
-                        payload["system"] = [{"type": "text", "text": system, **({"cache_control": {"type": "ephemeral"}} if provider["prompt_cache"] else {})}]
+                        explicit_anthropic_cache = provider["cache_mode"] in ("auto", "anthropic") and provider["prompt_cache"]
+                        payload["system"] = [{"type": "text", "text": system, **({"cache_control": {"type": "ephemeral"}} if explicit_anthropic_cache else {})}]
                     headers = {"x-api-key": provider["api_key"], "anthropic-version": "2023-06-01", "content-type": "application/json"}
                     url = provider_endpoint(provider["base_url"], "anthropic")
                 else:
                     payload = {"model": provider["model"], "max_tokens": provider["max_tokens"], "temperature": provider["temperature"], "top_p": provider["top_p"], "stream": bool(provider["stream_enabled"]), "messages": provider_messages}
+                    if provider["cache_mode"] == "openai" and provider["prompt_cache_key"]:
+                        payload["prompt_cache_key"] = provider["prompt_cache_key"]
                     if provider["protocol"] in ("deepseek", "glm") and provider["thinking_enabled"]:
                         payload["thinking"] = {"type": "enabled"}
                     headers = {"Authorization": f"Bearer {provider['api_key']}", "content-type": "application/json"}
@@ -1965,7 +2196,10 @@ async def chat(body: ChatIn) -> StreamingResponse:
                                         policy = expanded_mcp_server(server).get("tool_policies", {}).get(original, "allow")
                                         if policy == "ask":
                                             raise PermissionError("该工具设置为“每次询问”，当前未获得用户确认")
-                                        result = await invoke_server_tool(server, original, call.get("input") or {})
+                                        tool_arguments = dict(call.get("input") or {})
+                                        if server.get("transport") == "builtin":
+                                            tool_arguments["_persona_key"] = motivation_key(body.persona_id)
+                                        result = await invoke_server_tool(server, original, tool_arguments)
                                         content, is_error = mcp_result_text(result), False
                                         record_mcp_audit(server["id"], original, "success")
                                     except Exception as exc:
@@ -1986,6 +2220,8 @@ async def chat(body: ChatIn) -> StreamingResponse:
                                         if policy == "ask":
                                             raise PermissionError("该工具设置为“每次询问”，当前未获得用户确认")
                                         arguments = json.loads(function.get("arguments") or "{}")
+                                        if server.get("transport") == "builtin":
+                                            arguments["_persona_key"] = motivation_key(body.persona_id)
                                         result = await invoke_server_tool(server, original, arguments)
                                         content = mcp_result_text(result)
                                         record_mcp_audit(server["id"], original, "success")
@@ -2027,6 +2263,8 @@ async def chat(body: ChatIn) -> StreamingResponse:
                                         if policy == "ask":
                                             raise PermissionError("该工具设置为“每次询问”，当前未获得用户确认")
                                         arguments = json.loads(function.get("arguments") or "{}")
+                                        if server.get("transport") == "builtin":
+                                            arguments["_persona_key"] = motivation_key(body.persona_id)
                                         result = await invoke_server_tool(server, original, arguments)
                                         content = mcp_result_text(result)
                                         record_mcp_audit(server["id"], original, "success")

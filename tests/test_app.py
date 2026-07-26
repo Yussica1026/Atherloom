@@ -209,6 +209,19 @@ class LocalClientTests(unittest.TestCase):
         self.assertEqual(openai[1]["image_url"]["url"], data)
         self.assertEqual(anthropic[1]["source"]["data"], "YWJj")
 
+    def test_provider_capabilities_control_images_and_cache(self):
+        provider = self.client.post("/api/providers", json={
+            "name": "capability", "protocol": "openai", "base_url": "https://example.com/v1",
+            "model": "m", "vision_mode": "text", "cache_mode": "openai",
+            "prompt_cache_key": "persona-stable",
+        }).json()
+        self.assertEqual(provider["vision_mode"], "text")
+        self.assertEqual(provider["cache_mode"], "openai")
+        self.assertEqual(provider["prompt_cache_key"], "persona-stable")
+        with self.assertRaises(app_module.HTTPException) as raised:
+            app_module.attachment_content("image", [{"kind": "image", "mime": "image/jpeg", "data": "data:image/jpeg;base64,YWJj"}], "openai", "text")
+        self.assertEqual(raised.exception.status_code, 422)
+
     def test_reroll_context_contains_original_user_message_once(self):
         provider = self.client.post("/api/providers", json={"name":"测试","protocol":"openai","base_url":"https://example.com/v1","model":"m"}).json()
         conversation = self.client.post("/api/conversations", json={"provider_id":provider["id"]}).json()
@@ -350,6 +363,40 @@ class LocalClientTests(unittest.TestCase):
     def test_motivation_rejects_unknown_event_names(self):
         response = self.client.post("/api/motivation/__default__/event", json={"event": "unknown_legacy_event"})
         self.assertEqual(response.status_code, 422)
+
+    def test_motivation_offline_mode_persists_and_reset_preserves_it(self):
+        saved = self.client.put("/api/motivation/__default__/enabled", json={"enabled": True, "offline_mode": "frozen"}).json()
+        self.assertEqual(saved["offline_mode"], "frozen")
+        self.assertEqual(self.client.get("/api/motivation/__default__").json()["offline_mode"], "frozen")
+        reset = self.client.post("/api/motivation/__default__/reset").json()
+        self.assertTrue(reset["enabled"])
+        self.assertEqual(reset["state"]["tick_count"], 0)
+        self.assertEqual(self.client.get("/api/motivation/__default__").json()["offline_mode"], "frozen")
+
+    def test_journal_and_board_visibility_is_enforced(self):
+        public = self.client.post("/api/journals/persona-a", json={
+            "title": "together", "content": "visible", "space": "shared",
+            "author": "user", "visible_to_user": True, "visible_to_ai": True,
+        }).json()
+        self.client.post("/api/journals/persona-a", json={
+            "title": "sealed", "content": "must not leak", "space": "ai",
+            "author": "ai", "visible_to_user": False, "visible_to_ai": True,
+        })
+        listed = self.client.get("/api/journals/persona-a").json()
+        self.assertEqual([item["id"] for item in listed["entries"]], [public["id"]])
+        self.assertEqual(listed["sealed_count"], 1)
+        board = self.client.post("/api/board/persona-a", json={"content": "hello", "visible_to_ai": False}).json()
+        self.assertEqual(self.client.get("/api/board/persona-a").json()["messages"][0]["id"], board["id"])
+
+    def test_ai_diary_tool_writes_as_ai_and_can_seal_content(self):
+        result = asyncio.run(app_module.invoke_builtin_tool("journal_create", {
+            "_persona_key": "persona-ai", "title": "private", "content": "inner",
+            "space": "ai", "visible_to_user": False,
+        }))
+        self.assertTrue(result["sealed"])
+        listed = self.client.get("/api/journals/persona-ai").json()
+        self.assertEqual(listed["entries"], [])
+        self.assertEqual(listed["sealed_count"], 1)
 
     def test_original_fishing_game_has_isolated_persistent_saves(self):
         catalog = self.client.get("/api/games").json()
