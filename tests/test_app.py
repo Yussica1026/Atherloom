@@ -4,6 +4,7 @@ import unittest
 import uuid
 import sys
 from pathlib import Path
+from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 
@@ -37,6 +38,15 @@ class LocalClientTests(unittest.TestCase):
             system=messages[0]["content"]
             self.assertIn("始终使用简洁中文",system);self.assertIn("旅行发生在云海城",system)
             body.worldbook_ids=[];_,_,plain=app_module.load_chat_context(connection,body);self.assertNotIn("旅行发生在云海城",plain[0]["content"])
+
+    def test_selected_worldbook_entry_without_trigger_is_injected(self):
+        provider = self.client.post("/api/providers", json={"name":"测试","protocol":"openai","base_url":"https://example.com/v1","model":"m"}).json()
+        conversation = self.client.post("/api/conversations", json={"provider_id":provider["id"]}).json()
+        book = self.client.post("/api/worldbooks", json={"name":"世界书","entries":[{"name":"祝福","content":"清风，明月，我","constant":False,"keywords":[]}]}).json()
+        with app_module.closing(app_module.db()) as connection:
+            body = app_module.ChatIn(conversation_id=conversation["id"], content="你看到了吗", provider_id=provider["id"], worldbook_ids=[book["id"]])
+            _, _, messages = app_module.load_chat_context(connection, body)
+        self.assertIn("清风，明月，我", messages[0]["content"])
 
     def test_mcp_server_crud_masks_token_and_can_bind_to_persona(self):
         server = self.client.post("/api/mcp-servers", json={"name":"memory","url":"https://memory.example.com/mcp","token":"secret-token"}).json()
@@ -149,6 +159,38 @@ class LocalClientTests(unittest.TestCase):
         self.assertEqual(updated["max_tokens"], 8192)
         self.assertTrue(updated["has_api_key"])
         self.assertFalse(updated["stream_enabled"])
+
+    def test_provider_model_copy_reuses_saved_key(self):
+        created = self.client.post("/api/providers", json={"name":"DS","protocol":"deepseek","base_url":"https://api.deepseek.com","api_key":"secret","model":"flash"}).json()
+        copied = self.client.post("/api/providers", json={"name":"DS Pro","protocol":"deepseek","base_url":"https://api.deepseek.com","api_key":"","model":"pro","source_provider_id":created["id"]}).json()
+        self.assertTrue(copied["has_api_key"])
+        with app_module.closing(app_module.db()) as connection:
+            self.assertEqual(connection.execute("SELECT api_key FROM providers WHERE id=?", (copied["id"],)).fetchone()["api_key"], "secret")
+
+    def test_provider_model_list_reuses_saved_key(self):
+        created = self.client.post("/api/providers", json={"name":"DS","protocol":"deepseek","base_url":"https://api.deepseek.com","api_key":"secret","model":"flash"}).json()
+        seen = {}
+        class Response:
+            status_code = 200
+            def json(self): return {"data":[{"id":"v4-pro"},{"id":"v4-flash"}]}
+        class Client:
+            def __init__(self, **kwargs): pass
+            async def __aenter__(self): return self
+            async def __aexit__(self, *args): pass
+            async def get(self, url, headers):
+                seen.update(headers)
+                return Response()
+        with patch.object(app_module.httpx, "AsyncClient", Client):
+            result = self.client.post("/api/providers/models", json={"provider_id":created["id"],"protocol":"deepseek","base_url":"https://api.deepseek.com","api_key":""})
+        self.assertEqual(result.json()["models"], ["v4-flash", "v4-pro"])
+        self.assertEqual(seen["Authorization"], "Bearer secret")
+
+    def test_image_attachment_uses_provider_vision_format(self):
+        data = "data:image/jpeg;base64,YWJj"
+        openai = app_module.attachment_content("看图", [{"kind":"image","mime":"image/jpeg","data":data}], "openai")
+        anthropic = app_module.attachment_content("看图", [{"kind":"image","mime":"image/jpeg","data":data}], "anthropic")
+        self.assertEqual(openai[1]["image_url"]["url"], data)
+        self.assertEqual(anthropic[1]["source"]["data"], "YWJj")
 
     def test_provider_endpoint_avoids_duplicate_v1(self):
         self.assertEqual(app_module.provider_endpoint("https://api.anthropic.com", "anthropic"), "https://api.anthropic.com/v1/messages")
