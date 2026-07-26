@@ -30,9 +30,11 @@ await check("message rows never replay a full-list fade during streaming", `(()=
 await check("welcome mark uses themeable SVG", `!!document.querySelector('.sun-mark svg') && getComputedStyle(document.querySelector('.sun-mark')).color === 'rgb(201, 100, 66)'`);
 await check("launch screen uses the A stroke and star sequence", `(async()=>{const html=await fetch('/').then(response=>response.text());return html.includes('launch-a launch-stroke')&&html.includes('launch-sweep launch-stroke')&&html.includes('class="launch-star"')})()`);
 await check("launch screen can be skipped", `(async()=>typeof dismissLaunchScreen==='function'&&(await fetch('/').then(response=>response.text())).includes('id="launchScreen"'))()`);
-await check("versioned service worker updater is present", `document.documentElement.innerHTML.includes('service-worker.js?v=61') && document.documentElement.innerHTML.includes("updateViaCache: 'none'")`);
+await check("versioned service worker updater is present", `document.documentElement.innerHTML.includes('service-worker.js?v=62') && document.documentElement.innerHTML.includes("updateViaCache: 'none'")`);
 await check("roleplay entry opens the fiction archive", `(async()=>{if(!state.providers.length)state.providers.push({id:'smoke-route',name:'测试线路',model:'smoke'});document.querySelector('#openRoleplay').click();await new Promise(resolve=>setTimeout(resolve,60));return !document.querySelector('#roleplaySpace').hidden&&!!document.querySelector('#roleplaySetup [name="player_name"]')})()`);
 await check("roleplay setup supports independent narrator and actor routes", `(()=>{document.querySelector('#newRoleplayStory').click();return !!document.querySelector('#roleplaySetup [name="narrator_provider_id"]')&&!!document.querySelector('[data-cast-provider]')})()`);
+await check("roleplay setup includes opening presets and worldbooks", `document.querySelectorAll('#roleplaySetup [name="preset"]').length===5&&!!document.querySelector('#roleplayWorldbooks')`);
+await check("roleplay stage exposes summary and txt export", `!!document.querySelector('#showRoleplaySummary')&&!!document.querySelector('#exportRoleplayTxt')`);
 await evaluate(`document.querySelector('#closeRoleplay').click()`);
 await check("welcome and composer helper copy stay minimal", `!document.querySelector('#welcome p') && !document.querySelector('#prompt').hasAttribute('placeholder') && !document.querySelector('.disclaimer')`);
 await check("morning greeting follows local time", `renderTimeGreeting(new Date(2026,6,19,8,0)) === '早上好，今天想聊些什么？'`);
