@@ -1,6 +1,7 @@
 const $ = (s) => document.querySelector(s);
 const state = { providers: [], personas: [], worldbooks: [], mcp_servers: [], mcp_audit: [], conversations: [], memories: [], journals: [], board_messages: [], favorites: [], attachments: [], version_selection: {}, settings: { auto_title_mode: "local", tool_permissions: {} }, current: null, provider: null, persona: null, messages: [], generating: new Set(), generation_controllers: new Map(), message_cache: new Map(), navigation: 0 };
 const gameState = { catalog: [], current: null, fishing: null, claw: null, slots: null, waters: {} };
+const roleplayState = { stories: [], current: null, busy: false };
 function dismissLaunchScreen(){const screen=$("#launchScreen");if(!screen||screen.classList.contains("dismissed"))return;screen.classList.add("dismissed");setTimeout(()=>screen.remove(),320);}
 if($("#launchScreen")){const refresh=document.documentElement.dataset.launchMode==="refresh",delay=matchMedia("(prefers-reduced-motion: reduce)").matches?180:refresh?430:1250;$("#launchScreen").onclick=dismissLaunchScreen;setTimeout(dismissLaunchScreen,delay);}
 
@@ -59,13 +60,47 @@ function showFetchedModels(models, form = $("#providerForm")) {
   return select;
 }
 
-let bookObjectUrl;
+let bookObjectUrl,currentBook=null;
+const bookLocalKey=kind=>currentBook?`${currentBook.key}:${kind}`:"";
+const readBookLocal=kind=>{try{return JSON.parse(localStorage.getItem(bookLocalKey(kind))||"[]");}catch{return [];}};
+const writeBookLocal=(kind,value)=>localStorage.setItem(bookLocalKey(kind),JSON.stringify(value));
+function setBookControls(enabled){
+  for(const id of ["addBookmark","addAnnotation","askBookAi"])$(id.startsWith("#")?id:`#${id}`).disabled=!enabled;
+}
+function currentBookPosition(){
+  const reader=$("#bookReader"),pre=reader.querySelector("pre"),maximum=Math.max(1,reader.scrollHeight-reader.clientHeight),ratio=Math.max(0,Math.min(1,reader.scrollTop/maximum)),offset=Math.round((currentBook?.text?.length||0)*ratio);
+  return {ratio,offset,excerpt:pre?.textContent.slice(Math.max(0,offset-100),offset+220).trim()||""};
+}
+function selectedBookText(){
+  const selection=getSelection(),pre=$("#bookReader pre");
+  if(!selection||selection.isCollapsed||!pre||!pre.contains(selection.anchorNode)||!pre.contains(selection.focusNode))return null;
+  const quote=selection.toString().trim().slice(0,2000);if(!quote)return null;
+  const range=document.createRange();range.selectNodeContents(pre);range.setEnd(selection.anchorNode,selection.anchorOffset);
+  return {quote,offset:range.toString().length};
+}
+function showReadingTab(tab){
+  document.querySelectorAll("[data-reading-tab]").forEach(button=>button.classList.toggle("active",button.dataset.readingTab===tab));
+  $("#bookmarksPane").hidden=tab!=="bookmarks";$("#annotationsPane").hidden=tab!=="annotations";$("#bookAiForm").hidden=tab!=="ai";
+}
+function jumpToBookOffset(offset){
+  if(!currentBook?.text)return;const reader=$("#bookReader"),maximum=Math.max(0,reader.scrollHeight-reader.clientHeight);reader.scrollTop=maximum*Math.max(0,Math.min(1,Number(offset||0)/Math.max(1,currentBook.text.length)));
+}
+function renderBookNotes(){
+  const bookmarks=currentBook?readBookLocal("bookmarks"):[],annotations=currentBook?readBookLocal("annotations"):[];
+  $("#bookmarkList").innerHTML=bookmarks.map(item=>`<article class="reading-note"><blockquote>${escapeHtml(item.excerpt||"此处书签")}</blockquote><small>${new Date(item.created_at).toLocaleString()}</small><div class="reading-note-actions"><button type="button" data-bookmark-go="${item.id}">跳转</button><button type="button" data-bookmark-delete="${item.id}">删除</button></div></article>`).join("")||`<p class="muted">还没有书签。</p>`;
+  $("#annotationList").innerHTML=annotations.map(item=>`<article class="reading-note"><blockquote>“${escapeHtml(item.quote)}”</blockquote>${item.note?`<p>${escapeHtml(item.note)}</p>`:""}<small>${new Date(item.created_at).toLocaleString()}</small><div class="reading-note-actions"><button type="button" data-annotation-go="${item.id}">跳转</button><button type="button" data-annotation-delete="${item.id}">删除</button></div></article>`).join("")||`<p class="muted">选择一段文字后添加批注。</p>`;
+  document.querySelectorAll("[data-bookmark-go]").forEach(button=>button.onclick=()=>jumpToBookOffset(bookmarks.find(item=>item.id===button.dataset.bookmarkGo)?.offset));
+  document.querySelectorAll("[data-annotation-go]").forEach(button=>button.onclick=()=>jumpToBookOffset(annotations.find(item=>item.id===button.dataset.annotationGo)?.offset));
+  document.querySelectorAll("[data-bookmark-delete]").forEach(button=>button.onclick=()=>{writeBookLocal("bookmarks",bookmarks.filter(item=>item.id!==button.dataset.bookmarkDelete));renderBookNotes();});
+  document.querySelectorAll("[data-annotation-delete]").forEach(button=>button.onclick=()=>{writeBookLocal("annotations",annotations.filter(item=>item.id!==button.dataset.annotationDelete));renderBookNotes();});
+}
 async function openLocalBook(file) {
   if (!file) return;
   const reader = $("#bookReader");
   const status = $("#bookStatus");
   const key = `atherloom:book:${file.name}:${file.size}`;
   const isPdf = file.type === "application/pdf" || /\.pdf$/i.test(file.name);
+  currentBook=null;setBookControls(false);renderBookNotes();
   status.textContent = `${file.name} · 正在打开…`;
   await new Promise(resolve => requestAnimationFrame(resolve));
   try {
@@ -80,7 +115,7 @@ async function openLocalBook(file) {
     if (isPdf) {
       bookObjectUrl = URL.createObjectURL(file);
       reader.innerHTML = `<iframe title="${escapeHtml(file.name)}" src="${bookObjectUrl}#page=${Number(localStorage.getItem(key) || 1)}"></iframe>`;
-      status.textContent = `${file.name} · 本地 PDF`;
+      status.textContent = `${file.name} · 本地 PDF；书签、批注与 AI 共读暂支持 TXT/Markdown`;
       return;
     }
     const limit = 2 * 1024 * 1024;
@@ -88,6 +123,8 @@ async function openLocalBook(file) {
     const pre = document.createElement("pre");
     pre.textContent = text;
     reader.replaceChildren(pre);
+    currentBook={title:file.name,key,text};
+    setBookControls(true);renderBookNotes();
     reader.scrollTop = Number(localStorage.getItem(key) || 0);
     reader.onscroll = () => localStorage.setItem(key, String(reader.scrollTop));
     status.textContent = file.size > limit ? `${file.name} · 已打开前 2 MB，避免设备卡顿` : `${file.name} · 本地文件`;
@@ -382,6 +419,9 @@ async function openConversation(id) {
 
 async function sendMessage() {
   const input = $("#prompt"); const content = input.value.trim(); const provider = activeProvider();
+  if (/^(我想|我要|想)?\s*玩(一下)?角色扮演[吧。！!？?]*$/u.test(content)) {
+    input.value="";input.style.height="auto";updateComposerState();await openRoleplay();return;
+  }
   if ((!content&&!state.attachments.length) || currentBusy()) return; if (!provider) return openSettings("providers"); if (!state.current) await newConversation();
   const attachments=state.attachments.splice(0);renderAttachments();const visibleContent=content||"请查看附件";
   input.value = "";input.style.height = "auto";localStorage.removeItem(draftKey(state.current));updateComposerState();
@@ -577,6 +617,50 @@ function saveAppSettings() {
 
 $("#prompt").addEventListener("input", e => { e.target.style.height = "auto"; e.target.style.height = `${Math.min(e.target.scrollHeight, 180)}px`;saveCurrentDraft();updateComposerState();renderContextUsage(); });
 $("#attachmentButton").onclick=event=>{event.stopPropagation();$("#attachmentMenu").hidden=!$("#attachmentMenu").hidden;};document.querySelectorAll("[data-attachment-source]").forEach(button=>button.onclick=()=>{const inputs={camera:$("#cameraInput"),images:$("#imageInput"),files:$("#fileInput")};$("#attachmentMenu").hidden=true;inputs[button.dataset.attachmentSource].click();});[$("#cameraInput"),$("#imageInput"),$("#fileInput")].forEach(input=>input.onchange=async event=>{await addAttachments(event.target.files);event.target.value="";$("#send").disabled=false;});
+function roleplayProviderOptions(selected=""){return state.providers.map(provider=>`<option value="${provider.id}" ${provider.id===selected?"selected":""}>${escapeHtml(provider.name)} · ${escapeHtml(provider.model)}</option>`).join("");}
+function roleplayPersonaOptions(selected=""){return `<option value="">不绑定人格</option>`+state.personas.map(persona=>`<option value="${persona.id}" ${persona.id===selected?"selected":""}>${escapeHtml(persona.name)}</option>`).join("");}
+function addRoleplayCastRow(actor={}){
+  const row=document.createElement("div");row.className="roleplay-cast-row";
+  row.innerHTML=`<input data-cast-name maxlength="80" required placeholder="角色姓名" value="${escapeHtml(actor.name||"")}"><select data-cast-provider required>${roleplayProviderOptions(actor.provider_id||"")}</select><input data-cast-description maxlength="6000" placeholder="角色设定" value="${escapeHtml(actor.description||"")}"><button type="button" aria-label="移除角色">×</button><select data-cast-persona hidden>${roleplayPersonaOptions(actor.persona_id||"")}</select>`;
+  row.querySelector("button").onclick=()=>{if($("#roleplayCastRows").children.length>1)row.remove();};
+  $("#roleplayCastRows").append(row);
+}
+function resetRoleplaySetup(){
+  const form=$("#roleplaySetup");form.reset();form.hidden=false;$("#roleplayStage").hidden=true;
+  form.elements.narrator_provider_id.innerHTML=roleplayProviderOptions();$("#roleplayCastRows").innerHTML="";addRoleplayCastRow();
+}
+function renderRoleplayStories(){
+  $("#roleplayStoryList").innerHTML=roleplayState.stories.length?roleplayState.stories.map(story=>`<button class="roleplay-story-card ${story.id===roleplayState.current?.id?"active":""}" data-roleplay-story="${story.id}"><strong>${escapeHtml(story.title)}</strong><small>${escapeHtml(story.player_name)} · ${story.state?.turn_number||0} 回合${story.status==="completed"?" · 已收场":""}</small></button>`).join(""):`<p class="muted">还没有故事。新建一个，名字由你决定。</p>`;
+  document.querySelectorAll("[data-roleplay-story]").forEach(button=>button.onclick=()=>loadRoleplayStory(button.dataset.roleplayStory));
+}
+function renderRoleplayStage(){
+  const story=roleplayState.current;if(!story)return;
+  $("#roleplaySetup").hidden=true;$("#roleplayStage").hidden=false;$("#roleplayTitle").textContent=story.title;$("#roleplayPlayer").textContent=`你在故事里叫 ${story.player_name}`;
+  $("#roleplayTurnLabel").textContent=story.turns.length?`停在第 ${story.turns.at(-1).turn_number} 回合`:"尚未开场";
+  $("#finishRoleplay").textContent=story.status==="completed"?"重新开场":"收场";
+  $("#roleplayTurnForm").hidden=story.status==="completed";
+  $("#roleplayManuscript").innerHTML=story.turns.length?story.turns.map(turn=>`<section class="roleplay-scene" data-turn="第 ${turn.turn_number} 回合"><p class="roleplay-player-line">${escapeHtml(story.player_name)}：${escapeHtml(turn.player_input)}</p><p class="roleplay-prose">${escapeHtml(turn.prose)}</p></section>`).join(""):`<p class="roleplay-empty">幕布还没有升起。写下你的第一句话或第一个动作。</p>`;
+  renderRoleplayStories();requestAnimationFrame(()=>{$(".roleplay-desk").scrollTop=$(".roleplay-desk").scrollHeight;});
+}
+async function loadRoleplayStory(id){roleplayState.current=await api(`/api/roleplay/stories/${id}`);renderRoleplayStage();}
+async function openRoleplay(){
+  if(!state.providers.length){openSettings("providers");return;}
+  $("#roleplaySpace").hidden=false;setSidebar(false);
+  roleplayState.stories=await api("/api/roleplay/stories");renderRoleplayStories();
+  const active=roleplayState.stories.find(story=>story.status==="active");
+  if(active)await loadRoleplayStory(active.id);else resetRoleplaySetup();
+}
+$("#roleplaySetup").onsubmit=async event=>{
+  event.preventDefault();const form=event.target,cast=[...$("#roleplayCastRows").children].map(row=>({name:row.querySelector("[data-cast-name]").value.trim(),provider_id:row.querySelector("[data-cast-provider]").value,persona_id:row.querySelector("[data-cast-persona]").value||null,description:row.querySelector("[data-cast-description]").value.trim()}));
+  try{roleplayState.current=await api("/api/roleplay/stories",{method:"POST",body:JSON.stringify({title:form.elements.title.value.trim(),player_name:form.elements.player_name.value.trim(),premise:form.elements.premise.value.trim(),narrator_provider_id:form.elements.narrator_provider_id.value,cast})});roleplayState.stories.unshift(roleplayState.current);renderRoleplayStage();}catch(error){alert(error.message);}
+};
+$("#roleplayTurnForm").onsubmit=async event=>{
+  event.preventDefault();if(roleplayState.busy)return;const input=$("#roleplayInput"),content=input.value.trim();if(!content||!roleplayState.current)return;
+  roleplayState.busy=true;event.target.querySelector("button").disabled=true;$("#roleplayStatus").textContent="角色们正在各自回应，旁白随后落笔…";
+  try{const turn=await api(`/api/roleplay/stories/${roleplayState.current.id}/turns`,{method:"POST",body:JSON.stringify({player_input:content}),timeout:360000});roleplayState.current.turns.push(turn);roleplayState.current.state={...roleplayState.current.state,turn_number:turn.turn_number,scene:turn.checkpoint.scene};input.value="";$("#roleplayStatus").textContent=`已保存第 ${turn.turn_number} 回合与停场位置`;renderRoleplayStage();}catch(error){$("#roleplayStatus").textContent=`续写失败：${error.message}`;}finally{roleplayState.busy=false;event.target.querySelector("button").disabled=false;}
+};
+$("#finishRoleplay").onclick=async()=>{const story=roleplayState.current;if(!story)return;const status=story.status==="completed"?"active":"completed";roleplayState.current={...story,...await api(`/api/roleplay/stories/${story.id}/state`,{method:"PUT",body:JSON.stringify({status})})};roleplayState.current.turns=story.turns;renderRoleplayStage();};
+$("#newRoleplayStory").onclick=resetRoleplaySetup;$("#addRoleplayCast").onclick=()=>addRoleplayCastRow();$("#openRoleplay").onclick=openRoleplay;$("#closeRoleplay").onclick=()=>$("#roleplaySpace").hidden=true;
 $("#openGamesFromComposer").onclick=()=>{$("#attachmentMenu").hidden=true;openGameLibrary();};
 $("#openInstructionInjection").onclick=()=>{$("#attachmentMenu").hidden=true;openInstructionPicker();};
 $("#closeInstructionPicker").onclick=()=>{saveSelectedWorldbooks([...$("#instructionBookList").querySelectorAll('input:checked')].map(input=>input.value));$("#instructionPicker").hidden=true;};
@@ -627,7 +711,14 @@ document.querySelectorAll("[data-bulk-permission]").forEach(button => button.onc
   });
   saveAppSettings();
 });
-$("#openSettings").onclick = () => openSettings();
+$("#openSettings").onclick = () => {
+  setSidebar(false);
+  openSettings("appearance");
+  requestAnimationFrame(() => {
+    $(".settings-content").scrollTop = 0;
+    $("#displayName").focus({ preventScroll: true });
+  });
+};
 $("#openGames").onclick = openGameLibrary; $("#closeGames").onclick = () => $("#gameLibrary").hidden = true;
 $("#openFavorites").onclick=openFavorites;$("#closeFavorites").onclick=()=>$("#favoritesSpace").hidden=true;
 $("#openReading").onclick=()=>openMedia("reading");$("#openCinema").onclick=()=>openMedia("cinema");$("#closeMedia").onclick=()=>{$("#mediaSpace").hidden=true;$("#moviePlayer").pause();};
@@ -643,6 +734,19 @@ $("#messageEditor form").onsubmit=async event=>{event.preventDefault();const edi
 $("#deleteMessageVersion").onclick=async()=>{const index=Number($("#messageMenu").dataset.messageIndex),message=state.messages[index];if(!message?.id)return;const note=message.role==="user"?"删除这条消息时，它下面的全部 AI 回答也会删除。":"只删除当前显示的这个 AI 回答版本。";if(!confirm(`${note}\n\n确定继续吗？`))return;await api(`/api/messages/${message.id}`,{method:"DELETE"});state.messages=state.messages.filter(item=>item.id!==message.id&&(message.role!=="user"||item.parent_message_id!==message.id));if(message.parent_message_id)delete state.version_selection[message.parent_message_id];if(message.role==="user")delete state.version_selection[message.id];$("#messageMenu").hidden=true;renderMessages();};
 $("#deleteAllMessageVersions").onclick=async()=>{const index=Number($("#messageMenu").dataset.messageIndex),message=state.messages[index];if(!message?.id)return;const parentId=message.role==="assistant"?message.parent_message_id:message.id,note=message.role==="assistant"?"删除这条提问下的全部 AI 回答版本？你的提问会保留。":"删除你的这条消息以及它下面的全部 AI 回答？";if(!confirm(note))return;await api(`/api/messages/${message.id}/versions`,{method:"DELETE"});state.messages=state.messages.filter(item=>message.role==="assistant"?item.parent_message_id!==parentId:item.id!==message.id&&item.parent_message_id!==message.id);delete state.version_selection[parentId];$("#messageMenu").hidden=true;renderMessages();};
 $("#chooseBook").onclick=()=>$("#bookInput").click();$("#bookInput").onchange=async event=>{const file=event.target.files?.[0];event.target.value="";await openLocalBook(file);};
+document.querySelectorAll("[data-reading-tab]").forEach(button=>button.onclick=()=>showReadingTab(button.dataset.readingTab));
+$("#addBookmark").onclick=()=>{
+  if(!currentBook)return;const position=currentBookPosition(),items=readBookLocal("bookmarks");items.unshift({id:crypto.randomUUID?.()||String(Date.now()),...position,created_at:new Date().toISOString()});writeBookLocal("bookmarks",items.slice(0,300));renderBookNotes();showReadingTab("bookmarks");
+};
+$("#addAnnotation").onclick=()=>{
+  if(!currentBook)return;const selected=selectedBookText();if(!selected){$("#bookStatus").textContent="请先在正文里选择一段文字";return;}const note=prompt("写下对这段文字的批注：","");if(note===null)return;const items=readBookLocal("annotations");items.unshift({id:crypto.randomUUID?.()||String(Date.now()),...selected,note:note.trim().slice(0,5000),created_at:new Date().toISOString()});writeBookLocal("annotations",items.slice(0,500));renderBookNotes();showReadingTab("annotations");getSelection()?.removeAllRanges();
+};
+$("#askBookAi").onclick=()=>{if(currentBook){showReadingTab("ai");$("#bookAiQuestion").focus();}};
+$("#bookAiForm").onsubmit=async event=>{
+  event.preventDefault();const question=$("#bookAiQuestion").value.trim();if(!question||!currentBook)return;if(!activeProvider())return openSettings("providers");if(!state.current)await newConversation();
+  const selected=selectedBookText(),position=currentBookPosition(),evidence=(selected?.quote||currentBook.text.slice(Math.max(0,position.offset-2000),position.offset+2000)).slice(0,4000),context=[`书籍：${currentBook.title}`,`本地阅读位置：约 ${Math.round(position.ratio*100)}%`,`证据范围：只包含用户选中的文字或当前位置附近最多 4,000 字`,`阅读片段：\n${evidence}`].join("\n");
+  $("#bookAiQuestion").value="";$("#mediaSpace").hidden=true;state.messages.push({role:"user",content:question,media_context:context});renderMessages();await generateReply(question,null,[],context);
+};
 let movieUrl,movieProgressKey,watchCues=[],watchSource={title:"私人放映室",kind:"local"};
 const watchClock=seconds=>{seconds=Math.max(0,Number(seconds)||0);const h=Math.floor(seconds/3600),m=Math.floor(seconds%3600/60),s=Math.floor(seconds%60);return [h?String(h).padStart(2,"0"):null,String(m).padStart(2,"0"),String(s).padStart(2,"0")].filter(Boolean).join(":");};
 function parseSubtitleTime(value){const parts=String(value).trim().replace(",",".").split(":").map(Number);return parts.length===3?parts[0]*3600+parts[1]*60+parts[2]:parts[0]*60+parts[1];}
@@ -718,7 +822,7 @@ document.addEventListener("click", event => { if (!event.target.closest(".popove
 document.addEventListener("keydown", event => { if (event.key === "Escape") closePopovers(); });
 function setSidebar(open){$("#sidebar").classList.toggle("open",open);$("#sidebarBackdrop").hidden=!open;}
 $("#mobileMenu").onclick=()=>setSidebar(true);$("#sidebarClose").onclick=()=>setSidebar(false);$("#sidebarToggle").onclick=()=>{if(innerWidth<=760)setSidebar(false);};$("#sidebarBackdrop").onclick=()=>setSidebar(false);document.querySelectorAll("#sidebar .new-chat,#sidebar .profile-row,#sidebar .history-item").forEach(button=>button.addEventListener("click",()=>setSidebar(false)));
-window.AtherloomHandleBack=()=>{if(!$("#callSpace").hidden){endVoiceCall();$("#callSpace").hidden=true;return true;}if(!$("#mediaSpace").hidden){$("#mediaSpace").hidden=true;$("#moviePlayer").pause();return true;}if(!$("#favoritesSpace").hidden){$("#favoritesSpace").hidden=true;return true;}if(!$("#gameLibrary").hidden){$("#gameLibrary").hidden=true;return true;}if($("#settingsPanel").classList.contains("open")){closeSettings();return true;}if($("#sidebar").classList.contains("open")){setSidebar(false);return true;}if([...document.querySelectorAll(".popover")].some(item=>!item.hidden)){closePopovers();return true;}return false;};
+window.AtherloomHandleBack=()=>{if(!$("#callSpace").hidden){endVoiceCall();$("#callSpace").hidden=true;return true;}if(!$("#roleplaySpace").hidden){$("#roleplaySpace").hidden=true;return true;}if(!$("#mediaSpace").hidden){$("#mediaSpace").hidden=true;$("#moviePlayer").pause();return true;}if(!$("#favoritesSpace").hidden){$("#favoritesSpace").hidden=true;return true;}if(!$("#gameLibrary").hidden){$("#gameLibrary").hidden=true;return true;}if($("#settingsPanel").classList.contains("open")){closeSettings();return true;}if($("#sidebar").classList.contains("open")){setSidebar(false);return true;}if([...document.querySelectorAll(".popover")].some(item=>!item.hidden)){closePopovers();return true;}return false;};
 $("#themeSelect").onchange = e => { document.documentElement.dataset.theme = e.target.value === "system" ? "" : e.target.value; localStorage.setItem("theme", e.target.value); };
 $("#exportBackup").onclick = exportLocalBackup;
 $("#chooseBackup").onclick = () => $("#backupFile").click();
