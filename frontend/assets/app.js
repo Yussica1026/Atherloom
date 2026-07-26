@@ -2,6 +2,7 @@ const $ = (s) => document.querySelector(s);
 const state = { providers: [], personas: [], worldbooks: [], mcp_servers: [], mcp_audit: [], conversations: [], memories: [], journals: [], board_messages: [], favorites: [], attachments: [], version_selection: {}, settings: { auto_title_mode: "local", tool_permissions: {} }, current: null, provider: null, persona: null, messages: [], generating: new Set(), generation_controllers: new Map(), message_cache: new Map(), navigation: 0 };
 const gameState = { catalog: [], current: null, fishing: null, claw: null, slots: null, waters: {} };
 const roleplayState = { stories: [], current: null, busy: false };
+const roleplayPresets={ancient:"古风。请设定朝代氛围、门阀或江湖关系、礼法约束与一件尚未兑现的旧约。",modern:"现代都市。请设定真实生活场景、人物既有关系与一次意外重逢。",mystery:"悬疑。请设定封闭或受限场景、一条可验证线索、隐藏动机与正在逼近的期限。",fantasy:"幻想世界。请设定独特规则、旅途目标、代价与角色命运的交点。",custom:""};
 function dismissLaunchScreen(){const screen=$("#launchScreen");if(!screen||screen.classList.contains("dismissed"))return;screen.classList.add("dismissed");setTimeout(()=>screen.remove(),320);}
 if($("#launchScreen")){const refresh=document.documentElement.dataset.launchMode==="refresh",delay=matchMedia("(prefers-reduced-motion: reduce)").matches?180:refresh?430:1250;$("#launchScreen").onclick=dismissLaunchScreen;setTimeout(dismissLaunchScreen,delay);}
 
@@ -628,7 +629,10 @@ function addRoleplayCastRow(actor={}){
 function resetRoleplaySetup(){
   const form=$("#roleplaySetup");form.reset();form.hidden=false;$("#roleplayStage").hidden=true;
   form.elements.narrator_provider_id.innerHTML=roleplayProviderOptions();$("#roleplayCastRows").innerHTML="";addRoleplayCastRow();
+  $("#roleplayWorldbooks").innerHTML=state.worldbooks.length?state.worldbooks.filter(book=>book.enabled!==false).map(book=>`<label><input type="checkbox" value="${book.id}"><span>${escapeHtml(book.name)}</span></label>`).join(""):`<span class="muted">还没有世界书；可以先在设置中创建。</span>`;
+  applyRoleplayPreset("ancient",form);
 }
+function applyRoleplayPreset(name,form=$("#roleplaySetup")){const field=form.elements.premise;if(!field)return;const previous=form.dataset.presetText||"",next=roleplayPresets[name]||"";if(!field.value.trim()||field.value.trim()===previous.trim())field.value=next;form.dataset.presetText=next;}
 function renderRoleplayStories(){
   $("#roleplayStoryList").innerHTML=roleplayState.stories.length?roleplayState.stories.map(story=>`<button class="roleplay-story-card ${story.id===roleplayState.current?.id?"active":""}" data-roleplay-story="${story.id}"><strong>${escapeHtml(story.title)}</strong><small>${escapeHtml(story.player_name)} · ${story.state?.turn_number||0} 回合${story.status==="completed"?" · 已收场":""}</small></button>`).join(""):`<p class="muted">还没有故事。新建一个，名字由你决定。</p>`;
   document.querySelectorAll("[data-roleplay-story]").forEach(button=>button.onclick=()=>loadRoleplayStory(button.dataset.roleplayStory));
@@ -636,10 +640,11 @@ function renderRoleplayStories(){
 function renderRoleplayStage(){
   const story=roleplayState.current;if(!story)return;
   $("#roleplaySetup").hidden=true;$("#roleplayStage").hidden=false;$("#roleplayTitle").textContent=story.title;$("#roleplayPlayer").textContent=`你在故事里叫 ${story.player_name}`;
-  $("#roleplayTurnLabel").textContent=story.turns.length?`停在第 ${story.turns.at(-1).turn_number} 回合`:"尚未开场";
+  $("#roleplayTurnLabel").textContent=story.turns.length?(story.state?.turn_number?`停在第 ${story.state.turn_number} 回合`:"旁白已经开场"):"正在准备开场";
   $("#finishRoleplay").textContent=story.status==="completed"?"重新开场":"收场";
   $("#roleplayTurnForm").hidden=story.status==="completed";
-  $("#roleplayManuscript").innerHTML=story.turns.length?story.turns.map(turn=>`<section class="roleplay-scene" data-turn="第 ${turn.turn_number} 回合"><p class="roleplay-player-line">${escapeHtml(story.player_name)}：${escapeHtml(turn.player_input)}</p><p class="roleplay-prose">${escapeHtml(turn.prose)}</p></section>`).join(""):`<p class="roleplay-empty">幕布还没有升起。写下你的第一句话或第一个动作。</p>`;
+  $("#roleplaySummary p").textContent=story.state?.rolling_summary||"旁白会在每一回合后更新这里。";
+  $("#roleplayManuscript").innerHTML=story.turns.length?story.turns.map(turn=>`<section class="roleplay-scene" data-turn="${turn.turn_number===0?"开场":`第 ${turn.turn_number} 回合`}">${turn.turn_number===0?"":`<p class="roleplay-player-line">${escapeHtml(story.player_name)}：${escapeHtml(turn.player_input)}</p>`}<p class="roleplay-prose">${escapeHtml(turn.prose)}</p></section>`).join(""):`<p class="roleplay-empty">旁白正在铺开第一幕……</p>`;
   renderRoleplayStories();requestAnimationFrame(()=>{$(".roleplay-desk").scrollTop=$(".roleplay-desk").scrollHeight;});
 }
 async function loadRoleplayStory(id){roleplayState.current=await api(`/api/roleplay/stories/${id}`);renderRoleplayStage();}
@@ -651,8 +656,9 @@ async function openRoleplay(){
   if(active)await loadRoleplayStory(active.id);else resetRoleplaySetup();
 }
 $("#roleplaySetup").onsubmit=async event=>{
-  event.preventDefault();const form=event.target,cast=[...$("#roleplayCastRows").children].map(row=>({name:row.querySelector("[data-cast-name]").value.trim(),provider_id:row.querySelector("[data-cast-provider]").value,persona_id:row.querySelector("[data-cast-persona]").value||null,description:row.querySelector("[data-cast-description]").value.trim()}));
-  try{roleplayState.current=await api("/api/roleplay/stories",{method:"POST",body:JSON.stringify({title:form.elements.title.value.trim(),player_name:form.elements.player_name.value.trim(),premise:form.elements.premise.value.trim(),narrator_provider_id:form.elements.narrator_provider_id.value,cast})});roleplayState.stories.unshift(roleplayState.current);renderRoleplayStage();}catch(error){alert(error.message);}
+  event.preventDefault();const form=event.target,button=form.querySelector(".roleplay-open-curtain"),cast=[...$("#roleplayCastRows").children].map(row=>({name:row.querySelector("[data-cast-name]").value.trim(),provider_id:row.querySelector("[data-cast-provider]").value,persona_id:row.querySelector("[data-cast-persona]").value||null,description:row.querySelector("[data-cast-description]").value.trim()})),worldbook_ids=[...$("#roleplayWorldbooks input:checked")].map(input=>input.value),preset=form.elements.preset.value;
+  button.disabled=true;button.textContent="旁白正在写开场…";
+  try{roleplayState.current=await api("/api/roleplay/stories",{method:"POST",body:JSON.stringify({title:form.elements.title.value.trim(),player_name:form.elements.player_name.value.trim(),premise:form.elements.premise.value.trim(),preset,worldbook_ids,narrator_provider_id:form.elements.narrator_provider_id.value,cast})});roleplayState.stories.unshift(roleplayState.current);renderRoleplayStage();const opening=await api(`/api/roleplay/stories/${roleplayState.current.id}/opening`,{method:"POST",body:"{}",timeout:240000});roleplayState.current.turns.push(opening);roleplayState.current.state={...roleplayState.current.state,scene:opening.checkpoint.scene,rolling_summary:`开场：${opening.prose}`};renderRoleplayStage();}catch(error){alert(error.message);}finally{button.disabled=false;button.textContent="保存并开场";}
 };
 $("#roleplayTurnForm").onsubmit=async event=>{
   event.preventDefault();if(roleplayState.busy)return;const input=$("#roleplayInput"),content=input.value.trim();if(!content||!roleplayState.current)return;
@@ -660,6 +666,9 @@ $("#roleplayTurnForm").onsubmit=async event=>{
   try{const turn=await api(`/api/roleplay/stories/${roleplayState.current.id}/turns`,{method:"POST",body:JSON.stringify({player_input:content}),timeout:360000});roleplayState.current.turns.push(turn);roleplayState.current.state={...roleplayState.current.state,turn_number:turn.turn_number,scene:turn.checkpoint.scene};input.value="";$("#roleplayStatus").textContent=`已保存第 ${turn.turn_number} 回合与停场位置`;renderRoleplayStage();}catch(error){$("#roleplayStatus").textContent=`续写失败：${error.message}`;}finally{roleplayState.busy=false;event.target.querySelector("button").disabled=false;}
 };
 $("#finishRoleplay").onclick=async()=>{const story=roleplayState.current;if(!story)return;const status=story.status==="completed"?"active":"completed";roleplayState.current={...story,...await api(`/api/roleplay/stories/${story.id}/state`,{method:"PUT",body:JSON.stringify({status})})};roleplayState.current.turns=story.turns;renderRoleplayStage();};
+document.querySelectorAll('#roleplaySetup [name="preset"]').forEach(input=>input.onchange=()=>applyRoleplayPreset(input.value));
+$("#showRoleplaySummary").onclick=()=>{$("#roleplaySummary").hidden=!$("#roleplaySummary").hidden;};$("#closeRoleplaySummary").onclick=()=>$("#roleplaySummary").hidden=true;
+$("#exportRoleplayTxt").onclick=()=>{const story=roleplayState.current;if(!story)return;const cast=story.cast.map(actor=>actor.name).join("、"),chapters=story.turns.map(turn=>`${turn.turn_number===0?"【开场】":`【第 ${turn.turn_number} 回合】`}\n${turn.turn_number===0?"":`${story.player_name}：${turn.player_input}\n\n`}${turn.prose}`).join("\n\n"),text=`《${story.title}》\n\n玩家角色：${story.player_name}\n登场角色：${cast}\n故事设定：${story.premise}\n\n【自动剧情档案】\n${story.state?.rolling_summary||"暂无"}\n\n${chapters}\n`,blob=new Blob([text],{type:"text/plain;charset=utf-8"}),url=URL.createObjectURL(blob),link=document.createElement("a");link.href=url;link.download=`${story.title.replace(/[\\\\/:*?"<>|]/g,"_")}.txt`;link.click();setTimeout(()=>URL.revokeObjectURL(url),1000);};
 $("#newRoleplayStory").onclick=resetRoleplaySetup;$("#addRoleplayCast").onclick=()=>addRoleplayCastRow();$("#openRoleplay").onclick=openRoleplay;$("#closeRoleplay").onclick=()=>$("#roleplaySpace").hidden=true;
 $("#openGamesFromComposer").onclick=()=>{$("#attachmentMenu").hidden=true;openGameLibrary();};
 $("#openInstructionInjection").onclick=()=>{$("#attachmentMenu").hidden=true;openInstructionPicker();};
