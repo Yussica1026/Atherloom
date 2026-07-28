@@ -10,7 +10,7 @@ const standalone = safeScript(read("frontend/assets/standalone.js"));
 const app = safeScript(read("frontend/assets/app.js"));
 
 html = html
-  .replace(/  <link rel="stylesheet" href="assets\/app\.css\?v=[^"]+">[\s\S]*?  <\/script>\r?\n/, `  <style data-atherloom-bundled="0491">\n${css}\n  </style>\n`)
+  .replace(/  <link rel="stylesheet" href="assets\/app\.css\?v=[^"]+">[\s\S]*?  <\/script>\r?\n/, `  <style data-atherloom-bundled="0492">\n${css}\n  </style>\n`)
   .replace(/  <script src="assets\/standalone\.js\?v=[^"]+"><\/script>/, `  <script data-atherloom-bundled="standalone">\n${standalone}\n  </script>`)
   .replace(/  <script src="assets\/app\.js\?v=[^"]+" defer><\/script>/, `  <script data-atherloom-bundled="app">\n${app}\n  </script>`)
   .replace(/  <script>\r?\n    if \('serviceWorker' in navigator\)[\s\S]*?  <\/script>\r?\n<\/body>/, "</body>");

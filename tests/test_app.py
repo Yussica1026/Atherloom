@@ -807,6 +807,8 @@ class LocalClientTests(unittest.TestCase):
         self.assertEqual(parsed.turns, 9)
         self.assertTrue(parsed.autonomous)
         self.assertFalse(app_module.ai_game_wants_continue('{"action":"left","continue_playing":false}'))
+        _, comment = app_module.parse_ai_game_choice('{"action":"left","comment":"', "star_merge")
+        self.assertEqual(comment, "")
 
     def test_star_merge_ai_actions_and_fallback_only_choose_legal_moves(self):
         choice, _ = app_module.parse_ai_game_choice(

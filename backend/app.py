@@ -2200,7 +2200,8 @@ def parse_ai_game_choice(text: str, game_id: str) -> tuple[dict[str, Any], str]:
         action = next((name for name, words in aliases.get(game_id, []) if any(word in lowered for word in words)), "")
         if not action:
             raise HTTPException(502, "模型没有返回可执行的游戏动作")
-        payload = {"action": action, "comment": text.strip()[:160]}
+        raw = text.strip()
+        payload = {"action": action, "comment": "" if raw.startswith(("{", "[", "```")) else raw[:160]}
     candidate = {"action": str(payload.get("action", "")), "amount": int(payload.get("amount", 1) or 1), "target": str(payload.get("target", ""))}
     for allowed in AI_GAME_ACTIONS.get(game_id, []):
         if candidate["action"] == allowed["action"] and ("target" not in allowed or candidate["target"] == allowed["target"]):
