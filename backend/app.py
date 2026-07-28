@@ -19,7 +19,7 @@ from typing import Any
 
 import httpx
 from cryptography.exceptions import InvalidTag
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
@@ -37,7 +37,6 @@ ROOT = Path(__file__).resolve().parents[1]
 FRONTEND = ROOT / "frontend"
 DB_PATH = ROOT / "data" / "local.db"
 DEFAULT_SUMMARY_PROMPT = """请把下面这段较早的对话压缩成连续、忠实、可供后续聊天使用的摘要。\n\n要求：\n1. 保留人物关系、关键事实、决定、承诺、未完成事项和情绪变化。\n2. 不编造双方没有表达过的心意或事实。\n3. 区分用户与助手各自说过的话。\n4. 删除寒暄、重复和已经失效的临时细节。\n5. 使用简洁中文，不评价用户。\n\n会话标题：{{title}}\n已有摘要：{{existing_summary}}\n待总结对话：\n{{conversation}}"""
-CODEX_PROVIDER_ID = "__codex_local__"
 
 
 def now_iso() -> str:
@@ -48,36 +47,6 @@ def db() -> sqlite3.Connection:
     connection = sqlite3.connect(DB_PATH)
     connection.row_factory = sqlite3.Row
     return connection
-
-
-def codex_command() -> Path | None:
-    configured = os.environ.get("ATHERLOOM_CODEX_COMMAND", "").strip()
-    candidates = [Path(configured)] if configured else []
-    appdata = os.environ.get("APPDATA", "").strip()
-    if appdata:
-        candidates.append(Path(appdata) / "npm" / "codex.cmd")
-    return next((path.resolve() for path in candidates if path.is_file()), None)
-
-
-def codex_workspace() -> Path:
-    configured = os.environ.get("ATHERLOOM_CODEX_WORKSPACE", "").strip()
-    workspace = Path(configured).resolve() if configured else ROOT.resolve()
-    if not workspace.is_dir():
-        raise HTTPException(503, "Codex 授权工作区不存在")
-    return workspace
-
-
-def codex_provider() -> dict[str, Any] | None:
-    command = codex_command()
-    if not command:
-        return None
-    return {
-        "id": CODEX_PROVIDER_ID, "name": "Codex／阿栈", "protocol": "codex",
-        "base_url": "仅限本机", "model": "本机安全桥", "enabled": 1,
-        "has_api_key": False, "stream_enabled": 0, "thinking_enabled": 1,
-        "temperature": 0.7, "top_p": 1.0, "max_tokens": 4096,
-        "local_bridge": True, "workspace_name": codex_workspace().name,
-    }
 
 
 def init_db() -> None:
@@ -543,9 +512,6 @@ def normalize_persona_config(value: Any) -> dict[str, Any]:
 def bootstrap() -> dict[str, Any]:
     with closing(db()) as connection:
         providers = [masked_provider(row) for row in connection.execute("SELECT * FROM providers ORDER BY created_at")]
-        local_codex = codex_provider()
-        if local_codex:
-            providers.append(local_codex)
         personas = [{**dict(row), "config": normalize_persona_config(row["config_json"])} for row in connection.execute("SELECT p.*,c.config_json FROM personas p LEFT JOIN persona_configs c ON c.persona_id=p.id ORDER BY p.created_at")]
         conversations = [dict(row) for row in connection.execute("SELECT * FROM conversations ORDER BY updated_at DESC")]
         worldbooks = [worldbook_dict(row) for row in connection.execute("SELECT * FROM worldbooks ORDER BY updated_at DESC")]
@@ -745,11 +711,8 @@ def create_board_message(persona_key: str, body: BoardMessageIn) -> dict[str, An
     message_id, created = str(uuid.uuid4()), now_iso()
     with closing(db()) as connection:
         connection.execute(
-            "INSERT INTO board_messages "
-            "(id,persona_key,content,author,visible_to_user,visible_to_ai,created_at,reply_to) "
-            "VALUES(?,?,?,?,?,?,?,?)",
-            (message_id, persona_key, body.content, body.author, int(body.visible_to_user),
-             int(body.visible_to_ai), created, body.reply_to),
+            "INSERT INTO board_messages (id,persona_key,content,author,visible_to_user,visible_to_ai,created_at,reply_to) VALUES(?,?,?,?,?,?,?,?)",
+            (message_id, persona_key, body.content, body.author, int(body.visible_to_user), int(body.visible_to_ai), created, body.reply_to),
         )
         connection.commit()
         row = connection.execute("SELECT * FROM board_messages WHERE id=?", (message_id,)).fetchone()
@@ -2358,80 +2321,8 @@ async def model_title(client: httpx.AsyncClient, provider: sqlite3.Row, content:
     return title.strip().strip('"“”')[:30] or local_title(content)
 
 
-async def codex_chat(body: ChatIn, request: Request) -> StreamingResponse:
-    loopback = {"127.0.0.1", "::1", "localhost", "testclient", "testserver"}
-    if request.url.hostname not in loopback or (request.client and request.client.host not in loopback):
-        raise HTTPException(403, "Codex／阿栈线路只接受本机请求")
-    command, workspace = codex_command(), codex_workspace()
-    if not command:
-        raise HTTPException(503, "本机没有找到 Codex CLI")
-    user_id, assistant_id, created = body.reuse_user_message_id or str(uuid.uuid4()), str(uuid.uuid4()), now_iso()
-    with closing(db()) as connection:
-        conversation = connection.execute("SELECT * FROM conversations WHERE id=?", (body.conversation_id,)).fetchone()
-        if not conversation:
-            raise HTTPException(404, "对话不存在")
-        history = connection.execute(
-            "SELECT role,content FROM messages WHERE conversation_id=? ORDER BY created_at DESC LIMIT 20",
-            (body.conversation_id,),
-        ).fetchall()
-        persona = connection.execute("SELECT name,prompt FROM personas WHERE id=?", (body.persona_id,)).fetchone() if body.persona_id else None
-        if not body.reuse_user_message_id:
-            connection.execute(
-                "INSERT INTO messages VALUES (?, ?, 'user', ?, ?, ?, ?, '', NULL)",
-                (user_id, body.conversation_id, body.content, CODEX_PROVIDER_ID, "Codex／阿栈", created),
-            )
-        connection.execute(
-            "UPDATE conversations SET provider_id=?,persona_id=?,updated_at=? WHERE id=?",
-            (CODEX_PROVIDER_ID, body.persona_id, created, body.conversation_id),
-        )
-        connection.commit()
-    transcript = "\n".join(f"{'用户' if row['role']=='user' else '助手'}：{row['content']}" for row in reversed(history))
-    persona_context = f"\n当前人格：{persona['name']}\n人格说明：{persona['prompt']}" if persona else ""
-    prompt = (
-        "你是通过 Atherloom 本机安全桥工作的 Codex／阿栈。请用中文直接回应当前用户。"
-        "你只能在已授权工作区内读取、分析和进行普通修改。不要推送、发布、安装软件、"
-        "删除文件、访问工作区外路径或输出凭证；若任务需要这些动作，只说明需要用户另行确认。"
-        f"{persona_context}\n\n最近对话：\n{transcript}\n\n用户现在说：{body.content}"
-    )
-
-    async def stream():
-        try:
-            process = await asyncio.create_subprocess_exec(
-                str(command), "exec", "--ephemeral", "--sandbox", "workspace-write",
-                "--skip-git-repo-check", "--color", "never", "-C", str(workspace), "-",
-                stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
-            )
-            stdout, stderr = await asyncio.wait_for(process.communicate(prompt.encode("utf-8")), timeout=600)
-            if process.returncode:
-                detail = stderr.decode("utf-8", errors="replace").strip().splitlines()[-1:] or ["Codex 执行失败"]
-                raise RuntimeError(detail[0][:500])
-            answer = stdout.decode("utf-8", errors="replace").strip()
-            if not answer:
-                raise RuntimeError("Codex 没有返回可显示的内容")
-            finished = now_iso()
-            with closing(db()) as connection:
-                connection.execute(
-                    "INSERT INTO messages VALUES (?, ?, 'assistant', ?, ?, ?, ?, '', ?)",
-                    (assistant_id, body.conversation_id, answer, CODEX_PROVIDER_ID, "Codex／阿栈", finished, user_id),
-                )
-                title = conversation["title"]
-                if title == "新对话":
-                    title = local_title(body.content)
-                    connection.execute("UPDATE conversations SET title=?,updated_at=? WHERE id=?", (title, finished, body.conversation_id))
-                connection.commit()
-            yield json.dumps({"delta": answer}, ensure_ascii=False) + "\n"
-            yield json.dumps({"done": True, "assistant_id": assistant_id, "user_id": user_id, "title": title}, ensure_ascii=False) + "\n"
-        except asyncio.TimeoutError:
-            yield json.dumps({"error": "Codex 执行超过 10 分钟，已停止等待"}, ensure_ascii=False) + "\n"
-        except Exception as error:
-            yield json.dumps({"error": str(error)}, ensure_ascii=False) + "\n"
-    return StreamingResponse(stream(), media_type="application/x-ndjson")
-
-
 @app.post("/api/chat")
-async def chat(body: ChatIn, request: Request) -> StreamingResponse:
-    if body.provider_id == CODEX_PROVIDER_ID:
-        return await codex_chat(body, request)
+async def chat(body: ChatIn) -> StreamingResponse:
     user_id = body.reuse_user_message_id or str(uuid.uuid4())
     created = now_iso()
     with closing(db()) as connection:
