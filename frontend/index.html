@@ -13,7 +13,7 @@
   <title>Atherloom</title>
   <link rel="manifest" href="manifest.json">
   <link rel="icon" href="assets/app-icon.svg" type="image/svg+xml">
-  <link rel="stylesheet" href="assets/app.css?v=0480">
+  <link rel="stylesheet" href="assets/app.css?v=0481">
   <script>document.documentElement.dataset.launchMode=performance.getEntriesByType("navigation")[0]?.type==="reload"?"refresh":"full";</script>
 </head>
 <body>
@@ -161,7 +161,7 @@
           <header><div><span class="eyebrow">PLAYING TOGETHER</span><h3 id="gameRoomTitle">边玩边聊</h3></div><small id="gameRoomContext">房间会跟着真实局面更新</small></header>
           <div class="game-room-thought"><span id="gameRoomThoughtName">当前人格的心里话</span><blockquote id="gameRoomThought">接过这一回合后，想法会留在这里。</blockquote></div>
           <div class="game-room-messages" id="gameRoomMessages" aria-live="polite"></div>
-          <div class="game-room-form" id="gameRoomForm"><textarea id="gameRoomInput" rows="1" maxlength="2000" placeholder="边玩边说一句……"></textarea><button class="primary" id="sendGameRoomMessage" type="button">发送</button></div>
+          <div class="game-room-form" id="gameRoomForm"><textarea id="gameRoomInput" rows="1" maxlength="2000" placeholder="边玩边说一句……"></textarea><button class="primary" id="sendGameRoomMessage" type="button" onclick="sendGameRoomMessage()">发送</button></div>
         </section>
       </main>
     </div>
@@ -510,11 +510,11 @@
   <div class="message-menu-backdrop" id="messageEditor" hidden><form class="message-editor" role="dialog" aria-label="修改消息"><h3>修改内容</h3><textarea id="messageEditContent" rows="7" required></textarea><div class="form-actions"><button type="button" class="ghost" id="cancelMessageEdit">取消</button><button class="primary">保存修改</button></div></form></div>
   <div class="message-menu-backdrop" id="instructionPicker" hidden><section class="message-editor instruction-picker" role="dialog" aria-label="指令注入"><h3>指令注入</h3><p class="muted">仅对当前聊天窗口生效，可随时取消。</p><div id="instructionBookList" class="instruction-book-list"></div><div class="form-actions"><button type="button" class="primary" id="closeInstructionPicker">完成</button></div></section></div>
   <div class="message-menu-backdrop" id="worldbookEntryEditor" hidden><form class="message-editor worldbook-entry-editor" role="dialog" aria-label="世界书条目"><h3>世界书条目</h3><label>条目名称<input name="name" maxlength="100" required></label><label>内容<textarea name="content" rows="8" required></textarea></label><label class="check-label"><input name="enabled" type="checkbox" checked>启用条目</label><label class="check-label"><input name="constant" type="checkbox">常驻激活</label><label>关键词（每行一个）<textarea name="keywords" rows="3"></textarea></label><div class="entry-options"><label class="check-label"><input name="use_regex" type="checkbox">使用正则</label><label class="check-label"><input name="case_sensitive" type="checkbox">区分大小写</label><label>扫描深度<input name="scan_depth" type="number" min="1" max="100" value="4"></label><label>注入位置<select name="position"><option value="system_before">系统提示前</option><option value="system_after" selected>系统提示后</option><option value="history_before">对话历史前</option><option value="history_after">对话历史后</option></select></label><label>注入角色<select name="role"><option value="system">系统</option><option value="user">用户</option><option value="assistant">助手</option></select></label><label>优先级<input name="priority" type="number" min="-9999" max="9999" value="0"></label></div><div class="form-actions"><button type="button" class="ghost" id="cancelWorldbookEntry">取消</button><button class="primary">保存条目</button></div></form></div>
-  <script src="assets/standalone.js?v=0480"></script>
-  <script src="assets/app.js?v=0480" defer></script>
+  <script src="assets/standalone.js?v=0481"></script>
+  <script src="assets/app.js?v=0481" defer></script>
   <script>
     if ('serviceWorker' in navigator) {
-      navigator.serviceWorker.register('service-worker.js?v=85', { updateViaCache: 'none' }).then(registration => registration.update());
+      navigator.serviceWorker.register('service-worker.js?v=86', { updateViaCache: 'none' }).then(registration => registration.update());
       // Never reload an active room when a new shell takes control. The fresh
       // assets are used on the next natural navigation/open instead.
       navigator.serviceWorker.addEventListener('controllerchange', () => {
