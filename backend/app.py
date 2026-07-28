@@ -1849,6 +1849,7 @@ def default_star_merge_state() -> dict[str, Any]:
     return {
         "board": [2, 0, 0, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
         "score": 0, "best": 2, "turn": 0, "status": "playing", "journal": [],
+        "history": [], "last_thought": "",
     }
 
 
@@ -1918,7 +1919,7 @@ def game_catalog() -> list[dict[str, Any]]:
         {"id": "quiet_fishing", "name": "云汀钓记", "icon": "◌", "status": "playable", "description": "为 AI 与用户共同设计的原创确定性钓鱼游戏。"},
         {"id": "claw_machine", "name": "抓娃娃机", "icon": "◇", "status": "playable", "description": "移动爪子、选择目标并收集娃娃。"},
         {"id": "cloud_slots", "name": "云纹老虎机", "icon": "✦", "status": "playable", "description": "只使用游戏内云贝的确定性三轴小游戏。"},
-        {"id": "star_merge", "name": "星潮合成", "icon": "▦", "status": "playable", "description": "专门给 AI 的 2048：观察棋盘，只用上下左右追逐高阶星块。"},
+        {"id": "star_merge", "name": "星潮合成", "icon": "▦", "status": "playable", "description": "你亲手合成星块，或把棋盘交给当前人格。"},
     ]
 
 
@@ -1985,12 +1986,24 @@ def game_action(game_id: str, body: GameActionIn, persona_id: str | None = None)
             if body.action == "reset":
                 state = default_star_merge_state()
                 events.append("新一局星潮已经铺开")
+            elif body.action == "undo":
+                history = state.get("history", [])
+                if not history:
+                    raise HTTPException(409, "还没有可以悔回的一步")
+                restored = history.pop()
+                state = {**restored, "history": history}
+                events.append("悔回了上一步")
             elif state.get("status") == "over":
                 raise HTTPException(409, "这一局已经没有可移动方向")
             else:
                 moved, gained = move_star_merge(state["board"], body.action)
                 if moved == state["board"]:
                     raise HTTPException(409, "这个方向不能移动")
+                snapshot = {
+                    key: json.loads(json.dumps(value, ensure_ascii=False))
+                    for key, value in state.items() if key != "history"
+                }
+                state["history"] = (state.get("history", []) + [snapshot])[-50:]
                 state["board"] = moved
                 state["turn"] += 1
                 state["score"] += gained
@@ -2136,7 +2149,11 @@ async def ai_game_turn(game_id: str, body: AiGameTurnIn) -> dict[str, Any]:
             result = game_action(game_id, GameActionIn(**choice), body.persona_id); remaining -= cost
             if comment:
                 with closing(db()) as connection:
-                    state = load_game(connection, game_id, body.persona_id); state["journal"] = (state.get("journal", []) + [f"{persona_name} · 心里话：{comment}"])[-30:]; save_game(connection, game_id, body.persona_id, state); connection.commit(); result["state"] = state
+                    state = load_game(connection, game_id, body.persona_id)
+                    state["journal"] = (state.get("journal", []) + [f"{persona_name} · 心里话：{comment}"])[-30:]
+                    if game_id == "star_merge":
+                        state["last_thought"] = comment
+                    save_game(connection, game_id, body.persona_id, state); connection.commit(); result["state"] = state
             decisions.append({"choice": choice, "comment": comment, "events": result["events"]})
     with closing(db()) as connection: final_state = load_game(connection, game_id, body.persona_id)
     return {"state": final_state, "decisions": decisions, "spent": body.max_spend - remaining}
