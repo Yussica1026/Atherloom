@@ -773,15 +773,40 @@ class LocalClientTests(unittest.TestCase):
     def test_maze_and_dungeon_use_verified_host_rules(self):
         catalog_ids = {item["id"] for item in self.client.get("/api/games").json()}
         self.assertTrue({"mist_maze", "ember_dungeon"}.issubset(catalog_ids))
-        blocked = self.client.post("/api/games/mist_maze/action", json={"action": "down"})
-        self.assertEqual(blocked.status_code, 409)
-        moved = self.client.post("/api/games/mist_maze/action", json={"action": "right"}).json()["state"]
-        self.assertEqual((moved["player"], moved["turn"]), ([1, 2], 1))
+        maze = self.client.post("/api/games/mist_maze/action", json={"action": "reset"}).json()["state"]
+        self.assertEqual((len(maze["grid"]), maze["level"]), (9, 1))
+        queue = [(tuple(maze["player"]), [])]
+        seen = {tuple(maze["player"])}
+        directions = {"up": (-1, 0), "down": (1, 0), "left": (0, -1), "right": (0, 1)}
+        path = None
+        while queue:
+            (row, column), steps = queue.pop(0)
+            if [row, column] == maze["goal"]:
+                path = steps
+                break
+            for name, (dr, dc) in directions.items():
+                target = (row + dr, column + dc)
+                if maze["grid"][target[0]][target[1]] != "#" and target not in seen:
+                    seen.add(target)
+                    queue.append((target, steps + [name]))
+        self.assertTrue(path)
+        for direction in path:
+            advanced = self.client.post("/api/games/mist_maze/action", json={"action": direction})
+            self.assertEqual(advanced.status_code, 200, f"{direction} {advanced.text} path={path} grid={maze['grid']}")
+        next_maze = advanced.json()["state"]
+        self.assertEqual(next_maze["level"], 2)
+        self.assertNotEqual(next_maze["grid"], maze["grid"])
         explored = self.client.post("/api/games/ember_dungeon/action", json={"action": "explore"}).json()["state"]
         self.assertIsNotNone(explored["enemy"])
         fought = self.client.post("/api/games/ember_dungeon/action", json={"action": "guard"}).json()["state"]
         self.assertLess(fought["enemy"]["hp"], fought["enemy"]["max_hp"])
         self.assertEqual(fought["room_messages"][-1]["role"], "event")
+
+    def test_ai_game_turn_budget_allows_nine_and_autonomous_mode(self):
+        parsed = app_module.AiGameTurnIn(provider_id="provider", turns=9, autonomous=True)
+        self.assertEqual(parsed.turns, 9)
+        self.assertTrue(parsed.autonomous)
+        self.assertFalse(app_module.ai_game_wants_continue('{"action":"left","continue_playing":false}'))
 
     def test_star_merge_ai_actions_and_fallback_only_choose_legal_moves(self):
         choice, _ = app_module.parse_ai_game_choice(
