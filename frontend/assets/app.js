@@ -553,7 +553,10 @@ async function renderRuntimePanel(){
   try{const data=await api(`/api/motivation/${encodeURIComponent(motivationPersonaKey())}`);$("#motivationEnabled").checked=!!data.enabled;const labels=data.drives||{};$("#motivationPanel").innerHTML=Object.entries(data.state?.drives||{}).map(([key,value])=>`<div class="drive-cell"><span>${escapeHtml(labels[key]?.label||key)}</span><strong>${Number(value).toFixed(1)}</strong><i style="--drive:${Math.max(0,Math.min(100,Number(value)))}%"></i></div>`).join("")+`<p class="muted drive-meta">心跳 ${data.state?.tick_count||0} 次 · ${data.state?.last_tick?new Date(data.state.last_tick).toLocaleString():"尚未运行"}</p>`;}catch(error){$("#motivationPanel").innerHTML=`<p class="muted">欲望状态读取失败：${escapeHtml(error.message)}</p>`;}
   $("#motivationOfflineMode").value=localStorage.getItem(`atherloom:motivation-offline:${motivationPersonaKey()}`)||"limited";
 }
-function openSettings(tab = "providers") { $("#backdrop").hidden = false; $("#settingsPanel").classList.add("open"); $("#settingsPanel").setAttribute("aria-hidden", "false"); switchTab(tab); }
+function openSettings(tab = "providers") {
+  for(const id of ["gameLibrary","mediaSpace","favoritesSpace","roleplaySpace","callSpace","stickyInbox","messageMenu","messageEditor","instructionPicker","worldbookEntryEditor"]){const layer=$("#"+id);if(layer)layer.hidden=true;}
+  $("#backdrop").hidden = false; $("#settingsPanel").classList.add("open"); $("#settingsPanel").setAttribute("aria-hidden", "false"); switchTab(tab);
+}
 function closeSettings() { $("#settingsPanel").classList.remove("open"); $("#settingsPanel").setAttribute("aria-hidden", "true"); $("#backdrop").hidden = true; }
 function switchTab(tab) { document.querySelectorAll(".settings-nav button").forEach(b => b.classList.toggle("active", b.dataset.tab === tab)); document.querySelectorAll(".tab").forEach(s => s.classList.toggle("active", s.id === `tab-${tab}`));if(tab==="runtime")renderRuntimePanel();if(tab==="journal")loadInnerWriting(); }
 function closePopovers() { document.querySelectorAll(".popover").forEach(popover => { popover.hidden = true; }); }
