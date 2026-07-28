@@ -36,6 +36,10 @@ from backend.health import (
 ROOT = Path(__file__).resolve().parents[1]
 FRONTEND = ROOT / "frontend"
 DB_PATH = ROOT / "data" / "local.db"
+DB_SCHEMA_VERSION = 1
+MAX_TOOL_ROUNDS = 4
+MAX_TOOL_CALLS_PER_TURN = 12
+MAX_TOOL_CALLS_PER_ROUND = 4
 DEFAULT_SUMMARY_PROMPT = """请把下面这段较早的对话压缩成连续、忠实、可供后续聊天使用的摘要。\n\n要求：\n1. 保留人物关系、关键事实、决定、承诺、未完成事项和情绪变化。\n2. 不编造双方没有表达过的心意或事实。\n3. 区分用户与助手各自说过的话。\n4. 删除寒暄、重复和已经失效的临时细节。\n5. 使用简洁中文，不评价用户。\n\n会话标题：{{title}}\n已有摘要：{{existing_summary}}\n待总结对话：\n{{conversation}}"""
 
 
@@ -235,6 +239,12 @@ def init_db() -> None:
         board_columns = {row["name"] for row in connection.execute("PRAGMA table_info(board_messages)")}
         if "reply_to" not in board_columns:
             connection.execute("ALTER TABLE board_messages ADD COLUMN reply_to TEXT")
+        current_version = int(connection.execute("PRAGMA user_version").fetchone()[0])
+        if current_version > DB_SCHEMA_VERSION:
+            raise RuntimeError(
+                f"数据库版本 {current_version} 高于当前程序支持的 {DB_SCHEMA_VERSION}，请升级 Atherloom 后再打开"
+            )
+        connection.execute(f"PRAGMA user_version = {DB_SCHEMA_VERSION}")
         connection.commit()
 
 
@@ -1025,6 +1035,44 @@ def mcp_result_text(result: Any) -> str:
     return json.dumps(result, ensure_ascii=False)
 
 
+async def iter_sse_json(lines: Any):
+    """Yield complete JSON SSE events without assuming network chunk boundaries."""
+    data_lines: list[str] = []
+
+    def decode_pending():
+        if not data_lines:
+            return None
+        raw = "\n".join(data_lines).strip()
+        if not raw or raw == "[DONE]":
+            return None
+        try:
+            return json.loads(raw)
+        except (json.JSONDecodeError, TypeError):
+            return None
+
+    async for raw_line in lines:
+        line = str(raw_line or "").rstrip("\r")
+        if not line:
+            event = decode_pending()
+            data_lines.clear()
+            if event is not None:
+                yield event
+            continue
+        if line.startswith(":"):
+            continue
+        if line.startswith("data:"):
+            event = decode_pending()
+            if event is not None:
+                data_lines.clear()
+                yield event
+            elif "\n".join(data_lines).strip() == "[DONE]":
+                data_lines.clear()
+            data_lines.append(line[5:].lstrip())
+    event = decode_pending()
+    if event is not None:
+        yield event
+
+
 def parse_dsml_tool_calls(content: str) -> list[dict[str, Any]]:
     """Parse DSML calls emitted inside assistant content by any gateway."""
     marker = r"[|｜]\s*DSML\s*[|｜]"
@@ -1068,6 +1116,102 @@ def parse_dsml_tool_calls(content: str) -> list[dict[str, Any]]:
             }
         )
     return calls
+
+
+def normalized_provider_tool_response(
+    data: dict[str, Any], protocol: str, bindings: dict[str, Any]
+) -> dict[str, Any]:
+    if protocol == "anthropic":
+        raw_assistant = data.get("content", [])
+        text = "".join(str(block.get("text", "")) for block in raw_assistant if block.get("type") == "text")
+        reasoning = "".join(
+            str(block.get("thinking", "")) for block in raw_assistant if block.get("type") == "thinking"
+        )
+        calls = [
+            {
+                "id": block.get("id") or f"tool-{uuid.uuid4()}",
+                "name": block.get("name", ""),
+                "arguments": dict(block.get("input") or {}),
+                "source": "native",
+            }
+            for block in raw_assistant
+            if block.get("type") == "tool_use" and block.get("name") in bindings
+        ]
+        if not calls:
+            calls = [
+                {
+                    "id": call["id"],
+                    "name": call["function"]["name"],
+                    "arguments": json.loads(call["function"].get("arguments") or "{}"),
+                    "source": "dsml",
+                }
+                for call in parse_dsml_tool_calls(text)
+                if call.get("function", {}).get("name") in bindings
+            ]
+    else:
+        raw_assistant = data.get("choices", [{}])[0].get("message", {})
+        text = raw_assistant.get("content") or ""
+        reasoning = raw_assistant.get("reasoning_content") or raw_assistant.get("reasoning") or ""
+        native_calls = raw_assistant.get("tool_calls", [])
+        parsed_calls = native_calls or parse_dsml_tool_calls(text)
+        calls = [
+            {
+                "id": call.get("id") or f"tool-{uuid.uuid4()}",
+                "name": call.get("function", {}).get("name", ""),
+                "arguments": json.loads(call.get("function", {}).get("arguments") or "{}"),
+                "source": "dsml" if call.get("_dsml") else "native",
+            }
+            for call in parsed_calls
+            if call.get("function", {}).get("name") in bindings
+        ]
+    return {
+        "raw_assistant": raw_assistant,
+        "text": text,
+        "reasoning": reasoning,
+        "calls": calls,
+    }
+
+
+def provider_tool_followup(
+    protocol: str, raw_assistant: Any, calls: list[dict[str, Any]], results: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    if calls and calls[0].get("source") == "dsml":
+        result_prompt = (
+            "<tool_results>\n"
+            + "\n".join(
+                json.dumps({"tool": call["name"], "result": result["content"]}, ensure_ascii=False)
+                for call, result in zip(calls, results)
+            )
+            + "\n</tool_results>\n以上是宿主刚刚执行工具得到的真实结果。"
+            "请根据结果继续完成任务；需要其他工具时可再次调用，不要输出 DSML 源码或伪造结果。"
+        )
+        return [
+            {"role": "assistant", "content": raw_assistant},
+            {"role": "user", "content": result_prompt},
+        ]
+    if protocol == "anthropic":
+        return [
+            {"role": "assistant", "content": raw_assistant},
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": call["id"],
+                        "content": result["content"],
+                        "is_error": result["is_error"],
+                    }
+                    for call, result in zip(calls, results)
+                ],
+            },
+        ]
+    return [
+        {"role": "assistant", **raw_assistant},
+        *[
+            {"role": "tool", "tool_call_id": call["id"], "content": result["content"]}
+            for call, result in zip(calls, results)
+        ],
+    ]
 
 
 async def bound_mcp_catalog(servers: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], dict[str, tuple[dict[str, Any], str]]]:
@@ -2057,6 +2201,8 @@ def load_chat_context(connection: sqlite3.Connection, body: ChatIn, cutoff: str 
     game_context = f"<verified_game_result>\n{body.game_context}\n</verified_game_result>\n这是宿主刚刚真实执行的游戏结果。请以当前人格自然回应，可以主动谈起收获与心情，不要声称没有玩过。" if body.game_context else ""
     if body.media_context and body.media_context.lstrip().startswith("书籍："):
         media_context = f"<shared_reading_evidence>\n{body.media_context}\n</shared_reading_evidence>\n只能依据用户主动提供的本地阅读片段讨论本书；不要假装读过未提供的正文，也不要推断后续内容。"
+    elif body.media_context and body.media_context.lstrip().startswith("歌曲："):
+        media_context = f"<shared_listening_evidence>\n{body.media_context}\n</shared_listening_evidence>\n你正在和用户一起听歌。只能依据歌曲标题、当前播放点与已经出现的歌词回应；不得编造歌词、歌手或歌曲背景。"
     else:
         media_context = f"<shared_watch_evidence>\n{body.media_context}\n</shared_watch_evidence>\n只能依据以上播放点之前的证据讨论当前影片；不要剧透、不要假装看见字幕未提供的画面。" if body.media_context else ""
     scan_messages=[*messages,{"role":"user","content":body.content}]
@@ -2065,7 +2211,9 @@ def load_chat_context(connection: sqlite3.Connection, body: ChatIn, cutoff: str 
     for entry in [item for item in entries if item.get("position")=="history_after" and item.get("role")!="system"]: messages.append({"role":entry.get("role","user"),"content":entry["content"]})
     worldbook_before="<worldbook_instructions>\n"+"\n\n".join(before)+"\n</worldbook_instructions>" if before else "";worldbook_after="<worldbook_instructions>\n"+"\n\n".join(after)+"\n</worldbook_instructions>" if after else ""
     roleplay_context = relevant_roleplay_archive(connection, body.content)
-    system_parts = [part for part in (worldbook_before,persona_prompt,worldbook_after,conversation["summary"] if persona_config["history_enabled"] else "", time_context, question_context, formatting_context, tool_context, game_tool_context, game_context, media_context, roleplay_context) if part]
+    stable_parts = [part for part in (worldbook_before,persona_prompt,worldbook_after,conversation["summary"] if persona_config["history_enabled"] else "",question_context,formatting_context,tool_context,game_tool_context) if part]
+    runtime_parts = [part for part in (time_context,game_context,media_context,roleplay_context) if part]
+    system_parts = [*stable_parts, "\n\n<runtime_context>\n" + "\n\n".join(runtime_parts) + "\n</runtime_context>" if runtime_parts else ""]
     if system_parts:
         messages.insert(0, {"role": "system", "content": "\n\n".join(system_parts)})
     return provider, persona_prompt, messages
@@ -2408,7 +2556,12 @@ async def chat(body: ChatIn) -> StreamingResponse:
                     payload = {"model": provider["model"], "max_tokens": provider["max_tokens"], "temperature": provider["temperature"], "top_p": provider["top_p"], "stream": bool(provider["stream_enabled"]), "messages": [m for m in provider_messages if m["role"] != "system"]}
                     if system:
                         explicit_anthropic_cache = provider["cache_mode"] in ("auto", "anthropic") and provider["prompt_cache"]
-                        payload["system"] = [{"type": "text", "text": system, **({"cache_control": {"type": "ephemeral"}} if explicit_anthropic_cache else {})}]
+                        marker = "\n\n<runtime_context>\n"
+                        stable_system, separator, runtime_system = system.partition(marker)
+                        payload["system"] = [
+                            {"type": "text", "text": stable_system, **({"cache_control": {"type": "ephemeral"}} if explicit_anthropic_cache and stable_system else {})},
+                            *([{"type": "text", "text": marker.lstrip() + runtime_system}] if separator else []),
+                        ]
                     headers = {"x-api-key": provider["api_key"], "anthropic-version": "2023-06-01", "content-type": "application/json"}
                     url = provider_endpoint(provider["base_url"], "anthropic")
                 else:
@@ -2434,135 +2587,102 @@ async def chat(body: ChatIn) -> StreamingResponse:
                     mcp_tools = [*builtin_tools, *mcp_tools]
                     mcp_bindings = {**builtin_bindings, **mcp_bindings}
                     if mcp_tools:
-                        probe_payload = dict(payload)
-                        probe_payload["stream"] = False
+                        tool_payload = dict(payload)
+                        tool_payload["stream"] = False
                         if provider["protocol"] == "anthropic":
-                            probe_payload["tools"] = [{"name": tool["name"], "description": tool["description"], "input_schema": tool["input_schema"]} for tool in mcp_tools]
+                            tool_payload["tools"] = [
+                                {"name": tool["name"], "description": tool["description"], "input_schema": tool["input_schema"]}
+                                for tool in mcp_tools
+                            ]
                         else:
-                            probe_payload["tools"] = [{"type": "function", "function": {"name": tool["name"], "description": tool["description"], "parameters": tool["input_schema"]}} for tool in mcp_tools]
-                        probe = await client.post(url, headers=headers, json=probe_payload)
-                        if probe.status_code >= 400:
-                            yield json.dumps({"error": f"API {probe.status_code}: {probe.text[:500]}"}, ensure_ascii=False) + "\n"
-                            return
-                        data = probe.json()
-                        if provider["protocol"] == "anthropic":
-                            blocks = data.get("content", [])
-                            calls = [block for block in blocks if block.get("type") == "tool_use" and block.get("name") in mcp_bindings]
-                            text_content = "".join(str(block.get("text", "")) for block in blocks if block.get("type") == "text")
-                            dsml_calls = [
-                                call for call in parse_dsml_tool_calls(text_content)
-                                if call.get("function", {}).get("name") in mcp_bindings
-                            ] if not calls else []
-                            if calls:
-                                results = []
-                                for call in calls[:8]:
-                                    server, original = mcp_bindings[call["name"]]
-                                    try:
-                                        policy = expanded_mcp_server(server).get("tool_policies", {}).get(original, "allow")
-                                        if policy == "ask":
-                                            raise PermissionError("该工具设置为“每次询问”，当前未获得用户确认")
-                                        tool_arguments = dict(call.get("input") or {})
-                                        if server.get("transport") == "builtin":
-                                            tool_arguments["_persona_key"] = motivation_key(body.persona_id)
-                                            tool_arguments["_conversation_id"] = body.conversation_id
-                                            tool_arguments["_source_message_id"] = user_id
-                                        result = await invoke_server_tool(server, original, tool_arguments)
-                                        content, is_error = mcp_result_text(result), False
-                                        record_mcp_audit(server["id"], original, "success", conversation_id=body.conversation_id, user_message_id=user_id)
-                                    except Exception as exc:
-                                        content, is_error = f"MCP 工具调用失败：{exc}", True
-                                        record_mcp_audit(server["id"], original, "blocked" if isinstance(exc, PermissionError) else "error", str(exc), body.conversation_id, user_id)
-                                    results.append({"type": "tool_result", "tool_use_id": call["id"], "content": content[:50000], "is_error": is_error})
-                                probe_payload.pop("tools", None)
-                                probe_payload["messages"] = [*probe_payload["messages"], {"role": "assistant", "content": blocks}, {"role": "user", "content": results}]
-                                payload = probe_payload
-                                payload["stream"] = bool(provider["stream_enabled"])
-                            elif dsml_calls:
-                                dsml_results = []
-                                for call in dsml_calls[:8]:
-                                    function = call["function"]
-                                    server, original = mcp_bindings[function["name"]]
-                                    try:
-                                        policy = expanded_mcp_server(server).get("tool_policies", {}).get(original, "allow")
-                                        if policy == "ask":
-                                            raise PermissionError("该工具设置为“每次询问”，当前未获得用户确认")
-                                        arguments = json.loads(function.get("arguments") or "{}")
-                                        if server.get("transport") == "builtin":
-                                            arguments["_persona_key"] = motivation_key(body.persona_id)
-                                            arguments["_conversation_id"] = body.conversation_id
-                                            arguments["_source_message_id"] = user_id
-                                        result = await invoke_server_tool(server, original, arguments)
-                                        content = mcp_result_text(result)
-                                        record_mcp_audit(server["id"], original, "success", conversation_id=body.conversation_id, user_message_id=user_id)
-                                    except Exception as exc:
-                                        content = f"MCP 工具调用失败：{exc}"
-                                        record_mcp_audit(server["id"], original, "blocked" if isinstance(exc, PermissionError) else "error", str(exc), body.conversation_id, user_id)
-                                    dsml_results.append({"tool": function["name"], "result": content[:50000]})
-                                result_prompt = (
-                                    "<tool_results>\n"
-                                    + "\n".join(json.dumps(item, ensure_ascii=False) for item in dsml_results)
-                                    + "\n</tool_results>\n以上是宿主刚刚执行工具得到的真实结果。"
-                                    "请根据结果直接回答用户，不要再次输出 DSML、工具调用代码或伪造结果。"
-                                )
-                                probe_payload.pop("tools", None)
-                                probe_payload["messages"] = [
-                                    *probe_payload["messages"],
-                                    {"role": "assistant", "content": blocks},
-                                    {"role": "user", "content": result_prompt},
-                                ]
-                                payload = probe_payload
-                                payload["stream"] = bool(provider["stream_enabled"])
-                            else:
-                                full = text_content
-                                reasoning = "".join(str(block.get("thinking", "")) for block in blocks if block.get("type") == "thinking")
+                            tool_payload["tools"] = [
+                                {
+                                    "type": "function",
+                                    "function": {
+                                        "name": tool["name"],
+                                        "description": tool["description"],
+                                        "parameters": tool["input_schema"],
+                                    },
+                                }
+                                for tool in mcp_tools
+                            ]
+                        tool_calls_used = 0
+                        tool_reasoning: list[str] = []
+                        for _round in range(MAX_TOOL_ROUNDS):
+                            probe = await client.post(url, headers=headers, json=tool_payload)
+                            if probe.status_code >= 400:
+                                yield json.dumps({"error": f"API {probe.status_code}: {probe.text[:500]}"}, ensure_ascii=False) + "\n"
+                                return
+                            normalized = normalized_provider_tool_response(
+                                probe.json(), provider["protocol"], mcp_bindings
+                            )
+                            if normalized["reasoning"]:
+                                tool_reasoning.append(normalized["reasoning"])
+                            if not normalized["calls"]:
+                                full = normalized["text"]
+                                reasoning = "\n\n".join(tool_reasoning)
                                 direct_answer = True
-                        else:
-                            message = data.get("choices", [{}])[0].get("message", {})
-                            native_calls = message.get("tool_calls", [])
-                            dsml_calls = parse_dsml_tool_calls(message.get("content") or "") if not native_calls else []
-                            calls = [call for call in [*native_calls, *dsml_calls] if call.get("function", {}).get("name") in mcp_bindings]
-                            if calls:
-                                tool_messages = []
-                                dsml_results = []
-                                for call in calls[:8]:
-                                    function = call.get("function", {})
-                                    server, original = mcp_bindings[function["name"]]
-                                    try:
-                                        policy = expanded_mcp_server(server).get("tool_policies", {}).get(original, "allow")
-                                        if policy == "ask":
-                                            raise PermissionError("该工具设置为“每次询问”，当前未获得用户确认")
-                                        arguments = json.loads(function.get("arguments") or "{}")
-                                        if server.get("transport") == "builtin":
-                                            arguments["_persona_key"] = motivation_key(body.persona_id)
-                                            arguments["_conversation_id"] = body.conversation_id
-                                            arguments["_source_message_id"] = user_id
-                                        result = await invoke_server_tool(server, original, arguments)
-                                        content = mcp_result_text(result)
-                                        record_mcp_audit(server["id"], original, "success", conversation_id=body.conversation_id, user_message_id=user_id)
-                                    except Exception as exc:
-                                        content = f"MCP 工具调用失败：{exc}"
-                                        record_mcp_audit(server["id"], original, "blocked" if isinstance(exc, PermissionError) else "error", str(exc), body.conversation_id, user_id)
-                                    if call.get("_dsml"):
-                                        dsml_results.append({"tool": function["name"], "result": content[:50000]})
-                                    else:
-                                        tool_messages.append({"role": "tool", "tool_call_id": call["id"], "content": content[:50000]})
-                                probe_payload.pop("tools", None)
-                                if dsml_results:
-                                    result_prompt = (
-                                        "<tool_results>\n"
-                                        + "\n".join(json.dumps(item, ensure_ascii=False) for item in dsml_results)
-                                        + "\n</tool_results>\n以上是宿主刚刚执行工具得到的真实结果。"
-                                        "请根据结果直接回答用户，不要再次输出 DSML、工具调用代码或伪造结果。"
+                                break
+                            remaining = MAX_TOOL_CALLS_PER_TURN - tool_calls_used
+                            calls = normalized["calls"]
+                            allowed = min(len(calls), MAX_TOOL_CALLS_PER_ROUND, remaining)
+                            results: list[dict[str, Any]] = []
+                            for index, call in enumerate(calls):
+                                if index >= allowed:
+                                    results.append(
+                                        {"content": "本轮工具调用超过安全预算，宿主未执行", "is_error": True}
                                     )
-                                    probe_payload["messages"] = [*probe_payload["messages"], message, {"role": "user", "content": result_prompt}]
-                                else:
-                                    probe_payload["messages"] = [*probe_payload["messages"], message, *tool_messages]
-                                payload = probe_payload
-                                payload["stream"] = bool(provider["stream_enabled"])
-                            else:
-                                full = message.get("content") or ""
-                                reasoning = message.get("reasoning_content") or message.get("reasoning") or ""
-                                direct_answer = True
+                                    continue
+                                server, original = mcp_bindings[call["name"]]
+                                try:
+                                    policy = expanded_mcp_server(server).get("tool_policies", {}).get(original, "allow")
+                                    if policy == "ask":
+                                        raise PermissionError("该工具设置为“每次询问”，当前未获得用户确认")
+                                    arguments = dict(call.get("arguments") or {})
+                                    if server.get("transport") == "builtin":
+                                        arguments["_persona_key"] = motivation_key(body.persona_id)
+                                        arguments["_conversation_id"] = body.conversation_id
+                                        arguments["_source_message_id"] = user_id
+                                    result = await invoke_server_tool(server, original, arguments)
+                                    content, is_error = mcp_result_text(result)[:50000], False
+                                    record_mcp_audit(
+                                        server["id"], original, "success",
+                                        conversation_id=body.conversation_id, user_message_id=user_id,
+                                    )
+                                except asyncio.CancelledError:
+                                    raise
+                                except Exception as exc:
+                                    content, is_error = f"MCP 工具调用失败：{exc}", True
+                                    record_mcp_audit(
+                                        server["id"], original,
+                                        "blocked" if isinstance(exc, PermissionError) else "error",
+                                        str(exc), body.conversation_id, user_id,
+                                    )
+                                results.append({"content": content, "is_error": is_error})
+                            tool_calls_used += min(len(calls), remaining)
+                            tool_payload["messages"] = [
+                                *tool_payload["messages"],
+                                *provider_tool_followup(
+                                    provider["protocol"], normalized["raw_assistant"], calls, results
+                                ),
+                            ]
+                            if tool_calls_used >= MAX_TOOL_CALLS_PER_TURN:
+                                break
+                        if not direct_answer:
+                            reasoning = "\n\n".join(tool_reasoning)
+                            if reasoning:
+                                yield json.dumps({"reasoning_delta": reasoning}, ensure_ascii=False) + "\n"
+                            tool_payload.pop("tools", None)
+                            tool_payload["messages"] = [
+                                *tool_payload["messages"],
+                                {
+                                    "role": "user",
+                                    "content": "工具调用预算已用完。请只根据上面的真实工具结果直接回答用户，"
+                                    "不要继续请求工具，也不要编造未取得的结果。",
+                                },
+                            ]
+                            payload = tool_payload
+                            payload["stream"] = bool(provider["stream_enabled"])
                         if direct_answer:
                             if reasoning:
                                 yield json.dumps({"reasoning_delta": reasoning}, ensure_ascii=False) + "\n"
@@ -2588,14 +2708,8 @@ async def chat(body: ChatIn) -> StreamingResponse:
                             if full:
                                 yield json.dumps({"delta": full}, ensure_ascii=False) + "\n"
                         else:
-                            async for line in response.aiter_lines():
-                                if not line.startswith("data:"):
-                                    continue
-                                raw = line[5:].strip()
-                                if not raw or raw == "[DONE]":
-                                    continue
+                            async for event in iter_sse_json(response.aiter_lines()):
                                 try:
-                                    event = json.loads(raw)
                                     if provider["protocol"] == "anthropic":
                                         event_delta = event.get("delta", {})
                                         delta = event_delta.get("text", "") if event.get("type") == "content_block_delta" else ""
@@ -2637,6 +2751,8 @@ async def chat(body: ChatIn) -> StreamingResponse:
                         connection.execute("UPDATE conversations SET title=? WHERE id=?", (generated_title, body.conversation_id))
                         connection.commit()
                 yield json.dumps({"done": True, "assistant_id": assistant_id, "user_id": user_id, "title": generated_title}, ensure_ascii=False) + "\n"
+        except asyncio.CancelledError:
+            raise
         except Exception as exc:
             yield json.dumps({"error": str(exc)}, ensure_ascii=False) + "\n"
 

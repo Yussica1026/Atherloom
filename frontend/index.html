@@ -13,7 +13,7 @@
   <title>Atherloom</title>
   <link rel="manifest" href="manifest.json">
   <link rel="icon" href="assets/app-icon.svg" type="image/svg+xml">
-  <link rel="stylesheet" href="assets/app.css?v=0470">
+  <link rel="stylesheet" href="assets/app.css?v=0473">
   <script>document.documentElement.dataset.launchMode=performance.getEntriesByType("navigation")[0]?.type==="reload"?"refresh":"full";</script>
 </head>
 <body>
@@ -42,6 +42,7 @@
           <div class="sidebar-hub-panel" id="createHubPanel" hidden>
             <button class="sidebar-hub-link" id="openReading"><span>▤</span><span><strong>一起读书</strong><small>书签、批注与 AI 陪读</small></span></button>
             <button class="sidebar-hub-link" id="openCinema"><span>▷</span><span><strong>一起看电影</strong><small>本地影片与字幕陪看</small></span></button>
+            <button class="sidebar-hub-link" id="openListening"><span>♪</span><span><strong>一起听歌</strong><small>本地歌单、歌词与陪听</small></span></button>
             <button class="sidebar-hub-link" id="openRoleplay"><span>⌘</span><span><strong>角色剧场</strong><small>旁白、世界书与小说存档</small></span></button>
           </div>
         </div>
@@ -181,6 +182,26 @@
             <div class="subtitle-ribbon" id="subtitleRibbon"><p>字幕会在这里跟随播放。</p></div>
             <div class="watch-chat" id="watchChat"><p class="watch-chat-empty">选好影片后，就在这里边看边聊。</p></div>
             <form id="watchQuestionForm"><textarea id="watchQuestion" rows="3" placeholder="问问这一幕，或者说说你的感受"></textarea><label><input type="checkbox" id="watchNoSpoilers" checked> 只谈播放到这里的内容</label><button class="primary">问这一幕</button></form>
+          </aside>
+        </div>
+      </section>
+      <section id="listeningRoom" hidden>
+        <div class="listening-stage">
+          <section class="listening-deck">
+            <div class="tape-window" aria-hidden="true"><i></i><span></span><i></i></div>
+            <div class="listening-copy"><span class="eyebrow">PRIVATE LISTENING ROOM</span><h3 id="listeningTitle">把第一首歌放进来</h3><p id="listeningStatus">音频只在这台设备播放，不上传歌曲文件。</p></div>
+            <audio id="musicPlayer" preload="metadata"></audio>
+            <div class="listening-progress"><span id="musicCurrent">00:00</span><input id="musicSeek" type="range" min="0" max="1000" value="0" aria-label="播放进度"><span id="musicDuration">00:00</span></div>
+            <div class="listening-controls"><button class="ghost" id="musicPrevious" aria-label="上一首">‹</button><button class="primary listening-play" id="musicPlay">播放</button><button class="ghost" id="musicNext" aria-label="下一首">›</button></div>
+            <div class="media-toolbar listening-import"><button class="primary" id="chooseMusic">添加本地歌曲</button><button class="ghost" id="chooseLyrics">添加 LRC 歌词</button><button class="ghost" id="clearPlaylist">清空歌单</button></div>
+            <input id="musicInput" type="file" accept="audio/*,.mp3,.m4a,.aac,.wav,.ogg,.flac" multiple hidden><input id="lyricsInput" type="file" accept=".lrc,text/plain" hidden>
+            <div id="musicPlaylist" class="music-playlist"><p class="muted">还没有歌曲。</p></div>
+          </section>
+          <aside class="listening-companion">
+            <div class="listening-presence"><span></span><strong>正在一起听</strong><small id="listeningPersona">当前人格会依据播放点和已出现歌词陪你聊。</small></div>
+            <div id="lyricRibbon" class="lyric-ribbon"><p>添加 LRC 歌词后，这里会跟着唱到的位置移动。</p></div>
+            <div class="watch-chat" id="listeningChat"><p class="watch-chat-empty">歌响起来以后，可以说说这一句让你想起了什么。</p></div>
+            <form id="listeningQuestionForm"><textarea id="listeningQuestion" rows="3" placeholder="说说这一刻，或者问问这句歌词"></textarea><button class="primary">和他聊这首歌</button></form>
           </aside>
         </div>
       </section>
@@ -454,8 +475,8 @@
   <div class="message-menu-backdrop" id="messageEditor" hidden><form class="message-editor" role="dialog" aria-label="修改消息"><h3>修改内容</h3><textarea id="messageEditContent" rows="7" required></textarea><div class="form-actions"><button type="button" class="ghost" id="cancelMessageEdit">取消</button><button class="primary">保存修改</button></div></form></div>
   <div class="message-menu-backdrop" id="instructionPicker" hidden><section class="message-editor instruction-picker" role="dialog" aria-label="指令注入"><h3>指令注入</h3><p class="muted">仅对当前聊天窗口生效，可随时取消。</p><div id="instructionBookList" class="instruction-book-list"></div><div class="form-actions"><button type="button" class="primary" id="closeInstructionPicker">完成</button></div></section></div>
   <div class="message-menu-backdrop" id="worldbookEntryEditor" hidden><form class="message-editor worldbook-entry-editor" role="dialog" aria-label="世界书条目"><h3>世界书条目</h3><label>条目名称<input name="name" maxlength="100" required></label><label>内容<textarea name="content" rows="8" required></textarea></label><label class="check-label"><input name="enabled" type="checkbox" checked>启用条目</label><label class="check-label"><input name="constant" type="checkbox">常驻激活</label><label>关键词（每行一个）<textarea name="keywords" rows="3"></textarea></label><div class="entry-options"><label class="check-label"><input name="use_regex" type="checkbox">使用正则</label><label class="check-label"><input name="case_sensitive" type="checkbox">区分大小写</label><label>扫描深度<input name="scan_depth" type="number" min="1" max="100" value="4"></label><label>注入位置<select name="position"><option value="system_before">系统提示前</option><option value="system_after" selected>系统提示后</option><option value="history_before">对话历史前</option><option value="history_after">对话历史后</option></select></label><label>注入角色<select name="role"><option value="system">系统</option><option value="user">用户</option><option value="assistant">助手</option></select></label><label>优先级<input name="priority" type="number" min="-9999" max="9999" value="0"></label></div><div class="form-actions"><button type="button" class="ghost" id="cancelWorldbookEntry">取消</button><button class="primary">保存条目</button></div></form></div>
-  <script src="assets/standalone.js?v=0470"></script>
-  <script src="assets/app.js?v=0470" defer></script>
+  <script src="assets/standalone.js?v=0473"></script>
+  <script src="assets/app.js?v=0473" defer></script>
   <script>
     if ('serviceWorker' in navigator) {
       navigator.serviceWorker.register('service-worker.js?v=78', { updateViaCache: 'none' }).then(registration => registration.update());

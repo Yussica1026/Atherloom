@@ -249,8 +249,11 @@ public class MainActivity extends Activity {
                 JSONObject payload = new JSONObject(); payload.put("model", provider.getString("model")); payload.put("max_tokens", request.optInt("max_tokens", provider.optInt("max_tokens", 4096))); payload.put("temperature", request.optDouble("temperature", provider.optDouble("temperature", 0.7))); payload.put("top_p", request.optDouble("top_p", provider.optDouble("top_p", 1.0))); payload.put("messages", requestMessages);
                 if (protocol.equals("anthropic") && request.has("system")) {
                     String cacheMode=provider.optString("cache_mode","auto");
-                    if((cacheMode.equals("auto")||cacheMode.equals("anthropic"))&&provider.optBoolean("prompt_cache",true))payload.put("system",new JSONArray().put(new JSONObject().put("type","text").put("text",request.getString("system")).put("cache_control",new JSONObject().put("type","ephemeral"))));
-                    else payload.put("system", request.getString("system"));
+                    String system=request.getString("system"), marker="\n\n<runtime_context>\n"; int markerIndex=system.indexOf(marker);
+                    String stable=markerIndex>=0?system.substring(0,markerIndex):system, runtime=markerIndex>=0?system.substring(markerIndex+2):"";
+                    JSONArray blocks=new JSONArray(); JSONObject stableBlock=new JSONObject().put("type","text").put("text",stable);
+                    if((cacheMode.equals("auto")||cacheMode.equals("anthropic"))&&provider.optBoolean("prompt_cache",true)&&!stable.isEmpty())stableBlock.put("cache_control",new JSONObject().put("type","ephemeral"));
+                    blocks.put(stableBlock); if(!runtime.isEmpty())blocks.put(new JSONObject().put("type","text").put("text",runtime)); payload.put("system",blocks);
                 }
                 if (!protocol.equals("anthropic") && provider.optString("cache_mode").equals("openai") && !provider.optString("prompt_cache_key").isEmpty()) payload.put("prompt_cache_key", provider.optString("prompt_cache_key"));
                 if (request.has("tools")) {
