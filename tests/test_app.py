@@ -664,8 +664,28 @@ class LocalClientTests(unittest.TestCase):
         changed = self.client.post(f"/api/motivation/{key}/event", json={"event": "happy_moment"}).json()
         self.assertGreater(changed["state"]["drives"]["joy"], 35)
         default_state = self.client.get("/api/motivation/__default__").json()
-        self.assertFalse(default_state["enabled"])
+        self.assertTrue(default_state["enabled"])
         self.assertEqual(default_state["state"]["drives"]["joy"], 35)
+
+    def test_memories_and_vectors_are_scoped_per_persona(self):
+        first = self.client.post("/api/memories", json={
+            "title": "甲的秘密", "content": "只属于甲", "persona_key": "persona-a"
+        }).json()
+        self.client.post("/api/memories", json={
+            "title": "乙的秘密", "content": "只属于乙", "persona_key": "persona-b"
+        })
+        self.assertEqual([item["id"] for item in self.client.get("/api/memories?persona_key=persona-a").json()], [first["id"]])
+        with app_module.closing(app_module.db()) as connection:
+            recalled = app_module.retrieve_memories(connection, "秘密", persona_key="persona-a")
+        self.assertEqual([item["id"] for item in recalled], [first["id"]])
+
+    def test_conversation_delete_does_not_touch_other_conversations(self):
+        first = self.client.post("/api/conversations", json={"title": "甲", "persona_id": "persona-a"}).json()
+        second = self.client.post("/api/conversations", json={"title": "乙", "persona_id": "persona-b"}).json()
+        self.assertEqual(self.client.delete(f"/api/conversations/{first['id']}").status_code, 200)
+        with app_module.closing(app_module.db()) as connection:
+            self.assertIsNone(connection.execute("SELECT 1 FROM conversations WHERE id=?", (first["id"],)).fetchone())
+            self.assertIsNotNone(connection.execute("SELECT 1 FROM conversations WHERE id=?", (second["id"],)).fetchone())
 
     def test_motivation_rejects_unknown_event_names(self):
         response = self.client.post("/api/motivation/__default__/event", json={"event": "unknown_legacy_event"})
@@ -735,6 +755,17 @@ class LocalClientTests(unittest.TestCase):
         claw = self.client.post("/api/games/claw_machine/action", json={"action": "grab"}).json()
         self.assertEqual(claw["state"]["coins"], 90)
         self.assertEqual(self.client.get("/api/games/claw_machine/state").json()["state"]["turn"], 1)
+        checkin = self.client.post("/api/games/claw_machine/action", json={"action": "check_in"}).json()
+        self.assertEqual(checkin["state"]["coins"], 140)
+        self.assertEqual(self.client.post("/api/games/claw_machine/action", json={"action": "check_in"}).status_code, 409)
+        with app_module.closing(app_module.db()) as connection:
+            state = app_module.load_game(connection, "claw_machine", None)
+            state["inventory"] = {"橘子猫": 2}
+            app_module.save_game(connection, "claw_machine", None, state)
+            connection.commit()
+        sold = self.client.post("/api/games/claw_machine/action", json={"action": "sell_all"}).json()
+        self.assertEqual(sold["state"]["coins"], 184)
+        self.assertEqual(sold["state"]["inventory"], {})
         slots = self.client.post("/api/games/cloud_slots/action", json={"action": "spin", "amount": 1}).json()
         self.assertEqual(slots["state"]["turn"], 1)
         self.assertEqual(len(slots["state"]["reels"]), 3)

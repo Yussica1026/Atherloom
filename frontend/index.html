@@ -13,11 +13,11 @@
   <title>Atherloom</title>
   <link rel="manifest" href="manifest.json">
   <link rel="icon" href="assets/app-icon.svg" type="image/svg+xml">
-  <link rel="stylesheet" href="assets/app.css?v=0492">
+  <link rel="stylesheet" href="assets/app.css?v=0495">
   <script>
     // Recovery path for browsers that retained a failed external stylesheet
     // response. This keeps user data untouched and injects only verified CSS.
-    fetch(`assets/app.css?recovery=0492-${Date.now()}`, { cache: "no-store" })
+    fetch(`assets/app.css?recovery=0495-${Date.now()}`, { cache: "no-store" })
       .then(response => {
         const type = response.headers.get("content-type") || "";
         if (!response.ok || !type.includes("text/css")) throw new Error(`CSS ${response.status} ${type}`);
@@ -26,7 +26,7 @@
       .then(css => {
         if (!css.includes("--sidebar") || !css.includes(".app-shell")) throw new Error("CSS content incomplete");
         const style = document.createElement("style");
-        style.dataset.atherloomRecovery = "0492";
+        style.dataset.atherloomRecovery = "0495";
         style.textContent = css;
         document.head.appendChild(style);
       })
@@ -145,7 +145,7 @@
         <section id="clawStage" class="mini-game-stage" hidden>
           <div class="claw-cabinet"><div class="claw-rail"><span id="clawHead">▼</span></div><div class="prize-row" id="clawPrizes"></div></div>
           <div class="game-stats"><span>云贝 <strong id="clawCoins">0</strong></span><span>次数 <strong id="clawTurns">0</strong></span></div>
-          <div class="game-actions"><button class="ghost" data-claw-action="move_left">向左</button><button class="primary" data-claw-action="grab">下爪 · 10 云贝</button><button class="ghost" data-claw-action="move_right">向右</button></div>
+          <div class="game-actions"><button class="ghost" data-claw-action="move_left">向左</button><button class="primary" data-claw-action="grab">下爪 · 10 云贝</button><button class="ghost" data-claw-action="move_right">向右</button><button class="ghost" id="clawCheckin" data-claw-action="check_in">每日签到 · +50</button><button class="ghost" id="clawSellAll" data-claw-action="sell_all">出售全部娃娃</button></div>
           <div class="game-columns"><div><h4>收藏柜</h4><div id="clawInventory" class="catch-list"></div></div><div><h4>抓取记录</h4><div id="clawJournal" class="game-journal"></div></div></div>
         </section>
         <section id="slotsStage" class="mini-game-stage" hidden>
@@ -356,7 +356,7 @@
           <form id="personaForm" class="edit-card visible">
             <label>人格名称<input name="name" required placeholder="例如：私人助手"></label>
             <nav class="persona-tabs" aria-label="人格功能"><button type="button" class="active" data-persona-tab="prompt">提示词</button><button type="button" data-persona-tab="memory">记忆</button><button type="button" data-persona-tab="phrases">快捷短语</button><button type="button" data-persona-tab="request">自定义请求</button><button type="button" data-persona-tab="regex">正则替换</button><button type="button" data-persona-tab="tools">本地工具</button><button type="button" data-persona-tab="mcp">MCP</button></nav>
-            <section class="persona-pane active" data-persona-pane="prompt"><div class="setting-row"><div><strong>打开时进入</strong><small>这个人格下次出现时，从新对话开始或继续上次聊天</small></div><select name="startup_chat"><option value="resume">继续上次对话</option><option value="new">自动新建对话</option></select></div><label>系统指令<textarea name="prompt" rows="12" placeholder="身份、关系、说话方式、做事边界……"></textarea></label></section>
+            <section class="persona-pane active" data-persona-pane="prompt"><div class="setting-row"><div><strong>专属模型线路</strong><small>新对话只使用这条线路，不跟随其他人格切换</small></div><select name="provider_id"><option value="">尚未绑定</option></select></div><div class="setting-row"><div><strong>打开时进入</strong><small>这个人格下次出现时，从新对话开始或继续上次聊天</small></div><select name="startup_chat"><option value="resume">继续上次对话</option><option value="new">自动新建对话</option></select></div><label>系统指令<textarea name="prompt" rows="12" placeholder="身份、关系、说话方式、做事边界……"></textarea></label></section>
             <section class="persona-pane" data-persona-pane="memory"><div class="setting-row"><div><strong>使用记忆</strong><small>允许该人格检索已确认的长期记忆</small></div><label class="switch"><input name="memory_enabled" type="checkbox" checked><span></span></label></div><div class="setting-row"><div><strong>参考历史聊天记录</strong><small>关闭后只读取当前消息与人格提示词</small></div><label class="switch"><input name="history_enabled" type="checkbox" checked><span></span></label></div><label>摘要更新频率（消息条数）<input name="summary_frequency" type="number" min="1" max="200" value="20"></label></section>
             <section class="persona-pane" data-persona-pane="phrases"><label>快捷短语<textarea name="quick_phrases" rows="10" placeholder="每行一条，例如：\n继续说下去\n帮我整理成清单"></textarea><small class="muted">保存后可作为该人格的常用输入短语。</small></label></section>
             <section class="persona-pane" data-persona-pane="request"><label>自定义 Header（JSON）<textarea name="persona_headers" rows="7">{}</textarea></label><label>自定义 Body（JSON）<textarea name="persona_body" rows="9">{}</textarea></label><p class="privacy-note">只允许合法 JSON；模型、消息、API Key 等核心字段仍由线路安全管理。</p></section>
@@ -387,12 +387,12 @@
         <section class="tab" id="tab-memory">
           <h3>记忆库</h3><p class="muted">保存经过确认的长期记忆，并按需注入聊天上下文。</p>
           <div class="memory-status"><span class="status-dot online"></span><div><strong>本地记忆库</strong><small>data/local.db · 已连接</small></div></div>
-          <div class="memory-toolbar"><input id="memorySearch" placeholder="搜索记忆内容"><select id="memoryKindFilter"><option value="">全部类型</option><option value="fact">事实</option><option value="preference">偏好</option><option value="relationship">关系</option><option value="promise">承诺</option><option value="event">事件</option><option value="emotion">情感</option><option value="summary">摘要</option><option value="diary">日记</option><option value="other">其他</option></select></div>
+          <div class="memory-toolbar"><input id="memorySearch" placeholder="搜索记忆内容"><select id="memoryOwnerFilter"><option value="current">当前人格的记忆</option><option value="__unassigned__">未分配旧记忆</option></select><select id="memoryKindFilter"><option value="">全部类型</option><option value="fact">事实</option><option value="preference">偏好</option><option value="relationship">关系</option><option value="promise">承诺</option><option value="event">事件</option><option value="emotion">情感</option><option value="summary">摘要</option><option value="diary">日记</option><option value="other">其他</option></select></div>
           <form id="memoryForm" class="edit-card visible">
             <label>标题<input name="title" required placeholder="这条记忆的简短标题"></label>
             <label>类型<select name="kind"><option value="fact">事实</option><option value="preference">偏好</option><option value="relationship">关系</option><option value="promise">承诺</option><option value="event">事件</option><option value="emotion">情感</option><option value="summary">摘要</option><option value="diary">日记</option><option value="other">其他</option></select></label>
             <label>内容<textarea name="content" rows="5" required placeholder="需要跨窗口记住的内容"></textarea></label>
-            <div class="form-actions"><button type="button" class="ghost" id="cancelMemoryEdit" hidden>取消编辑</button><button class="primary" id="saveMemory">添加记忆</button></div>
+            <div class="form-actions"><button type="button" class="ghost" id="cancelMemoryEdit" hidden>取消编辑</button><button class="primary" id="saveMemory">添加到当前人格</button></div>
           </form>
           <div id="memoryList" class="stack-list"></div>
           <div class="setting-row"><div><strong>本地与远程冲突策略</strong><small>检索结果始终显示来源；默认融合后统一重排</small></div><select id="memoryStrategy"><option value="local_first">本地优先</option><option value="hybrid">融合重排</option><option value="remote_first">远程优先</option></select></div>
@@ -530,11 +530,11 @@
   <div class="message-menu-backdrop" id="messageEditor" hidden><form class="message-editor" role="dialog" aria-label="修改消息"><h3>修改内容</h3><textarea id="messageEditContent" rows="7" required></textarea><div class="form-actions"><button type="button" class="ghost" id="cancelMessageEdit">取消</button><button class="primary">保存修改</button></div></form></div>
   <div class="message-menu-backdrop" id="instructionPicker" hidden><section class="message-editor instruction-picker" role="dialog" aria-label="指令注入"><h3>指令注入</h3><p class="muted">仅对当前聊天窗口生效，可随时取消。</p><div id="instructionBookList" class="instruction-book-list"></div><div class="form-actions"><button type="button" class="primary" id="closeInstructionPicker">完成</button></div></section></div>
   <div class="message-menu-backdrop" id="worldbookEntryEditor" hidden><form class="message-editor worldbook-entry-editor" role="dialog" aria-label="世界书条目"><h3>世界书条目</h3><label>条目名称<input name="name" maxlength="100" required></label><label>内容<textarea name="content" rows="8" required></textarea></label><label class="check-label"><input name="enabled" type="checkbox" checked>启用条目</label><label class="check-label"><input name="constant" type="checkbox">常驻激活</label><label>关键词（每行一个）<textarea name="keywords" rows="3"></textarea></label><div class="entry-options"><label class="check-label"><input name="use_regex" type="checkbox">使用正则</label><label class="check-label"><input name="case_sensitive" type="checkbox">区分大小写</label><label>扫描深度<input name="scan_depth" type="number" min="1" max="100" value="4"></label><label>注入位置<select name="position"><option value="system_before">系统提示前</option><option value="system_after" selected>系统提示后</option><option value="history_before">对话历史前</option><option value="history_after">对话历史后</option></select></label><label>注入角色<select name="role"><option value="system">系统</option><option value="user">用户</option><option value="assistant">助手</option></select></label><label>优先级<input name="priority" type="number" min="-9999" max="9999" value="0"></label></div><div class="form-actions"><button type="button" class="ghost" id="cancelWorldbookEntry">取消</button><button class="primary">保存条目</button></div></form></div>
-  <script src="assets/standalone.js?v=0492"></script>
-  <script src="assets/app.js?v=0492" defer></script>
+  <script src="assets/standalone.js?v=0495"></script>
+  <script src="assets/app.js?v=0495" defer></script>
   <script>
     if ('serviceWorker' in navigator) {
-      navigator.serviceWorker.register('service-worker.js?v=96', { updateViaCache: 'none' }).then(registration => registration.update());
+      navigator.serviceWorker.register('service-worker.js?v=99', { updateViaCache: 'none' }).then(registration => registration.update());
       // Never reload an active room when a new shell takes control. The fresh
       // assets are used on the next natural navigation/open instead.
       navigator.serviceWorker.addEventListener('controllerchange', () => {
