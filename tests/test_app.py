@@ -27,6 +27,34 @@ class LocalClientTests(unittest.TestCase):
         payload = self.client.get("/api/bootstrap").json()
         self.assertEqual(payload["personas"], [])
 
+    def test_database_schema_version_is_recorded_and_future_versions_are_refused(self):
+        with app_module.closing(app_module.db()) as connection:
+            version = connection.execute("PRAGMA user_version").fetchone()[0]
+            self.assertEqual(version, app_module.DB_SCHEMA_VERSION)
+            connection.execute(f"PRAGMA user_version = {app_module.DB_SCHEMA_VERSION + 1}")
+        with self.assertRaisesRegex(RuntimeError, "高于当前程序支持"):
+            app_module.init_db()
+
+    def test_sse_parser_reassembles_multiline_events_and_flushes_final_event(self):
+        async def lines():
+            for line in (
+                ": keepalive",
+                "data: {\"choices\":[{\"delta\":",
+                'data: {\"content\":\"你\"}}]}',
+                "",
+                'data: {"choices":[{"delta":{"content":"好"}}]}',
+                'data: {"choices":[{"delta":{"content":"呀"}}]}',
+            ):
+                yield line
+
+        async def collect():
+            return [event async for event in app_module.iter_sse_json(lines())]
+
+        events = asyncio.run(collect())
+        self.assertEqual(events[0]["choices"][0]["delta"]["content"], "你")
+        self.assertEqual(events[1]["choices"][0]["delta"]["content"], "好")
+        self.assertEqual(events[2]["choices"][0]["delta"]["content"], "呀")
+
     def test_roleplay_story_keeps_independent_drafts_and_exact_checkpoint(self):
         narrator = self.client.post("/api/providers", json={"name":"旁白","protocol":"openai","base_url":"https://example.com/v1","model":"n"}).json()
         actor = self.client.post("/api/providers", json={"name":"角色","protocol":"openai","base_url":"https://example.com/v1","model":"a"}).json()
@@ -172,6 +200,63 @@ class LocalClientTests(unittest.TestCase):
             {"query": "2026年 猫 趣闻", "max_results": 5},
         )
         self.assertTrue(calls[0]["_dsml"])
+
+    def test_tool_responses_normalize_for_repeated_openai_rounds(self):
+        raw = {
+            "choices": [{
+                "message": {
+                    "role": "assistant",
+                    "content": None,
+                    "tool_calls": [{
+                        "id": "call-1",
+                        "type": "function",
+                        "function": {"name": "atherloom_memory_search", "arguments": '{"query":"石头狗"}'},
+                    }],
+                }
+            }]
+        }
+        normalized = app_module.normalized_provider_tool_response(
+            raw, "openai", {"atherloom_memory_search": object()}
+        )
+        self.assertEqual(normalized["calls"][0]["arguments"], {"query": "石头狗"})
+        followup = app_module.provider_tool_followup(
+            "openai", normalized["raw_assistant"], normalized["calls"],
+            [{"content": '{"memories":[]}', "is_error": False}],
+        )
+        self.assertEqual(followup[1]["tool_call_id"], "call-1")
+        self.assertEqual(followup[1]["role"], "tool")
+
+    def test_python_and_standalone_tool_loops_share_hard_budgets(self):
+        backend = (app_module.ROOT / "backend" / "app.py").read_text(encoding="utf-8")
+        standalone = (app_module.ROOT / "frontend" / "assets" / "standalone.js").read_text(encoding="utf-8")
+        self.assertEqual(app_module.MAX_TOOL_ROUNDS, 4)
+        self.assertEqual(app_module.MAX_TOOL_CALLS_PER_TURN, 12)
+        self.assertEqual(app_module.MAX_TOOL_CALLS_PER_ROUND, 4)
+        self.assertIn("for _round in range(MAX_TOOL_ROUNDS)", backend)
+        self.assertIn("maxToolRounds=4,maxToolCalls=12,maxCallsPerRound=4", standalone)
+        self.assertIn("工具调用预算已用完", backend)
+        self.assertIn("工具调用预算已用完", standalone)
+
+    def test_dynamic_runtime_context_stays_after_cacheable_prompt_prefix(self):
+        provider = self.client.post("/api/providers", json={"name":"cache","protocol":"anthropic","base_url":"https://api.anthropic.com","model":"m"}).json()
+        conversation = self.client.post("/api/conversations", json={"provider_id":provider["id"]}).json()
+        body = app_module.ChatIn(
+            conversation_id=conversation["id"], content="你好", provider_id=provider["id"],
+            local_time="2026-07-28 20:00", media_context="歌曲：《测试》\n当前播放点：00:10",
+        )
+        with app_module.closing(app_module.db()) as connection:
+            _, _, messages = app_module.load_chat_context(connection, body)
+        system = messages[0]["content"]
+        marker = "\n\n<runtime_context>\n"
+        self.assertIn(marker, system)
+        stable, runtime = system.split(marker, 1)
+        self.assertNotIn("2026-07-28 20:00", stable)
+        self.assertIn("2026-07-28 20:00", runtime)
+        self.assertIn("<shared_listening_evidence>", runtime)
+        android = (app_module.ROOT / "android" / "app" / "src" / "main" / "java" / "app" / "atherloom" / "mobile" / "MainActivity.java").read_text(encoding="utf-8")
+        standalone = (app_module.ROOT / "frontend" / "assets" / "standalone.js").read_text(encoding="utf-8")
+        self.assertIn('marker="\\n\\n<runtime_context>\\n"', android)
+        self.assertIn('const marker="\\n\\n<runtime_context>\\n"', standalone)
 
     def test_one_click_ai_tools_control_exists(self):
         html = (app_module.ROOT / "frontend" / "index.html").read_text(encoding="utf-8")
@@ -344,6 +429,21 @@ class LocalClientTests(unittest.TestCase):
         self.assertIn("<shared_reading_evidence>", system)
         self.assertIn("门关上了", system)
         self.assertIn("不要假装读过未提供的正文", system)
+        self.assertNotIn("<shared_watch_evidence>", system)
+
+    def test_shared_listening_evidence_is_hidden_and_scoped(self):
+        provider = self.client.post("/api/providers", json={"name":"listener","protocol":"openai","base_url":"https://example.com/v1","model":"m"}).json()
+        conversation = self.client.post("/api/conversations", json={"provider_id":provider["id"]}).json()
+        body = app_module.ChatIn(
+            conversation_id=conversation["id"], content="你听到这里是什么感觉？",
+            provider_id=provider["id"], media_context="歌曲：《晚风》\n当前播放点：01:20\n[01:18] 风吹过旧站台",
+        )
+        with app_module.closing(app_module.db()) as connection:
+            _, _, messages = app_module.load_chat_context(connection, body)
+        system = "\n".join(str(item["content"]) for item in messages if item["role"] == "system")
+        self.assertIn("<shared_listening_evidence>", system)
+        self.assertIn("风吹过旧站台", system)
+        self.assertIn("不得编造歌词", system)
         self.assertNotIn("<shared_watch_evidence>", system)
 
     def test_provider_endpoint_avoids_duplicate_v1(self):
