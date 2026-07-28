@@ -36,7 +36,7 @@ from backend.health import (
 ROOT = Path(__file__).resolve().parents[1]
 FRONTEND = ROOT / "frontend"
 DB_PATH = ROOT / "data" / "local.db"
-DB_SCHEMA_VERSION = 1
+DB_SCHEMA_VERSION = 2
 MAX_TOOL_ROUNDS = 4
 MAX_TOOL_CALLS_PER_TURN = 12
 MAX_TOOL_CALLS_PER_ROUND = 4
@@ -107,6 +107,13 @@ def init_db() -> None:
               id TEXT PRIMARY KEY, memory_id TEXT NOT NULL, action TEXT NOT NULL,
               detail TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS memory_embeddings (
+              memory_id TEXT PRIMARY KEY, provider_id TEXT NOT NULL, model TEXT NOT NULL,
+              content_hash TEXT NOT NULL, dimensions INTEGER NOT NULL,
+              vector_json TEXT NOT NULL, updated_at TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS memory_embeddings_route
+              ON memory_embeddings(provider_id, model);
             CREATE TABLE IF NOT EXISTS summary_versions (
               id TEXT PRIMARY KEY, conversation_id TEXT NOT NULL, content TEXT NOT NULL,
               source TEXT NOT NULL DEFAULT 'manual', created_at TEXT NOT NULL
@@ -344,7 +351,15 @@ class AppSettingsIn(BaseModel):
     message_density: str = Field(default="comfortable", pattern="^(compact|comfortable|relaxed)$")
     code_theme: str = Field(default="auto", pattern="^(auto|light|dark|contrast)$")
     memory_strategy: str = Field(default="hybrid", pattern="^(local_first|hybrid|remote_first)$")
+    vector_memory_enabled: bool = False
+    embedding_provider_id: str = ""
+    embedding_model: str = Field(default="", max_length=200)
     stream_speed: str = Field(default="standard", pattern="^(slow|standard|fast)$")
+
+
+class MemoryVectorRebuildIn(BaseModel):
+    provider_id: str = ""
+    model: str = Field(default="", max_length=200)
 
 
 class MemoryIn(BaseModel):
@@ -541,6 +556,9 @@ def bootstrap() -> dict[str, Any]:
         "message_density": settings_rows.get("message_density", "comfortable"),
         "code_theme": settings_rows.get("code_theme", "auto"),
         "memory_strategy": settings_rows.get("memory_strategy", "hybrid"),
+        "vector_memory_enabled": settings_rows.get("vector_memory_enabled", "false") == "true",
+        "embedding_provider_id": settings_rows.get("embedding_provider_id", ""),
+        "embedding_model": settings_rows.get("embedding_model", ""),
         "stream_speed": settings_rows.get("stream_speed", "standard"),
     }}
 
@@ -561,6 +579,9 @@ def save_settings(body: AppSettingsIn) -> dict[str, Any]:
             "message_density": body.message_density,
             "code_theme": body.code_theme,
             "memory_strategy": body.memory_strategy,
+            "vector_memory_enabled": "true" if body.vector_memory_enabled else "false",
+            "embedding_provider_id": body.embedding_provider_id,
+            "embedding_model": body.embedding_model,
             "stream_speed": body.stream_speed,
         }
         connection.executemany(
@@ -621,6 +642,7 @@ def update_memory(memory_id: str, body: MemoryIn) -> dict[str, Any]:
         if not cursor.rowcount:
             raise HTTPException(404, "记忆不存在")
         connection.execute("INSERT INTO memory_audit VALUES (?, ?, 'edit', '', ?)", (str(uuid.uuid4()), memory_id, updated))
+        connection.execute("DELETE FROM memory_embeddings WHERE memory_id=?", (memory_id,))
         connection.commit()
         row = connection.execute("SELECT * FROM memories WHERE id=?", (memory_id,)).fetchone()
     return memory_dict(row)
@@ -1350,12 +1372,19 @@ async def invoke_builtin_tool(name: str, arguments: dict[str, Any]) -> dict[str,
         return {"query": query, "results": results, "result_count": len(results)}
     if name == "memory_search":
         query = str(arguments.get("query", "")).strip()
+        query_vector, provider_id, model = await query_memory_vector(query) if query else (None, "", "")
         with closing(db()) as connection:
             if query:
-                rows = connection.execute(
-                    "SELECT * FROM memories WHERE deleted_at IS NULL AND (title LIKE ? OR content LIKE ?) ORDER BY starred DESC,updated_at DESC LIMIT 20",
-                    (f"%{query}%", f"%{query}%"),
-                ).fetchall()
+                recalled = retrieve_memories(
+                    connection, query, limit=20, char_budget=30000,
+                    query_vector=query_vector,
+                    embedding_provider_id=provider_id,
+                    embedding_model=model,
+                )
+                return {"memories": [{
+                    "memory_id": item["id"], "title": item["title"], "content": item["content"],
+                    "kind": item["kind"], "reason": item["reason"],
+                } for item in recalled]}
             else:
                 rows = connection.execute("SELECT * FROM memories WHERE deleted_at IS NULL ORDER BY starred DESC,updated_at DESC LIMIT 20").fetchall()
         return {"memories": [{"memory_id": row["id"], "title": row["title"], "content": row["content"], "kind": row["kind"], "updated_at": row["updated_at"]} for row in rows]}
@@ -2228,6 +2257,170 @@ def provider_endpoint(base_url: str, protocol: str) -> str:
     return base + "/chat/completions"
 
 
+def provider_embeddings_endpoint(base_url: str) -> str:
+    base = base_url.rstrip("/")
+    if base.endswith("/chat/completions"):
+        base = base[:-len("/chat/completions")]
+    if base.endswith("/embeddings"):
+        return base
+    return base + "/embeddings"
+
+
+def memory_embedding_text(title: str, content: str) -> str:
+    return f"{title.strip()}\n{content.strip()}".strip()
+
+
+def memory_content_hash(title: str, content: str) -> str:
+    return hashlib.sha256(memory_embedding_text(title, content).encode("utf-8")).hexdigest()
+
+
+def normalize_vector(values: Any) -> list[float]:
+    if not isinstance(values, list) or not values:
+        raise ValueError("向量服务返回了空向量")
+    vector = [float(value) for value in values]
+    if any(not math.isfinite(value) for value in vector):
+        raise ValueError("向量服务返回了无效数值")
+    magnitude = math.sqrt(sum(value * value for value in vector))
+    if magnitude <= 0:
+        raise ValueError("向量服务返回了零向量")
+    return [value / magnitude for value in vector]
+
+
+async def create_embeddings(provider: sqlite3.Row | dict[str, Any], model: str, texts: list[str]) -> list[list[float]]:
+    if not texts:
+        return []
+    if provider["protocol"] == "anthropic":
+        raise ValueError("Anthropic 原生线路不提供 OpenAI 兼容的 embeddings 接口")
+    chosen_model = model.strip()
+    if not chosen_model:
+        raise ValueError("请填写向量模型名称")
+    headers = provider_headers(provider["protocol"], provider["api_key"], provider["custom_headers"])
+    payload = {"model": chosen_model, "input": texts}
+    async with httpx.AsyncClient(timeout=60) as client:
+        response = await client.post(provider_embeddings_endpoint(provider["base_url"]), headers=headers, json=payload)
+    if response.status_code >= 400:
+        raise ValueError(f"向量服务请求失败：HTTP {response.status_code} · {response.text[:240]}")
+    data = response.json()
+    rows = data.get("data", []) if isinstance(data, dict) else []
+    if len(rows) != len(texts):
+        raise ValueError("向量服务返回数量与输入不一致")
+    ordered = sorted(rows, key=lambda item: int(item.get("index", 0)))
+    vectors = [normalize_vector(item.get("embedding")) for item in ordered]
+    dimensions = {len(vector) for vector in vectors}
+    if len(dimensions) != 1:
+        raise ValueError("向量服务返回的维度不一致")
+    return vectors
+
+
+def vector_memory_config(connection: sqlite3.Connection) -> tuple[bool, str, str]:
+    rows = {
+        row["key"]: row["value"] for row in connection.execute(
+            "SELECT key,value FROM app_settings WHERE key IN ('vector_memory_enabled','embedding_provider_id','embedding_model')"
+        )
+    }
+    return rows.get("vector_memory_enabled") == "true", rows.get("embedding_provider_id", ""), rows.get("embedding_model", "")
+
+
+async def query_memory_vector(query: str) -> tuple[list[float] | None, str, str]:
+    with closing(db()) as connection:
+        enabled, provider_id, model = vector_memory_config(connection)
+        provider = connection.execute(
+            "SELECT * FROM providers WHERE id=? AND enabled=1", (provider_id,)
+        ).fetchone() if enabled and provider_id and model else None
+    if not provider:
+        return None, provider_id, model
+    try:
+        return (await create_embeddings(provider, model, [query]))[0], provider_id, model
+    except (httpx.HTTPError, json.JSONDecodeError, TypeError, ValueError):
+        return None, provider_id, model
+
+
+@app.get("/api/memories/vector/status")
+def memory_vector_status() -> dict[str, Any]:
+    with closing(db()) as connection:
+        enabled, provider_id, model = vector_memory_config(connection)
+        memories = connection.execute(
+            "SELECT id,title,content FROM memories WHERE archived=0 AND deleted_at IS NULL"
+        ).fetchall()
+        indexed_rows = {
+            row["memory_id"]: row for row in connection.execute(
+                "SELECT memory_id,content_hash FROM memory_embeddings WHERE provider_id=? AND model=?",
+                (provider_id, model),
+            )
+        } if provider_id and model else {}
+        indexed = sum(
+            1 for row in memories
+            if row["id"] in indexed_rows
+            and indexed_rows[row["id"]]["content_hash"] == memory_content_hash(row["title"], row["content"])
+        )
+        provider = connection.execute(
+            "SELECT id,name,protocol,enabled FROM providers WHERE id=?", (provider_id,)
+        ).fetchone() if provider_id else None
+    return {
+        "enabled": enabled,
+        "provider_id": provider_id,
+        "provider_name": provider["name"] if provider else "",
+        "provider_available": bool(provider and provider["enabled"]),
+        "model": model,
+        "total": len(memories),
+        "indexed": indexed,
+        "stale": len(memories) - indexed,
+    }
+
+
+@app.post("/api/memories/vector/rebuild")
+async def rebuild_memory_vectors(body: MemoryVectorRebuildIn) -> dict[str, Any]:
+    with closing(db()) as connection:
+        _, saved_provider_id, saved_model = vector_memory_config(connection)
+        provider_id = body.provider_id.strip() or saved_provider_id
+        model = body.model.strip() or saved_model
+        provider = connection.execute(
+            "SELECT * FROM providers WHERE id=? AND enabled=1", (provider_id,)
+        ).fetchone()
+        memories = connection.execute(
+            "SELECT id,title,content FROM memories WHERE archived=0 AND deleted_at IS NULL ORDER BY updated_at"
+        ).fetchall()
+    if not provider:
+        raise HTTPException(422, "请选择一条可用的 API 线路")
+    if provider["protocol"] == "anthropic":
+        raise HTTPException(422, "Anthropic 原生线路不能用于向量记忆，请选择 OpenAI 兼容线路")
+    if not model:
+        raise HTTPException(422, "请填写向量模型名称")
+    indexed = 0
+    dimensions = 0
+    try:
+        for start in range(0, len(memories), 32):
+            batch = memories[start:start + 32]
+            vectors = await create_embeddings(
+                provider, model, [memory_embedding_text(row["title"], row["content"]) for row in batch]
+            )
+            dimensions = len(vectors[0]) if vectors else dimensions
+            updated = now_iso()
+            with closing(db()) as connection:
+                connection.executemany(
+                    """INSERT INTO memory_embeddings
+                       (memory_id,provider_id,model,content_hash,dimensions,vector_json,updated_at)
+                       VALUES (?,?,?,?,?,?,?)
+                       ON CONFLICT(memory_id) DO UPDATE SET
+                         provider_id=excluded.provider_id,model=excluded.model,
+                         content_hash=excluded.content_hash,dimensions=excluded.dimensions,
+                         vector_json=excluded.vector_json,updated_at=excluded.updated_at""",
+                    [(
+                        row["id"], provider_id, model,
+                        memory_content_hash(row["title"], row["content"]),
+                        len(vector), json.dumps(vector, separators=(",", ":")), updated,
+                    ) for row, vector in zip(batch, vectors)],
+                )
+                connection.commit()
+            indexed += len(batch)
+    except (httpx.HTTPError, json.JSONDecodeError, TypeError, ValueError) as exc:
+        raise HTTPException(502, str(exc)) from exc
+    return {
+        "ok": True, "provider_id": provider_id, "model": model,
+        "indexed": indexed, "total": len(memories), "dimensions": dimensions,
+    }
+
+
 def attachment_content(text: str, attachments: list[dict[str, Any]], protocol: str, vision_mode: str = "auto") -> str | list[dict[str, Any]]:
     if not attachments:
         return text
@@ -2388,13 +2581,29 @@ def memory_type_hints(query: str) -> set[str]:
     return hints
 
 
-def retrieve_memories(connection: sqlite3.Connection, query: str, limit: int = 6, char_budget: int = 6000) -> list[dict[str, Any]]:
+def retrieve_memories(
+    connection: sqlite3.Connection,
+    query: str,
+    limit: int = 6,
+    char_budget: int = 6000,
+    query_vector: list[float] | None = None,
+    embedding_provider_id: str = "",
+    embedding_model: str = "",
+) -> list[dict[str, Any]]:
     query_terms = text_bigrams(query)
-    if not query_terms:
+    if not query_terms and not query_vector:
         return []
     rows = list(connection.execute("SELECT * FROM memories WHERE archived=0 AND deleted_at IS NULL"))
     if not rows:
         return []
+    vector_rows: dict[str, sqlite3.Row] = {}
+    if query_vector and embedding_provider_id and embedding_model:
+        vector_rows = {
+            item["memory_id"]: item for item in connection.execute(
+                "SELECT * FROM memory_embeddings WHERE provider_id=? AND model=? AND dimensions=?",
+                (embedding_provider_id, embedding_model, len(query_vector)),
+            )
+        }
     documents = [Counter(text_bigrams(f"{row['title']} {row['content']}")) for row in rows]
     frequencies = Counter(term for terms in documents for term in terms)
     average_length = sum(sum(terms.values()) for terms in documents) / len(documents)
@@ -2403,17 +2612,26 @@ def retrieve_memories(connection: sqlite3.Connection, query: str, limit: int = 6
     ranked = []
     for row, terms in zip(rows, documents):
         length = max(1, sum(terms.values()))
-        score = 0.0
+        lexical_score = 0.0
         matched = []
         for term in query_terms & terms.keys():
             document_frequency = frequencies[term]
             idf = math.log(1 + (len(rows) - document_frequency + .5) / (document_frequency + .5))
             frequency = terms[term]
-            score += idf * (frequency * 2.2) / (frequency + 1.2 * (.25 + .75 * length / max(1, average_length)))
+            lexical_score += idf * (frequency * 2.2) / (frequency + 1.2 * (.25 + .75 * length / max(1, average_length)))
             if idf > .35:
                 matched.append(term)
-        if not score:
+        semantic_score: float | None = None
+        saved_vector = vector_rows.get(row["id"])
+        if saved_vector and saved_vector["content_hash"] == memory_content_hash(row["title"], row["content"]):
+            try:
+                vector = json.loads(saved_vector["vector_json"])
+                semantic_score = sum(left * right for left, right in zip(query_vector or [], vector))
+            except (json.JSONDecodeError, TypeError, ValueError):
+                semantic_score = None
+        if not lexical_score and (semantic_score is None or semantic_score < .2):
             continue
+        score = lexical_score + (max(0.0, semantic_score) * 1.35 if semantic_score is not None and semantic_score >= .2 else 0.0)
         if row["kind"] in type_hints:
             score += .35
         if row["starred"]:
@@ -2423,15 +2641,15 @@ def retrieve_memories(connection: sqlite3.Connection, query: str, limit: int = 6
             score += .12 / (1 + age_days / 90)
         except (TypeError, ValueError):
             pass
-        ranked.append({"score": score, "row": row, "terms": set(terms), "matched": matched})
+        ranked.append({"score": score, "lexical_score": lexical_score, "semantic_score": semantic_score, "row": row, "terms": set(terms), "matched": matched})
     ranked.sort(key=lambda item: item["score"], reverse=True)
     ranked_ids = {item["row"]["id"] for item in ranked}
     for row, terms in zip(rows, documents):
         if row["starred"] and row["id"] not in ranked_ids:
-            ranked.append({"score": .32, "row": row, "terms": set(terms), "matched": []})
+            ranked.append({"score": .32, "lexical_score": 0.0, "semantic_score": None, "row": row, "terms": set(terms), "matched": []})
     if not ranked:
         recent = sorted(zip(rows, documents), key=lambda item: item[0]["updated_at"], reverse=True)[:min(3, limit)]
-        ranked = [{"score": .08, "row": row, "terms": set(terms), "matched": []} for row, terms in recent]
+        ranked = [{"score": .08, "lexical_score": 0.0, "semantic_score": None, "row": row, "terms": set(terms), "matched": []} for row, terms in recent]
 
     selected = []
     used_chars = 0
@@ -2491,7 +2709,16 @@ async def chat(body: ChatIn) -> StreamingResponse:
             bound_mcp_servers = [dict(row) for row in connection.execute(f"SELECT * FROM mcp_servers WHERE enabled=1 AND name IN ({placeholders})", bound_names)]
         permission_row = connection.execute("SELECT value FROM app_settings WHERE key='tool_permissions'").fetchone()
         permissions = json.loads(permission_row["value"]) if permission_row else {"memory_read": "allow"}
-        memory_sources = retrieve_memories(connection, body.content) if permissions.get("memory_read") == "allow" and persona_config["memory_enabled"] else []
+        if permissions.get("memory_read") == "allow" and persona_config["memory_enabled"]:
+            query_vector, embedding_provider_id, embedding_model = await query_memory_vector(body.content)
+            memory_sources = retrieve_memories(
+                connection, body.content,
+                query_vector=query_vector,
+                embedding_provider_id=embedding_provider_id,
+                embedding_model=embedding_model,
+            )
+        else:
+            memory_sources = []
         if memory_sources:
             memory_context = "<relevant_memories>\n" + "\n\n".join(
                 f"[memory:{item['id']}] {item['title']}\n{item['content']}" for item in memory_sources

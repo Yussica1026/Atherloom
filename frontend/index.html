@@ -13,7 +13,7 @@
   <title>Atherloom</title>
   <link rel="manifest" href="manifest.json">
   <link rel="icon" href="assets/app-icon.svg" type="image/svg+xml">
-  <link rel="stylesheet" href="assets/app.css?v=0473">
+  <link rel="stylesheet" href="assets/app.css?v=0474">
   <script>document.documentElement.dataset.launchMode=performance.getEntriesByType("navigation")[0]?.type==="reload"?"refresh":"full";</script>
 </head>
 <body>
@@ -348,6 +348,13 @@
           </form>
           <div id="memoryList" class="stack-list"></div>
           <div class="setting-row"><div><strong>本地与远程冲突策略</strong><small>检索结果始终显示来源；默认融合后统一重排</small></div><select id="memoryStrategy"><option value="local_first">本地优先</option><option value="hybrid">融合重排</option><option value="remote_first">远程优先</option></select></div>
+          <div class="setting-row"><div><strong>向量记忆</strong><small>用语义相似度补充关键词检索；服务不可用时自动退回本地关键词</small></div><label class="switch"><input id="vectorMemoryEnabled" type="checkbox"><span></span></label></div>
+          <div class="vector-memory-config" id="vectorMemoryConfig">
+            <label>向量线路<select id="embeddingProvider"></select></label>
+            <label>向量模型<input id="embeddingModel" placeholder="例如 text-embedding-3-small"></label>
+            <div class="vector-memory-actions"><button class="ghost" type="button" id="rebuildMemoryVectors">重建向量索引</button><small id="vectorMemoryStatus">尚未建立索引</small></div>
+            <small class="muted">点击重建会把当前未归档记忆的标题与正文发送给所选向量线路；向量结果只保存在本机。</small>
+          </div>
           <p class="privacy-note">自动总结提取的长期记忆会先进入待确认区；确认后才保存，不会直接污染正式记忆库。</p>
         </section>
 
@@ -475,11 +482,11 @@
   <div class="message-menu-backdrop" id="messageEditor" hidden><form class="message-editor" role="dialog" aria-label="修改消息"><h3>修改内容</h3><textarea id="messageEditContent" rows="7" required></textarea><div class="form-actions"><button type="button" class="ghost" id="cancelMessageEdit">取消</button><button class="primary">保存修改</button></div></form></div>
   <div class="message-menu-backdrop" id="instructionPicker" hidden><section class="message-editor instruction-picker" role="dialog" aria-label="指令注入"><h3>指令注入</h3><p class="muted">仅对当前聊天窗口生效，可随时取消。</p><div id="instructionBookList" class="instruction-book-list"></div><div class="form-actions"><button type="button" class="primary" id="closeInstructionPicker">完成</button></div></section></div>
   <div class="message-menu-backdrop" id="worldbookEntryEditor" hidden><form class="message-editor worldbook-entry-editor" role="dialog" aria-label="世界书条目"><h3>世界书条目</h3><label>条目名称<input name="name" maxlength="100" required></label><label>内容<textarea name="content" rows="8" required></textarea></label><label class="check-label"><input name="enabled" type="checkbox" checked>启用条目</label><label class="check-label"><input name="constant" type="checkbox">常驻激活</label><label>关键词（每行一个）<textarea name="keywords" rows="3"></textarea></label><div class="entry-options"><label class="check-label"><input name="use_regex" type="checkbox">使用正则</label><label class="check-label"><input name="case_sensitive" type="checkbox">区分大小写</label><label>扫描深度<input name="scan_depth" type="number" min="1" max="100" value="4"></label><label>注入位置<select name="position"><option value="system_before">系统提示前</option><option value="system_after" selected>系统提示后</option><option value="history_before">对话历史前</option><option value="history_after">对话历史后</option></select></label><label>注入角色<select name="role"><option value="system">系统</option><option value="user">用户</option><option value="assistant">助手</option></select></label><label>优先级<input name="priority" type="number" min="-9999" max="9999" value="0"></label></div><div class="form-actions"><button type="button" class="ghost" id="cancelWorldbookEntry">取消</button><button class="primary">保存条目</button></div></form></div>
-  <script src="assets/standalone.js?v=0473"></script>
-  <script src="assets/app.js?v=0473" defer></script>
+  <script src="assets/standalone.js?v=0474"></script>
+  <script src="assets/app.js?v=0474" defer></script>
   <script>
     if ('serviceWorker' in navigator) {
-      navigator.serviceWorker.register('service-worker.js?v=78', { updateViaCache: 'none' }).then(registration => registration.update());
+      navigator.serviceWorker.register('service-worker.js?v=79', { updateViaCache: 'none' }).then(registration => registration.update());
       navigator.serviceWorker.addEventListener('controllerchange', () => {
         if (!sessionStorage.getItem('atherloom:sw-reloaded-v65')) {
           sessionStorage.setItem('atherloom:sw-reloaded-v65', '1');
