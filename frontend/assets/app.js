@@ -331,6 +331,7 @@ function renderMcpServers(){const list=$("#mcpServerList");if(!list)return;list.
 function resetMcpForm(){const form=$("#mcpServerForm");form.reset();form.elements.enabled.checked=true;form.elements.headers.value="{}";form.elements.env.value="{}";delete form.dataset.editing;$("#cancelMcpEdit").hidden=true;$("#saveMcpServer").textContent="保存连接";updateMcpTransportFields();}
 
 function renderSettings() {
+  if($("#embeddingProvider")){const selected=$("#embeddingProvider").value||state.settings.embedding_provider_id||"";$("#embeddingProvider").innerHTML=`<option value="">选择 API 线路</option>`+state.providers.filter(item=>item.protocol!=="anthropic").map(item=>`<option value="${item.id}">${escapeHtml(item.name)}</option>`).join("");$("#embeddingProvider").value=state.providers.some(item=>item.id===selected&&item.protocol!=="anthropic")?selected:"";}
   $("#providerList").innerHTML = state.providers.map(p => `<div class="list-card"><div><strong>${escapeHtml(p.name)}</strong><small>${escapeHtml(p.protocol)} · ${escapeHtml(p.model)} · 温度 ${p.temperature ?? 0.7} · ${p.has_api_key ? "Key 已保存" : "无 Key"}</small></div><div class="provider-card-actions"><button data-edit-provider="${p.id}">编辑</button><button data-delete-provider="${p.id}">删除</button></div></div>`).join("") || ($("#providerForm").hidden ? `<div class="empty-provider"><p class="muted">还没有 API 线路。</p><button class="primary" id="emptyAddProvider">添加第一条线路</button></div>` : "");
   $("#personaList").innerHTML = state.personas.map(p => `<div class="list-card"><div><strong>${escapeHtml(p.name)}</strong><small>${escapeHtml(p.prompt.slice(0, 70) || "空白人格")}</small></div><div class="provider-card-actions"><button data-edit-persona="${p.id}">编辑</button><button data-delete-persona="${p.id}">删除</button></div></div>`).join("");
   renderWorldbooks();
@@ -381,9 +382,13 @@ async function bootstrap() {
   $("#streamSpeed").value = state.settings.stream_speed || "standard";
   $("#proactiveQuestions").checked = !!state.settings.proactive_questions;
   $("#memoryStrategy").value = state.settings.memory_strategy || "hybrid";
+  $("#vectorMemoryEnabled").checked = !!state.settings.vector_memory_enabled;
+  $("#embeddingProvider").innerHTML = `<option value="">选择 API 线路</option>` + state.providers.filter(item=>item.protocol!=="anthropic").map(item=>`<option value="${item.id}">${escapeHtml(item.name)}</option>`).join("");
+  $("#embeddingProvider").value = state.settings.embedding_provider_id || "";
+  $("#embeddingModel").value = state.settings.embedding_model || "";
   document.querySelectorAll("[data-permission]").forEach(select => select.value = state.settings.tool_permissions?.[select.dataset.permission] || "ask");
   applyAppearance();
-  renderProfile(); renderTimeGreeting(); renderHistory(); renderSettings(); renderPickers(); renderMcpAudit(); updateMcpTransportFields();
+  renderProfile(); renderTimeGreeting(); renderHistory(); renderSettings(); renderPickers(); renderMcpAudit(); updateMcpTransportFields(); await refreshVectorMemoryStatus();
   const startup=startupConversationPlan(activePersona(),state.conversations);
   if(startup.mode==="new"&&state.provider)await newConversation();else if(startup.conversationId)await openConversation(startup.conversationId);
   await loadUnreadStickyNotes();
@@ -604,7 +609,14 @@ async function restoreLocalBackup(file) {
 
 let settingsSaveTimer;
 function appSettingsPayload(){
-  return {auto_title_mode:$("#autoTitleMode").value,summary_enabled:$("#summaryEnabled").checked,summary_trigger_rounds:Number($("#summaryRounds").value),summary_prompt:$("#summaryPrompt").value,display_name:$("#displayName").value.trim(),proactive_questions:$("#proactiveQuestions").checked,font_scale:Number($("#fontScale").value),message_density:$("#messageDensity").value,code_theme:$("#codeTheme").value,memory_strategy:$("#memoryStrategy").value,stream_speed:$("#streamSpeed").value,tool_permissions:Object.fromEntries([...document.querySelectorAll("[data-permission]")].map(select=>[select.dataset.permission,select.value]))};
+  return {auto_title_mode:$("#autoTitleMode").value,summary_enabled:$("#summaryEnabled").checked,summary_trigger_rounds:Number($("#summaryRounds").value),summary_prompt:$("#summaryPrompt").value,display_name:$("#displayName").value.trim(),proactive_questions:$("#proactiveQuestions").checked,font_scale:Number($("#fontScale").value),message_density:$("#messageDensity").value,code_theme:$("#codeTheme").value,memory_strategy:$("#memoryStrategy").value,vector_memory_enabled:$("#vectorMemoryEnabled").checked,embedding_provider_id:$("#embeddingProvider").value,embedding_model:$("#embeddingModel").value.trim(),stream_speed:$("#streamSpeed").value,tool_permissions:Object.fromEntries([...document.querySelectorAll("[data-permission]")].map(select=>[select.dataset.permission,select.value]))};
+}
+async function refreshVectorMemoryStatus(){
+  try{const status=await api("/api/memories/vector/status");$("#vectorMemoryStatus").textContent=status.total?`已索引 ${status.indexed}/${status.total}${status.stale?` · ${status.stale} 条待更新`:""}`:"记忆库为空";return status;}catch(error){$("#vectorMemoryStatus").textContent=`状态读取失败：${error.message}`;return null;}
+}
+async function rebuildMemoryVectors(){
+  await persistAppSettingsNow();const button=$("#rebuildMemoryVectors");button.disabled=true;$("#vectorMemoryStatus").textContent="正在建立向量索引…";
+  try{const result=await api("/api/memories/vector/rebuild",{method:"POST",body:JSON.stringify({provider_id:$("#embeddingProvider").value,model:$("#embeddingModel").value.trim()})});$("#vectorMemoryStatus").textContent=`已索引 ${result.indexed}/${result.total} · ${result.dimensions||0} 维`;}catch(error){$("#vectorMemoryStatus").textContent=`重建失败：${error.message}`;}finally{button.disabled=false;}
 }
 async function persistAppSettingsNow(){
   clearTimeout(settingsSaveTimer);state.settings=await api("/api/settings",{method:"PUT",body:JSON.stringify(appSettingsPayload())});applyAppearance();renderProfile();renderTimeGreeting();$("#summarySaveState").textContent="已保存到本地";$("#toolSaveState").textContent="AI 工具权限已保存并生效";return state.settings;
@@ -625,6 +637,9 @@ function saveAppSettings() {
       message_density: $("#messageDensity").value,
       code_theme: $("#codeTheme").value,
       memory_strategy: $("#memoryStrategy").value,
+      vector_memory_enabled: $("#vectorMemoryEnabled").checked,
+      embedding_provider_id: $("#embeddingProvider").value,
+      embedding_model: $("#embeddingModel").value.trim(),
       stream_speed: $("#streamSpeed").value,
       tool_permissions
     }) });
@@ -752,6 +767,10 @@ $("#messageDensity").onchange = event => { state.settings.message_density = even
 $("#streamSpeed").onchange=event=>{state.settings.stream_speed=event.target.value;saveAppSettings();};
 $("#codeTheme").onchange = event => { state.settings.code_theme = event.target.value; applyAppearance(); saveAppSettings(); };
 $("#memoryStrategy").onchange = saveAppSettings;
+$("#vectorMemoryEnabled").onchange = saveAppSettings;
+$("#embeddingProvider").onchange = saveAppSettings;
+$("#embeddingModel").oninput = saveAppSettings;
+$("#rebuildMemoryVectors").onclick = rebuildMemoryVectors;
 $("#resetSummaryPrompt").onclick = () => { $("#summaryPrompt").value = $("#summaryPrompt").dataset.defaultPrompt; saveAppSettings(); };
 document.querySelectorAll("[data-permission]").forEach(select => select.onchange = saveAppSettings);
 $("#enableAiTools").onclick = () => {

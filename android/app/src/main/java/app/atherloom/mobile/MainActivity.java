@@ -220,6 +220,42 @@ public class MainActivity extends Activity {
             } catch (Exception error) { return failure(error); } finally { if (connection != null) connection.disconnect(); }
         }
 
+        @JavascriptInterface public String embed(String raw) {
+            HttpURLConnection connection = null;
+            try {
+                JSONObject request = new JSONObject(raw);
+                JSONObject provider = new JSONObject(secrets.getString("provider:" + request.getString("provider_id"), "{}"));
+                if (!provider.has("base_url")) throw new Exception("向量线路不存在");
+                if (provider.optString("protocol", "openai").equals("anthropic")) throw new Exception("Anthropic 原生线路不提供向量接口");
+                String base = provider.getString("base_url").replaceAll("/+$", "").replaceAll("/chat/completions$", "");
+                String endpoint = base.endsWith("/embeddings") ? base : base + "/embeddings";
+                connection = (HttpURLConnection)new URL(endpoint).openConnection();
+                connection.setRequestMethod("POST"); connection.setDoOutput(true);
+                connection.setConnectTimeout(25000); connection.setReadTimeout(60000);
+                connection.setRequestProperty("Content-Type", "application/json");
+                connection.setRequestProperty("Authorization", "Bearer " + provider.optString("api_key"));
+                JSONObject custom = new JSONObject(provider.optString("custom_headers", "{}"));
+                for (Iterator<String> keys = custom.keys(); keys.hasNext();) { String header = keys.next(); connection.setRequestProperty(header, custom.getString(header)); }
+                JSONObject payload = new JSONObject().put("model", request.getString("model")).put("input", request.getJSONArray("texts"));
+                try (OutputStream output = connection.getOutputStream()) { output.write(payload.toString().getBytes(StandardCharsets.UTF_8)); }
+                int status = connection.getResponseCode(); String response = read(status >= 400 ? connection.getErrorStream() : connection.getInputStream());
+                if (status >= 400) throw new Exception("向量服务 HTTP " + status + " · " + response.substring(0, Math.min(240, response.length())));
+                JSONArray rows = new JSONObject(response).optJSONArray("data"), vectors = new JSONArray();
+                if (rows == null || rows.length() != request.getJSONArray("texts").length()) throw new Exception("向量返回数量不一致");
+                JSONObject[] ordered = new JSONObject[rows.length()];
+                for (int i = 0; i < rows.length(); i++) { JSONObject row = rows.getJSONObject(i); int index = row.optInt("index", i); if (index < 0 || index >= ordered.length) throw new Exception("向量索引无效"); ordered[index] = row; }
+                for (JSONObject row : ordered) {
+                    if (row == null) throw new Exception("向量索引不完整");
+                    JSONArray source = row.getJSONArray("embedding"), normalized = new JSONArray(); double magnitude = 0;
+                    for (int i = 0; i < source.length(); i++) { double value = source.getDouble(i); magnitude += value * value; }
+                    magnitude = Math.sqrt(magnitude); if (magnitude <= 0) throw new Exception("向量服务返回了零向量");
+                    for (int i = 0; i < source.length(); i++) normalized.put(source.getDouble(i) / magnitude);
+                    vectors.put(normalized);
+                }
+                return vectors.toString();
+            } catch (Exception error) { return failure(error); } finally { if (connection != null) connection.disconnect(); }
+        }
+
         @JavascriptInterface public String webSearch(String raw) {
             HttpURLConnection connection = null;
             try {

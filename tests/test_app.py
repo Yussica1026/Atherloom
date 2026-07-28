@@ -547,6 +547,64 @@ class LocalClientTests(unittest.TestCase):
             results = app_module.retrieve_memories(connection, "你好")
         self.assertEqual(results[0]["id"], memory["id"])
 
+    def test_vector_recall_finds_semantic_match_and_ignores_stale_content(self):
+        semantic = self.client.post("/api/memories", json={
+            "title": "rain walk", "content": "walked by the river and finally felt calm", "kind": "event",
+        }).json()
+        unrelated = self.client.post("/api/memories", json={
+            "title": "breakfast", "content": "drank hot milk in the morning", "kind": "preference",
+        }).json()
+        with app_module.closing(app_module.db()) as connection:
+            connection.executemany(
+                "INSERT INTO memory_embeddings VALUES (?,?,?,?,?,?,?)",
+                [
+                    (semantic["id"], "route", "embed", app_module.memory_content_hash(semantic["title"], semantic["content"]), 2, "[1,0]", app_module.now_iso()),
+                    (unrelated["id"], "route", "embed", app_module.memory_content_hash(unrelated["title"], unrelated["content"]), 2, "[0,1]", app_module.now_iso()),
+                ],
+            )
+            connection.commit()
+            results = app_module.retrieve_memories(
+                connection, "a peaceful experience",
+                query_vector=[1.0, 0.0], embedding_provider_id="route", embedding_model="embed",
+            )
+        self.assertEqual(results[0]["id"], semantic["id"])
+        self.client.put(f"/api/memories/{semantic['id']}", json={
+            "title": semantic["title"], "content": "changed content", "kind": semantic["kind"],
+        })
+        with app_module.closing(app_module.db()) as connection:
+            self.assertIsNone(connection.execute(
+                "SELECT 1 FROM memory_embeddings WHERE memory_id=?", (semantic["id"],)
+            ).fetchone())
+
+    def test_vector_rebuild_and_status_are_versioned_by_route_and_model(self):
+        provider = self.client.post("/api/providers", json={
+            "name": "Embedding", "protocol": "openai", "base_url": "https://example.com/v1",
+            "api_key": "secret", "model": "chat",
+        }).json()
+        self.client.post("/api/memories", json={"title": "one", "content": "first memory", "kind": "fact"})
+        self.client.post("/api/memories", json={"title": "two", "content": "second memory", "kind": "fact"})
+        self.client.put("/api/settings", json={
+            "vector_memory_enabled": True,
+            "embedding_provider_id": provider["id"],
+            "embedding_model": "text-embedding-test",
+        })
+
+        async def fake_embeddings(_provider, _model, texts):
+            return [[1.0, 0.0, 0.0] for _ in texts]
+
+        with patch.object(app_module, "create_embeddings", side_effect=fake_embeddings):
+            rebuilt = self.client.post("/api/memories/vector/rebuild", json={}).json()
+        self.assertEqual(rebuilt["indexed"], 2)
+        self.assertEqual(rebuilt["dimensions"], 3)
+        status = self.client.get("/api/memories/vector/status").json()
+        self.assertEqual((status["indexed"], status["stale"]), (2, 0))
+        self.client.put("/api/settings", json={
+            "vector_memory_enabled": True,
+            "embedding_provider_id": provider["id"],
+            "embedding_model": "another-model",
+        })
+        self.assertEqual(self.client.get("/api/memories/vector/status").json()["stale"], 2)
+
     def test_selected_persona_is_explicitly_injected_into_chat_context(self):
         provider = self.client.post("/api/providers", json={"name":"DS","protocol":"deepseek","base_url":"https://api.deepseek.com","model":"chat"}).json()
         persona = self.client.post("/api/personas", json={"name":"阿澄","prompt":"你叫阿澄，记得自己的名字。"}).json()
