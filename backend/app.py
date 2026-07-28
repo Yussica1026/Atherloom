@@ -1845,6 +1845,62 @@ def default_slots_state() -> dict[str, Any]:
     return {"coins": 100, "turn": 0, "reels": ["✦", "◌", "◇"], "journal": []}
 
 
+def default_star_merge_state() -> dict[str, Any]:
+    return {
+        "board": [2, 0, 0, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+        "score": 0, "best": 2, "turn": 0, "status": "playing", "journal": [],
+    }
+
+
+def slide_merge_line(values: list[int]) -> tuple[list[int], int]:
+    compact = [value for value in values if value]
+    output: list[int] = []
+    gained = 0
+    index = 0
+    while index < len(compact):
+        if index + 1 < len(compact) and compact[index] == compact[index + 1]:
+            merged = compact[index] * 2
+            output.append(merged)
+            gained += merged
+            index += 2
+        else:
+            output.append(compact[index])
+            index += 1
+    return output + [0] * (4 - len(output)), gained
+
+
+def move_star_merge(board: list[int], direction: str) -> tuple[list[int], int]:
+    if direction not in {"up", "down", "left", "right"}:
+        raise HTTPException(422, "未知合成方向")
+    output = list(board)
+    gained = 0
+    for line in range(4):
+        indices = (
+            [line * 4 + offset for offset in range(4)]
+            if direction in {"left", "right"}
+            else [offset * 4 + line for offset in range(4)]
+        )
+        if direction in {"right", "down"}:
+            indices.reverse()
+        merged, line_score = slide_merge_line([board[index] for index in indices])
+        gained += line_score
+        for index, value in zip(indices, merged):
+            output[index] = value
+    return output, gained
+
+
+def star_merge_can_move(board: list[int]) -> bool:
+    if 0 in board:
+        return True
+    return any(
+        board[row * 4 + column] == board[row * 4 + column + 1]
+        for row in range(4) for column in range(3)
+    ) or any(
+        board[row * 4 + column] == board[(row + 1) * 4 + column]
+        for row in range(3) for column in range(4)
+    )
+
+
 def fishing_pick(state: dict[str, Any]) -> tuple[str, int]:
     digest = hashlib.sha256(f"local-fishing:{state['turn']}:{state['water']}".encode()).digest()
     roll = int.from_bytes(digest[:4], "big") % 100
@@ -1862,6 +1918,7 @@ def game_catalog() -> list[dict[str, Any]]:
         {"id": "quiet_fishing", "name": "云汀钓记", "icon": "◌", "status": "playable", "description": "为 AI 与用户共同设计的原创确定性钓鱼游戏。"},
         {"id": "claw_machine", "name": "抓娃娃机", "icon": "◇", "status": "playable", "description": "移动爪子、选择目标并收集娃娃。"},
         {"id": "cloud_slots", "name": "云纹老虎机", "icon": "✦", "status": "playable", "description": "只使用游戏内云贝的确定性三轴小游戏。"},
+        {"id": "star_merge", "name": "星潮合成", "icon": "▦", "status": "playable", "description": "专门给 AI 的 2048：观察棋盘，只用上下左右追逐高阶星块。"},
     ]
 
 
@@ -1875,6 +1932,8 @@ def load_game(connection: sqlite3.Connection, game_id: str, persona_id: str | No
         return default_claw_state()
     if game_id == "cloud_slots":
         return default_slots_state()
+    if game_id == "star_merge":
+        return default_star_merge_state()
     raise HTTPException(404, "游戏尚未开放")
 
 
@@ -1922,6 +1981,28 @@ def game_action(game_id: str, body: GameActionIn, persona_id: str | None = None)
                 state["turn"] += 1; digest = hashlib.sha256(f"slots:{state['turn']}".encode()).digest(); state["reels"] = [symbols[digest[i] % len(symbols)] for i in range(3)]
                 payout = 40 if len(set(state["reels"])) == 1 else 10 if len(set(state["reels"])) == 2 else 0; state["coins"] += payout
                 events.append(" · ".join(state["reels"]) + (f"，赢得 {payout} 云贝" if payout else "，没有连线"))
+        elif game_id == "star_merge":
+            if body.action == "reset":
+                state = default_star_merge_state()
+                events.append("新一局星潮已经铺开")
+            elif state.get("status") == "over":
+                raise HTTPException(409, "这一局已经没有可移动方向")
+            else:
+                moved, gained = move_star_merge(state["board"], body.action)
+                if moved == state["board"]:
+                    raise HTTPException(409, "这个方向不能移动")
+                state["board"] = moved
+                state["turn"] += 1
+                state["score"] += gained
+                empty = [index for index, value in enumerate(moved) if not value]
+                if empty:
+                    digest = hashlib.sha256(f"star-merge:{state['turn']}:{state['score']}".encode()).digest()
+                    position = empty[int.from_bytes(digest[:2], "big") % len(empty)]
+                    state["board"][position] = 4 if digest[2] % 10 == 0 else 2
+                state["best"] = max(state["board"])
+                state["status"] = "won" if state["best"] >= 2048 else "playing" if star_merge_can_move(state["board"]) else "over"
+                direction_label = {"up": "上", "down": "下", "left": "左", "right": "右"}[body.action]
+                events.append(f"向{direction_label}滑动，合成得分 +{gained}，最高星块 {state['best']}")
         elif game_id == "quiet_fishing" and body.action == "cast":
             count = min(body.amount, state["bait"])
             if count < 1:
@@ -1960,6 +2041,7 @@ AI_GAME_ACTIONS = {
     "quiet_fishing": [{"action": "cast", "amount": 1}, {"action": "buy_bait", "amount": 5}, {"action": "sell_all", "amount": 1}, *[{"action": "travel", "target": key, "amount": 1} for key in FISHING_WATERS]],
     "claw_machine": [{"action": "move_left", "amount": 1}, {"action": "move_right", "amount": 1}, {"action": "grab", "amount": 1}],
     "cloud_slots": [{"action": "spin", "amount": 1}],
+    "star_merge": [{"action": direction, "amount": 1} for direction in ("up", "down", "left", "right")],
 }
 
 
@@ -1980,6 +2062,7 @@ def parse_ai_game_choice(text: str, game_id: str) -> tuple[dict[str, Any], str]:
             "quiet_fishing": [("sell_all", ("sell_all", "出售", "卖掉")), ("buy_bait", ("buy_bait", "买鱼饵", "购买鱼饵")), ("cast", ("cast", "抛竿", "甩一竿", "钓鱼"))],
             "claw_machine": [("move_left", ("move_left", "向左", "左移")), ("move_right", ("move_right", "向右", "右移")), ("grab", ("grab", "抓取", "下爪", "抓娃娃"))],
             "cloud_slots": [("spin", ("spin", "转动", "拉杆", "老虎机"))],
+            "star_merge": [("up", ("up", "向上", "上移")), ("down", ("down", "向下", "下移")), ("left", ("left", "向左", "左移")), ("right", ("right", "向右", "右移"))],
         }
         action = next((name for name, words in aliases.get(game_id, []) if any(word in lowered for word in words)), "")
         if not action:
@@ -2003,6 +2086,11 @@ def fallback_ai_game_choice(game_id: str, state: dict[str, Any], remaining: int)
         return {"action": "move_right", "amount": 1}, ""
     if game_id == "cloud_slots" and remaining >= 5 and state.get("coins", 0) >= 5:
         return {"action": "spin", "amount": 1}, ""
+    if game_id == "star_merge":
+        for direction in ("left", "down", "right", "up"):
+            moved, _ = move_star_merge(state.get("board", []), direction)
+            if moved != state.get("board", []):
+                return {"action": direction, "amount": 1}, ""
     raise HTTPException(409, "当前局面没有可安全执行的游戏动作")
 
 
@@ -2018,7 +2106,15 @@ async def ai_game_turn(game_id: str, body: AiGameTurnIn) -> dict[str, Any]:
     async with httpx.AsyncClient(timeout=35) as client:
         for _ in range(body.turns):
             with closing(db()) as connection: current = load_game(connection, game_id, body.persona_id)
-            instruction = f"""你正在 Atherloom 中玩游戏 {game_id}。\n当前状态：{json.dumps(current, ensure_ascii=False)}\n允许动作：{json.dumps(AI_GAME_ACTIONS[game_id], ensure_ascii=False)}\n剩余可花云贝预算：{remaining}。\n只返回一个 JSON 对象：{{\"action\":\"白名单动作\",\"amount\":1,\"target\":\"需要时填写\",\"comment\":\"一句当轮想法\"}}。不要输出 Markdown。"""
+            allowed_actions = AI_GAME_ACTIONS[game_id]
+            if game_id == "star_merge":
+                allowed_actions = [
+                    action for action in allowed_actions
+                    if move_star_merge(current["board"], action["action"])[0] != current["board"]
+                ]
+                if not allowed_actions:
+                    break
+            instruction = f"""你正在 Atherloom 中玩游戏 {game_id}。\n当前状态：{json.dumps(current, ensure_ascii=False)}\n允许动作：{json.dumps(allowed_actions, ensure_ascii=False)}\n剩余可花云贝预算：{remaining}。\n只返回一个 JSON 对象：{{\"action\":\"白名单动作\",\"amount\":1,\"target\":\"需要时填写\",\"comment\":\"一句当轮想法\"}}。不要输出 Markdown。"""
             if persona: instruction = persona["prompt"] + "\n\n" + instruction
             headers = provider_headers(provider["protocol"], provider["api_key"], provider["custom_headers"])
             if provider["protocol"] == "anthropic":
@@ -2030,6 +2126,8 @@ async def ai_game_turn(game_id: str, body: AiGameTurnIn) -> dict[str, Any]:
             data = response.json(); text = "".join(block.get("text", "") for block in data.get("content", []) if block.get("type") == "text") if provider["protocol"] == "anthropic" else data.get("choices", [{}])[0].get("message", {}).get("content", "")
             try:
                 choice, comment = parse_ai_game_choice(text, game_id)
+                if game_id == "star_merge" and move_star_merge(current["board"], choice["action"])[0] == current["board"]:
+                    choice, _ = fallback_ai_game_choice(game_id, current, remaining)
             except HTTPException as error:
                 if error.status_code not in (422, 502): raise
                 choice, comment = fallback_ai_game_choice(game_id, current, remaining)
@@ -2226,7 +2324,7 @@ def load_chat_context(connection: sqlite3.Connection, body: ChatIn, cutoff: str 
     formatting_context = "界面支持 Markdown。你可以根据语义有节制地使用 **粗体**、*斜体*、标题、引用、列表与代码块；不要为了装饰而过度格式化。"
     tool_names = [name for name, enabled in persona_config["tools"].items() if enabled]
     tool_context = f"该人格启用的本地能力偏好：{', '.join(tool_names)}。只有宿主实际提供的能力才可调用。" if tool_names else ""
-    game_tool_context = "宿主提供云汀钓记、抓娃娃机和云纹老虎机游戏工具。用户要求你去玩时，宿主会在回复前执行工具并提供 <verified_game_result>。只有收到该结果才能声称自己玩过，并应自然讲述真实动作、收获与心里话；没有结果时不得虚构游戏经历。"
+    game_tool_context = "宿主提供云汀钓记、抓娃娃机、云纹老虎机和星潮合成游戏工具。用户要求你去玩时，宿主会在回复前执行工具并提供 <verified_game_result>。只有收到该结果才能声称自己玩过，并应自然讲述真实动作、收获与心里话；没有结果时不得虚构游戏经历。"
     game_context = f"<verified_game_result>\n{body.game_context}\n</verified_game_result>\n这是宿主刚刚真实执行的游戏结果。请以当前人格自然回应，可以主动谈起收获与心情，不要声称没有玩过。" if body.game_context else ""
     if body.media_context and body.media_context.lstrip().startswith("书籍："):
         media_context = f"<shared_reading_evidence>\n{body.media_context}\n</shared_reading_evidence>\n只能依据用户主动提供的本地阅读片段讨论本书；不要假装读过未提供的正文，也不要推断后续内容。"

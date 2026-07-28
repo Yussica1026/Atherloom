@@ -1,6 +1,6 @@
 const $ = (s) => document.querySelector(s);
 const state = { providers: [], personas: [], worldbooks: [], mcp_servers: [], mcp_audit: [], conversations: [], memories: [], journals: [], board_messages: [], favorites: [], attachments: [], version_selection: {}, settings: { auto_title_mode: "local", tool_permissions: {} }, current: null, provider: null, persona: null, messages: [], generating: new Set(), generation_controllers: new Map(), message_cache: new Map(), navigation: 0 };
-const gameState = { catalog: [], current: null, fishing: null, claw: null, slots: null, waters: {} };
+const gameState = { catalog: [], current: null, fishing: null, claw: null, slots: null, starMerge: null, waters: {} };
 const roleplayState = { stories: [], current: null, busy: false, phase: "", backstageEpoch: 0 };
 const roleplayPresets={ancient:"古风。请设定朝代氛围、门阀或江湖关系、礼法约束与一件尚未兑现的旧约。",modern:"现代都市。请设定真实生活场景、人物既有关系与一次意外重逢。",mystery:"悬疑。请设定封闭或受限场景、一条可验证线索、隐藏动机与正在逼近的期限。",fantasy:"幻想世界。请设定独特规则、旅途目标、代价与角色命运的交点。",custom:""};
 function dismissLaunchScreen(){const screen=$("#launchScreen");if(!screen||screen.classList.contains("dismissed"))return;screen.classList.add("dismissed");setTimeout(()=>screen.remove(),320);}
@@ -197,15 +197,17 @@ function renderFishing() {
 
 function renderClaw(){const current=gameState.claw;if(!current)return;$("#clawCoins").textContent=current.coins;$("#clawTurns").textContent=current.turn;$("#clawHead").style.left=`${current.position*20+10}%`;$("#clawPrizes").innerHTML=current.prizes.map((name,index)=>`<span class="${index===current.position?"targeted":""}">◇<small>${escapeHtml(name)}</small></span>`).join("");$("#clawInventory").innerHTML=Object.entries(current.inventory).map(([name,count])=>`<span><b>${escapeHtml(name)}</b><em>× ${count}</em></span>`).join("")||"<small>还没有抓到娃娃。</small>";$("#clawJournal").innerHTML=[...current.journal].reverse().slice(0,8).map(item=>`<span>${escapeHtml(item)}</span>`).join("")||"<small>机器正在等待第一爪。</small>";}
 function renderSlots(){const current=gameState.slots;if(!current)return;[$("#slotOne"),$("#slotTwo"),$("#slotThree")].forEach((node,index)=>node.textContent=current.reels[index]);$("#slotCoins").textContent=current.coins;$("#slotTurns").textContent=current.turn;$("#slotJournal").innerHTML=[...current.journal].reverse().slice(0,8).map(item=>`<span>${escapeHtml(item)}</span>`).join("")||"<small>拉下摇杆开始。</small>";}
+function renderStarMerge(){const current=gameState.starMerge;if(!current)return;$("#starMergeScore").textContent=current.score;$("#starMergeBest").textContent=current.best;$("#starMergeTurns").textContent=current.turn;$("#starMergeStatus").textContent=current.status==="won"?"已经合成 2048":current.status==="over"?"本局结束":"进行中";$("#starMergeBoard").innerHTML=current.board.map(value=>`<span class="star-tile" data-value="${value||0}">${value||""}</span>`).join("");$("#starMergeJournal").innerHTML=[...current.journal].reverse().slice(0,8).map(item=>`<span>${escapeHtml(item)}</span>`).join("")||"<small>等待 AI 做第一步。</small>";}
 
 async function openGame(gameId) {
   gameState.current = gameId; renderGameCards();
-  $("#gameEmpty").hidden=true;$("#fishingStage").hidden=gameId!=="quiet_fishing";$("#clawStage").hidden=gameId!=="claw_machine";$("#slotsStage").hidden=gameId!=="cloud_slots";
-  $("#aiGameControls").hidden=!["quiet_fishing","claw_machine","cloud_slots"].includes(gameId);
+  $("#gameEmpty").hidden=true;$("#fishingStage").hidden=gameId!=="quiet_fishing";$("#clawStage").hidden=gameId!=="claw_machine";$("#slotsStage").hidden=gameId!=="cloud_slots";$("#starMergeStage").hidden=gameId!=="star_merge";
+  $("#aiGameControls").hidden=!["quiet_fishing","claw_machine","cloud_slots","star_merge"].includes(gameId);
   $("#aiGameTitle").textContent=`交给 ${activePersonaName()}`;
-  if(!["quiet_fishing","claw_machine","cloud_slots"].includes(gameId)){$("#gameEmpty").hidden=false;const game=gameState.catalog.find(item=>item.id===gameId);$("#gameEmpty").innerHTML=`<span>${game.icon}</span><h3>${escapeHtml(game.name)}</h3><p>${escapeHtml(game.description)}</p>`;return;}
+  $("#aiGameStatus").textContent=gameId==="star_merge"?"当前人格会读取完整棋盘，只能选择上下左右；每一步都由宿主验证。":"当前人格会读取局面，只能执行白名单动作；单次预算最多 30 云贝。";
+  if(!["quiet_fishing","claw_machine","cloud_slots","star_merge"].includes(gameId)){$("#gameEmpty").hidden=false;const game=gameState.catalog.find(item=>item.id===gameId);$("#gameEmpty").innerHTML=`<span>${game.icon}</span><h3>${escapeHtml(game.name)}</h3><p>${escapeHtml(game.description)}</p>`;return;}
   const payload = await api(`/api/games/${gameId}/state${personaQuery()}`); gameState.fishing = payload.state; gameState.waters = payload.waters;
-  if(gameId==="quiet_fishing"){gameState.fishing=payload.state;gameState.waters=payload.waters;renderFishing();}else if(gameId==="claw_machine"){gameState.claw=payload.state;renderClaw();}else{gameState.slots=payload.state;renderSlots();}
+  if(gameId==="quiet_fishing"){gameState.fishing=payload.state;gameState.waters=payload.waters;renderFishing();}else if(gameId==="claw_machine"){gameState.claw=payload.state;renderClaw();}else if(gameId==="cloud_slots"){gameState.slots=payload.state;renderSlots();}else{gameState.starMerge=payload.state;renderStarMerge();}
 }
 
 async function playGame(action, amount = 1, target = "") {
@@ -214,25 +216,25 @@ async function playGame(action, amount = 1, target = "") {
     gameState.fishing = payload.state; renderFishing();
   } catch (error) { alert(error.message); }
 }
-async function playMiniGame(gameId,action,amount=1){try{const payload=await api(`/api/games/${gameId}/action${personaQuery()}`,{method:"POST",body:JSON.stringify({action,amount})});if(gameId==="claw_machine"){gameState.claw=payload.state;renderClaw();}else{gameState.slots=payload.state;renderSlots();}}catch(error){alert(error.message);}}
-async function aiPlayGame(turns){const provider=activeProvider(),name=activePersonaName();if(!provider){$("#gameLibrary").hidden=true;return openSettings("providers");}const buttons=[$("#aiPlayOne"),$("#aiPlayThree")],gameId=gameState.current;buttons.forEach(button=>button.disabled=true);let completed=0,spent=0,lastComment="";try{for(let turn=0;turn<turns;turn++){const remaining=30-spent;if(remaining<=0)break;$("#aiGameStatus").textContent=`${name} 正在决定第 ${turn+1}/${turns} 回合…`;const payload=await api(`/api/games/${gameId}/ai-turn`,{method:"POST",body:JSON.stringify({provider_id:provider.id,persona_id:state.persona,turns:1,max_spend:remaining}),timeout:45000});spent+=payload.spent||0;if(payload.decisions.length){completed++;lastComment=payload.decisions.at(-1).comment||lastComment;}if(gameId==="quiet_fishing"){gameState.fishing=payload.state;renderFishing();}else if(gameId==="claw_machine"){gameState.claw=payload.state;renderClaw();}else{gameState.slots=payload.state;renderSlots();}if(!payload.decisions.length)break;$("#aiGameStatus").textContent=`${name} 已完成 ${completed}/${turns} 回合，正在准备下一步…`;}$("#aiGameStatus").textContent=completed?`${name} 完成 ${completed} 步，花费 ${spent} 云贝。心里话：${lastComment||"专心操作中"}`:`${name} 因预算或局面限制没有执行动作。`;}catch(error){$("#aiGameStatus").textContent=`${completed?`已完成 ${completed} 步；`:""}${name} 游玩失败：${error.message}`;}finally{buttons.forEach(button=>button.disabled=false);}}
+async function playMiniGame(gameId,action,amount=1){try{const payload=await api(`/api/games/${gameId}/action${personaQuery()}`,{method:"POST",body:JSON.stringify({action,amount})});if(gameId==="claw_machine"){gameState.claw=payload.state;renderClaw();}else if(gameId==="cloud_slots"){gameState.slots=payload.state;renderSlots();}else{gameState.starMerge=payload.state;renderStarMerge();}}catch(error){alert(error.message);}}
+async function aiPlayGame(turns){const provider=activeProvider(),name=activePersonaName();if(!provider){$("#gameLibrary").hidden=true;return openSettings("providers");}const buttons=[$("#aiPlayOne"),$("#aiPlayThree")],gameId=gameState.current;buttons.forEach(button=>button.disabled=true);let completed=0,spent=0,lastComment="";try{for(let turn=0;turn<turns;turn++){const remaining=30-spent;if(remaining<=0&&gameId!=="star_merge")break;$("#aiGameStatus").textContent=`${name} 正在决定第 ${turn+1}/${turns} 回合…`;const payload=await api(`/api/games/${gameId}/ai-turn`,{method:"POST",body:JSON.stringify({provider_id:provider.id,persona_id:state.persona,turns:1,max_spend:remaining}),timeout:45000});spent+=payload.spent||0;if(payload.decisions.length){completed++;lastComment=payload.decisions.at(-1).comment||lastComment;}if(gameId==="quiet_fishing"){gameState.fishing=payload.state;renderFishing();}else if(gameId==="claw_machine"){gameState.claw=payload.state;renderClaw();}else if(gameId==="cloud_slots"){gameState.slots=payload.state;renderSlots();}else{gameState.starMerge=payload.state;renderStarMerge();}if(!payload.decisions.length)break;$("#aiGameStatus").textContent=`${name} 已完成 ${completed}/${turns} 回合，正在准备下一步…`;}$("#aiGameStatus").textContent=completed?`${name} 完成 ${completed} 步${spent?`，花费 ${spent} 云贝`:""}。心里话：${lastComment||"专心操作中"}`:`${name} 因预算或局面限制没有执行动作。`;}catch(error){$("#aiGameStatus").textContent=`${completed?`已完成 ${completed} 步；`:""}${name} 游玩失败：${error.message}`;}finally{buttons.forEach(button=>button.disabled=false);}}
 
 function parseGameRequest(content){
   const text=String(content||"").replace(/\s+/g,""),requested=/(?:你|请|帮我|能不能|可以|可不可以).{0,12}(?:玩|去玩|来玩|试试|钓|抓|转)|(?:玩|去玩|来玩|试试).{0,8}(?:游戏|小游戏|钓鱼|抓娃娃|老虎机)/.test(text);
   if(!requested)return null;
-  const gameId=/(?:抓娃娃|娃娃机|下爪)/.test(text)?"claw_machine":/(?:老虎机|拉杆|转盘|摇奖)/.test(text)?"cloud_slots":/(?:钓鱼|抛竿|钓一竿|鱼塘)/.test(text)?"quiet_fishing":gameState.current||"quiet_fishing";
+  const gameId=/(?:2048|星潮|合成游戏|数字合成)/.test(text)?"star_merge":/(?:抓娃娃|娃娃机|下爪)/.test(text)?"claw_machine":/(?:老虎机|拉杆|转盘|摇奖)/.test(text)?"cloud_slots":/(?:钓鱼|抛竿|钓一竿|鱼塘)/.test(text)?"quiet_fishing":gameState.current||"quiet_fishing";
   const turns=/(?:3|三|几)(?:次|步|回合|竿|局)/.test(text)?3:1;
   return {gameId,turns};
 }
 async function prepareChatGameContext(content){
   const request=parseGameRequest(content);if(!request)return "";
   const provider=activeProvider();if(!provider)return "";
-  const {gameId,turns}=request,name=activePersonaName(),gameNames={quiet_fishing:"云汀钓记",claw_machine:"抓娃娃机",cloud_slots:"云纹老虎机"};
+  const {gameId,turns}=request,name=activePersonaName(),gameNames={quiet_fishing:"云汀钓记",claw_machine:"抓娃娃机",cloud_slots:"云纹老虎机",star_merge:"星潮合成"};
   try{
     const payload=await api(`/api/games/${gameId}/ai-turn`,{method:"POST",body:JSON.stringify({provider_id:provider.id,persona_id:state.persona,turns,max_spend:30}),timeout:50000});
-    if(gameId==="quiet_fishing"){gameState.fishing=payload.state;if(gameState.current===gameId)renderFishing();}else if(gameId==="claw_machine"){gameState.claw=payload.state;if(gameState.current===gameId)renderClaw();}else{gameState.slots=payload.state;if(gameState.current===gameId)renderSlots();}
+    if(gameId==="quiet_fishing"){gameState.fishing=payload.state;if(gameState.current===gameId)renderFishing();}else if(gameId==="claw_machine"){gameState.claw=payload.state;if(gameState.current===gameId)renderClaw();}else if(gameId==="cloud_slots"){gameState.slots=payload.state;if(gameState.current===gameId)renderSlots();}else{gameState.starMerge=payload.state;if(gameState.current===gameId)renderStarMerge();}
     const details=payload.decisions.flatMap(item=>[...(item.events||[]),item.comment?`心里话：${item.comment}`:""]).filter(Boolean);
-    const stateSummary=gameId==="quiet_fishing"?`当前鱼篓：${Object.entries(payload.state.catch||{}).map(([fish,count])=>`${fish}×${count}`).join("、")||"空"}；鱼饵 ${payload.state.bait}，云贝 ${payload.state.coins}`:gameId==="claw_machine"?`当前收藏：${Object.entries(payload.state.inventory||{}).map(([prize,count])=>`${prize}×${count}`).join("、")||"空"}；云贝 ${payload.state.coins}`:`当前转轮：${(payload.state.reels||[]).join(" · ")}；云贝 ${payload.state.coins}`;
+    const stateSummary=gameId==="quiet_fishing"?`当前鱼篓：${Object.entries(payload.state.catch||{}).map(([fish,count])=>`${fish}×${count}`).join("、")||"空"}；鱼饵 ${payload.state.bait}，云贝 ${payload.state.coins}`:gameId==="claw_machine"?`当前收藏：${Object.entries(payload.state.inventory||{}).map(([prize,count])=>`${prize}×${count}`).join("、")||"空"}；云贝 ${payload.state.coins}`:gameId==="cloud_slots"?`当前转轮：${(payload.state.reels||[]).join(" · ")}；云贝 ${payload.state.coins}`:`当前得分 ${payload.state.score}，最高星块 ${payload.state.best}，状态 ${payload.state.status}`;
     return `${name} 已通过宿主游戏工具真实游玩「${gameNames[gameId]}」${payload.decisions.length} 个回合。${details.join("；")}。${stateSummary}。这是已执行结果，不是想象或角色扮演。`;
   }catch(error){return `${name} 已调用「${gameNames[gameId]}」游戏工具，但执行失败：${error.message}。请如实告诉用户失败原因，不要假装玩过。`;}
 }
@@ -886,6 +888,7 @@ $("#listeningQuestionForm").onsubmit=async event=>{event.preventDefault();const 
 let favoriteSearchTimer;$("#favoriteSearch").oninput=event=>{clearTimeout(favoriteSearchTimer);favoriteSearchTimer=setTimeout(async()=>{state.favorites=await api(`/api/favorites?q=${encodeURIComponent(event.target.value.trim())}`);renderFavorites();},220);};
 document.querySelectorAll("[data-game-action]").forEach(button => button.onclick = () => playGame(button.dataset.gameAction, Number(button.dataset.amount || 1)));
 document.querySelectorAll("[data-claw-action]").forEach(button=>button.onclick=()=>playMiniGame("claw_machine",button.dataset.clawAction));document.querySelectorAll("[data-slot-amount]").forEach(button=>button.onclick=()=>playMiniGame("cloud_slots","spin",Number(button.dataset.slotAmount)));
+$("#resetStarMerge").onclick=()=>playMiniGame("star_merge","reset");
 $("#aiPlayOne").onclick=()=>aiPlayGame(1);$("#aiPlayThree").onclick=()=>aiPlayGame(3);
 $("#backdrop").onclick = closeSettings; document.querySelectorAll("[data-close]").forEach(b => b.onclick = closeSettings);
 document.querySelectorAll(".settings-nav button").forEach(b => b.onclick = () => switchTab(b.dataset.tab));
