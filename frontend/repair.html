@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="zh-CN">
+<head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>修复 Atherloom 缓存</title></head>
+<body>
+  <p id="status">正在修复网页缓存，不会删除 API、人格、对话或记忆数据……</p>
+  <script>
+    (async () => {
+      try {
+        const registrations = await navigator.serviceWorker?.getRegistrations?.() || [];
+        await Promise.all(registrations.map(item => item.unregister()));
+        await Promise.all((await caches.keys()).filter(key => key.startsWith("atherloom-shell-")).map(key => caches.delete(key)));
+        document.getElementById("status").textContent = "缓存已修复，正在重新打开 Atherloom……";
+      } catch (error) {
+        document.getElementById("status").textContent = `缓存清理遇到问题：${error.message}。正在尝试重新打开……`;
+      }
+      location.replace(`./?repaired=0484-${Date.now()}`);
+    })();
+  </script>
+</body>
+</html>
