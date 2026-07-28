@@ -739,7 +739,7 @@ class LocalClientTests(unittest.TestCase):
         self.assertEqual(slots["state"]["turn"], 1)
         self.assertEqual(len(slots["state"]["reels"]), 3)
 
-    def test_star_merge_is_a_deterministic_ai_only_puzzle(self):
+    def test_star_merge_is_a_deterministic_shared_puzzle(self):
         merged, score = app_module.move_star_merge(
             [2, 2, 2, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], "left"
         )
@@ -753,6 +753,15 @@ class LocalClientTests(unittest.TestCase):
         self.assertEqual(loaded["board"], played["state"]["board"])
         reset = self.client.post("/api/games/star_merge/action", json={"action": "reset"}).json()["state"]
         self.assertEqual((reset["turn"], reset["score"], reset["best"]), (0, 0, 2))
+
+    def test_star_merge_can_undo_the_last_verified_move(self):
+        before = self.client.get("/api/games/star_merge/state").json()["state"]
+        played = self.client.post("/api/games/star_merge/action", json={"action": "left"}).json()["state"]
+        self.assertEqual(len(played["history"]), 1)
+        undone = self.client.post("/api/games/star_merge/action", json={"action": "undo"}).json()["state"]
+        self.assertEqual(undone["board"], before["board"])
+        self.assertEqual(undone["turn"], before["turn"])
+        self.assertEqual(undone["history"], [])
 
     def test_star_merge_ai_actions_and_fallback_only_choose_legal_moves(self):
         choice, _ = app_module.parse_ai_game_choice(

@@ -13,7 +13,7 @@
   <title>Atherloom</title>
   <link rel="manifest" href="manifest.json">
   <link rel="icon" href="assets/app-icon.svg" type="image/svg+xml">
-  <link rel="stylesheet" href="assets/app.css?v=0475">
+  <link rel="stylesheet" href="assets/app.css?v=0476">
   <script>document.documentElement.dataset.launchMode=performance.getEntriesByType("navigation")[0]?.type==="reload"?"refresh":"full";</script>
 </head>
 <body>
@@ -135,10 +135,13 @@
           <div class="game-columns"><div><h4>规则</h4><p class="muted">三个相同得 40 云贝，两个相同得 10 云贝。仅使用本地游戏云贝。</p></div><div><h4>最近结果</h4><div id="slotJournal" class="game-journal"></div></div></div>
         </section>
         <section id="starMergeStage" class="mini-game-stage star-merge-stage" hidden>
-          <header><div><span class="eyebrow">AI-ONLY PUZZLE</span><h3>星潮合成</h3><p>棋盘状态交给当前人格；宿主只执行可验证的上下左右动作。</p></div><button class="ghost" id="resetStarMerge">新一局</button></header>
+          <header><div><span class="eyebrow">SHARED PUZZLE</span><h3>星潮合成</h3><p>你亲手追逐星块，也可以把下一步交给当前人格。</p></div><div class="star-round-actions"><button class="ghost" id="undoStarMerge">悔棋</button><button class="ghost" id="resetStarMerge">重新开始</button></div></header>
+          <div class="star-mode-switch" role="group" aria-label="星潮合成游玩方式"><button class="active" id="starModeSelf" type="button">我来玩</button><button id="starModeAi" type="button">交给人格</button><span id="starTurnOwner">现在由你掌舵</span></div>
           <div class="game-stats"><span>得分 <strong id="starMergeScore">0</strong></span><span>最高 <strong id="starMergeBest">2</strong></span><span>步数 <strong id="starMergeTurns">0</strong></span><span id="starMergeStatus">进行中</span></div>
-          <div class="star-merge-board" id="starMergeBoard" aria-label="星潮合成棋盘"></div>
-          <div class="game-columns"><div><h4>AI 的目标</h4><p class="muted">让相同星块相撞合并，尽量把大数字留在角落，直到合成 2048。</p></div><div><h4>最近决策</h4><div id="starMergeJournal" class="game-journal"></div></div></div>
+          <div class="star-merge-board" id="starMergeBoard" aria-label="星潮合成棋盘，可使用方向键或滑动操作" tabindex="0"></div>
+          <div class="star-direction-pad" id="starDirectionPad" aria-label="移动星块"><span></span><button data-star-move="up" aria-label="向上">↑</button><span></span><button data-star-move="left" aria-label="向左">←</button><button data-star-move="down" aria-label="向下">↓</button><button data-star-move="right" aria-label="向右">→</button></div>
+          <div class="star-thought-note"><span id="starThoughtName">当前人格的想法</span><blockquote id="starMergeThought">等我接过棋盘时，会把想到的告诉你。</blockquote></div>
+          <div class="game-columns"><div><h4 id="starGoalName">当前人格的目标</h4><p class="muted">把相同星块慢慢聚到一起，尽量让最大的那颗留在角落，陪你走到 2048。</p></div><div><h4>最近发生</h4><div id="starMergeJournal" class="game-journal"></div></div></div>
         </section>
         <div class="ai-playbar" id="aiGameControls" hidden><div><strong id="aiGameTitle">交给当前人格</strong><small id="aiGameStatus">当前人格会读取局面，只能执行白名单动作；单次预算最多 30 云贝。</small></div><div class="game-actions"><button class="ghost" id="aiPlayOne">玩一步</button><button class="primary" id="aiPlayThree">连续玩 3 回合</button></div></div>
       </main>
@@ -434,7 +437,7 @@
         <section class="tab" id="tab-appearance">
           <h3>外观</h3>
           <label class="summary-prompt-label">用户名<input id="displayName" maxlength="40" placeholder="填写显示名称"></label>
-          <div class="setting-row"><div><strong>主题</strong><small>跟随系统或手动选择</small></div><select id="themeSelect"><option value="system">跟随系统</option><option value="light">浅色</option><option value="dark">深色</option></select></div>
+          <div class="setting-row"><div><strong>主题</strong><small>跟随系统，或换一层房间的光</small></div><select id="themeSelect"><option value="system">跟随系统</option><option value="light">浅色</option><option value="water">水色</option><option value="lilac">浅紫色</option><option value="blush">浅粉色</option><option value="dark">深色</option></select></div>
           <div class="setting-row"><div><strong>字体大小</strong><small id="fontScaleValue">100%</small></div><input id="fontScale" type="range" min="85" max="130" step="5" value="100"></div>
           <div class="setting-row"><div><strong>消息密度</strong><small>调整消息之间的留白</small></div><select id="messageDensity"><option value="compact">紧凑</option><option value="comfortable">舒适</option><option value="relaxed">宽松</option></select></div>
           <div class="setting-row"><div><strong>流式出字速度</strong><small>流式回复始终逐字显示；非流式回复保持一次显示全文</small></div><select id="streamSpeed"><option value="slow">慢速 · 约 90ms/字</option><option value="standard">标准 · 约 55ms/字</option><option value="fast">快速 · 约 30ms/字</option></select></div>
@@ -488,11 +491,11 @@
   <div class="message-menu-backdrop" id="messageEditor" hidden><form class="message-editor" role="dialog" aria-label="修改消息"><h3>修改内容</h3><textarea id="messageEditContent" rows="7" required></textarea><div class="form-actions"><button type="button" class="ghost" id="cancelMessageEdit">取消</button><button class="primary">保存修改</button></div></form></div>
   <div class="message-menu-backdrop" id="instructionPicker" hidden><section class="message-editor instruction-picker" role="dialog" aria-label="指令注入"><h3>指令注入</h3><p class="muted">仅对当前聊天窗口生效，可随时取消。</p><div id="instructionBookList" class="instruction-book-list"></div><div class="form-actions"><button type="button" class="primary" id="closeInstructionPicker">完成</button></div></section></div>
   <div class="message-menu-backdrop" id="worldbookEntryEditor" hidden><form class="message-editor worldbook-entry-editor" role="dialog" aria-label="世界书条目"><h3>世界书条目</h3><label>条目名称<input name="name" maxlength="100" required></label><label>内容<textarea name="content" rows="8" required></textarea></label><label class="check-label"><input name="enabled" type="checkbox" checked>启用条目</label><label class="check-label"><input name="constant" type="checkbox">常驻激活</label><label>关键词（每行一个）<textarea name="keywords" rows="3"></textarea></label><div class="entry-options"><label class="check-label"><input name="use_regex" type="checkbox">使用正则</label><label class="check-label"><input name="case_sensitive" type="checkbox">区分大小写</label><label>扫描深度<input name="scan_depth" type="number" min="1" max="100" value="4"></label><label>注入位置<select name="position"><option value="system_before">系统提示前</option><option value="system_after" selected>系统提示后</option><option value="history_before">对话历史前</option><option value="history_after">对话历史后</option></select></label><label>注入角色<select name="role"><option value="system">系统</option><option value="user">用户</option><option value="assistant">助手</option></select></label><label>优先级<input name="priority" type="number" min="-9999" max="9999" value="0"></label></div><div class="form-actions"><button type="button" class="ghost" id="cancelWorldbookEntry">取消</button><button class="primary">保存条目</button></div></form></div>
-  <script src="assets/standalone.js?v=0475"></script>
-  <script src="assets/app.js?v=0475" defer></script>
+  <script src="assets/standalone.js?v=0476"></script>
+  <script src="assets/app.js?v=0476" defer></script>
   <script>
     if ('serviceWorker' in navigator) {
-      navigator.serviceWorker.register('service-worker.js?v=80', { updateViaCache: 'none' }).then(registration => registration.update());
+      navigator.serviceWorker.register('service-worker.js?v=81', { updateViaCache: 'none' }).then(registration => registration.update());
       navigator.serviceWorker.addEventListener('controllerchange', () => {
         if (!sessionStorage.getItem('atherloom:sw-reloaded-v65')) {
           sessionStorage.setItem('atherloom:sw-reloaded-v65', '1');
