@@ -435,6 +435,12 @@ class AiGameTurnIn(BaseModel):
     max_spend: int = Field(default=30, ge=0, le=100)
 
 
+class GameRoomChatIn(BaseModel):
+    provider_id: str
+    persona_id: str | None = None
+    content: str = Field(min_length=1, max_length=2000)
+
+
 class FavoriteIn(BaseModel):
     owner: str = Field(default="user", pattern="^(user|assistant)$")
 
@@ -1834,23 +1840,49 @@ FISHING_WATERS = {
 
 
 def default_fishing_state() -> dict[str, Any]:
-    return {"coins": 120, "bait": 8, "water": "willow_bay", "turn": 0, "catch": {}, "journal": [], "unlocked": ["willow_bay"]}
+    return {"coins": 120, "bait": 8, "water": "willow_bay", "turn": 0, "catch": {}, "journal": [], "unlocked": ["willow_bay"], "room_messages": [], "last_thought": ""}
 
 
 def default_claw_state() -> dict[str, Any]:
-    return {"coins": 100, "turn": 0, "position": 2, "prizes": ["云朵兔", "星星熊", "橘子猫", "月亮狗", "小海豹"], "inventory": {}, "journal": []}
+    return {"coins": 100, "turn": 0, "position": 2, "prizes": ["云朵兔", "星星熊", "橘子猫", "月亮狗", "小海豹"], "inventory": {}, "journal": [], "room_messages": [], "last_thought": ""}
 
 
 def default_slots_state() -> dict[str, Any]:
-    return {"coins": 100, "turn": 0, "reels": ["✦", "◌", "◇"], "journal": []}
+    return {"coins": 100, "turn": 0, "reels": ["✦", "◌", "◇"], "journal": [], "room_messages": [], "last_thought": ""}
 
 
 def default_star_merge_state() -> dict[str, Any]:
     return {
         "board": [2, 0, 0, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
         "score": 0, "best": 2, "turn": 0, "status": "playing", "journal": [],
-        "history": [], "last_thought": "",
+        "history": [], "last_thought": "", "room_messages": [],
     }
+
+
+MAZE_GRID = [
+    "#######",
+    "#...#.#",
+    "###.#.#",
+    "#...#.#",
+    "#.###.#",
+    "#.....#",
+    "#######",
+]
+
+
+def default_maze_state() -> dict[str, Any]:
+    return {"player": [1, 1], "goal": [5, 5], "turn": 0, "status": "playing", "journal": [], "room_messages": [], "last_thought": ""}
+
+
+def default_dungeon_state() -> dict[str, Any]:
+    return {"floor": 1, "hp": 12, "max_hp": 12, "potions": 2, "enemy": None, "turn": 0, "wins": 0, "status": "playing", "journal": [], "room_messages": [], "last_thought": ""}
+
+
+def maze_can_move(state: dict[str, Any], direction: str) -> bool:
+    delta = {"up": (-1, 0), "down": (1, 0), "left": (0, -1), "right": (0, 1)}.get(direction)
+    if not delta: return False
+    row, column = state["player"]
+    return MAZE_GRID[row + delta[0]][column + delta[1]] != "#"
 
 
 def slide_merge_line(values: list[int]) -> tuple[list[int], int]:
@@ -1920,13 +1952,20 @@ def game_catalog() -> list[dict[str, Any]]:
         {"id": "claw_machine", "name": "抓娃娃机", "icon": "◇", "status": "playable", "description": "移动爪子、选择目标并收集娃娃。"},
         {"id": "cloud_slots", "name": "云纹老虎机", "icon": "✦", "status": "playable", "description": "只使用游戏内云贝的确定性三轴小游戏。"},
         {"id": "star_merge", "name": "星潮合成", "icon": "▦", "status": "playable", "description": "你亲手合成星块，或把棋盘交给当前人格。"},
+        {"id": "mist_maze", "name": "雾径迷宫", "icon": "⌁", "status": "playable", "description": "你与人格轮流探路，在有限视野里找到出口。"},
+        {"id": "ember_dungeon", "name": "余烬地牢", "icon": "⚔", "status": "playable", "description": "探索、迎战与休整都由宿主判定的轻量冒险。"},
     ]
 
 
 def load_game(connection: sqlite3.Connection, game_id: str, persona_id: str | None) -> dict[str, Any]:
     row = connection.execute("SELECT state_json FROM game_saves WHERE game_id=? AND persona_key=?", (game_id, motivation_key(persona_id))).fetchone()
     if row:
-        return json.loads(row["state_json"])
+        state = json.loads(row["state_json"])
+        state.setdefault("room_messages", [])
+        state.setdefault("last_thought", "")
+        if game_id == "star_merge":
+            state.setdefault("history", [])
+        return state
     if game_id == "quiet_fishing":
         return default_fishing_state()
     if game_id == "claw_machine":
@@ -1935,6 +1974,10 @@ def load_game(connection: sqlite3.Connection, game_id: str, persona_id: str | No
         return default_slots_state()
     if game_id == "star_merge":
         return default_star_merge_state()
+    if game_id == "mist_maze":
+        return default_maze_state()
+    if game_id == "ember_dungeon":
+        return default_dungeon_state()
     raise HTTPException(404, "游戏尚未开放")
 
 
@@ -1944,6 +1987,12 @@ def save_game(connection: sqlite3.Connection, game_id: str, persona_id: str | No
         "ON CONFLICT(game_id,persona_key) DO UPDATE SET state_json=excluded.state_json,updated_at=excluded.updated_at",
         (game_id, motivation_key(persona_id), json.dumps(state, ensure_ascii=False), now_iso()),
     )
+
+
+def append_game_room_message(state: dict[str, Any], role: str, content: str) -> None:
+    state["room_messages"] = (
+        state.get("room_messages", []) + [{"role": role, "content": content, "created_at": now_iso()}]
+    )[-40:]
 
 
 @app.get("/api/games")
@@ -1984,7 +2033,9 @@ def game_action(game_id: str, body: GameActionIn, persona_id: str | None = None)
                 events.append(" · ".join(state["reels"]) + (f"，赢得 {payout} 云贝" if payout else "，没有连线"))
         elif game_id == "star_merge":
             if body.action == "reset":
+                room_messages = state.get("room_messages", [])
                 state = default_star_merge_state()
+                state["room_messages"] = room_messages
                 events.append("新一局星潮已经铺开")
             elif body.action == "undo":
                 history = state.get("history", [])
@@ -2016,6 +2067,43 @@ def game_action(game_id: str, body: GameActionIn, persona_id: str | None = None)
                 state["status"] = "won" if state["best"] >= 2048 else "playing" if star_merge_can_move(state["board"]) else "over"
                 direction_label = {"up": "上", "down": "下", "left": "左", "right": "右"}[body.action]
                 events.append(f"向{direction_label}滑动，合成得分 +{gained}，最高星块 {state['best']}")
+        elif game_id == "mist_maze":
+            if body.action == "reset":
+                room_messages = state.get("room_messages", []); state = default_maze_state(); state["room_messages"] = room_messages; events.append("迷雾重新合拢，旅程回到起点")
+            elif state.get("status") == "won":
+                raise HTTPException(409, "已经找到出口，可以重新开始")
+            else:
+                delta = {"up": (-1, 0), "down": (1, 0), "left": (0, -1), "right": (0, 1)}.get(body.action)
+                if not delta: raise HTTPException(422, "未知移动方向")
+                row, column = state["player"]; target = [row + delta[0], column + delta[1]]
+                if MAZE_GRID[target[0]][target[1]] == "#": raise HTTPException(409, "那边被石墙挡住了")
+                state["player"] = target; state["turn"] += 1; state["status"] = "won" if target == state["goal"] else "playing"
+                direction_label = {"up": "上", "down": "下", "left": "左", "right": "右"}[body.action]
+                events.append("找到了雾径出口！" if state["status"] == "won" else f"向{direction_label}走了一格")
+        elif game_id == "ember_dungeon":
+            if body.action == "reset":
+                room_messages = state.get("room_messages", []); state = default_dungeon_state(); state["room_messages"] = room_messages; events.append("余烬重新燃起，冒险从第一层开始")
+            elif state.get("status") == "over":
+                raise HTTPException(409, "旅程已经结束，可以重新开始")
+            elif body.action == "explore":
+                if state.get("enemy"): raise HTTPException(409, "眼前还有敌人")
+                state["turn"] += 1; kinds = [("灰烬史莱姆", 4), ("石甲鼠", 5), ("空甲守卫", 7)]; name, hp = kinds[(state["floor"] + state["turn"]) % len(kinds)]
+                state["enemy"] = {"name": name, "hp": hp, "max_hp": hp}; events.append(f"在第 {state['floor']} 层遇见了{name}")
+            elif body.action in {"attack", "guard"}:
+                enemy = state.get("enemy")
+                if not enemy: raise HTTPException(409, "附近没有敌人")
+                state["turn"] += 1; damage = 3 + state["turn"] % 3 if body.action == "attack" else 2; enemy["hp"] -= damage
+                if enemy["hp"] <= 0:
+                    events.append(f"击败了{enemy['name']}"); state["enemy"] = None; state["wins"] += 1
+                    if state["wins"] % 2 == 0: state["floor"] += 1; events.append(f"进入第 {state['floor']} 层")
+                else:
+                    hurt = max(1, (2 + state["floor"] // 2) - (1 if body.action == "guard" else 0)); state["hp"] -= hurt; events.append(f"{body.action == 'guard' and '格挡后反击' or '挥剑攻击'}，造成 {damage} 点伤害，自己受到 {hurt} 点伤害")
+                    if state["hp"] <= 0: state["hp"] = 0; state["status"] = "over"; events.append("火光熄灭，旅程暂时结束")
+            elif body.action == "rest":
+                if state.get("enemy"): raise HTTPException(409, "战斗中不能休整")
+                if state["potions"] < 1 or state["hp"] >= state["max_hp"]: raise HTTPException(409, "现在不需要使用药水")
+                state["potions"] -= 1; healed = min(5, state["max_hp"] - state["hp"]); state["hp"] += healed; events.append(f"休整片刻，恢复 {healed} 点体力")
+            else: raise HTTPException(422, "未知冒险动作")
         elif game_id == "quiet_fishing" and body.action == "cast":
             count = min(body.amount, state["bait"])
             if count < 1:
@@ -2046,6 +2134,8 @@ def game_action(game_id: str, body: GameActionIn, persona_id: str | None = None)
         else:
             raise HTTPException(422, "未知游戏动作")
         state["journal"] = (state["journal"] + events)[-30:]
+        for event in events:
+            append_game_room_message(state, "event", event)
         save_game(connection, game_id, persona_id, state); connection.commit()
     return {"state": state, "events": events}
 
@@ -2055,6 +2145,8 @@ AI_GAME_ACTIONS = {
     "claw_machine": [{"action": "move_left", "amount": 1}, {"action": "move_right", "amount": 1}, {"action": "grab", "amount": 1}],
     "cloud_slots": [{"action": "spin", "amount": 1}],
     "star_merge": [{"action": direction, "amount": 1} for direction in ("up", "down", "left", "right")],
+    "mist_maze": [{"action": direction, "amount": 1} for direction in ("up", "down", "left", "right")],
+    "ember_dungeon": [{"action": action, "amount": 1} for action in ("explore", "attack", "guard", "rest")],
 }
 
 
@@ -2076,6 +2168,8 @@ def parse_ai_game_choice(text: str, game_id: str) -> tuple[dict[str, Any], str]:
             "claw_machine": [("move_left", ("move_left", "向左", "左移")), ("move_right", ("move_right", "向右", "右移")), ("grab", ("grab", "抓取", "下爪", "抓娃娃"))],
             "cloud_slots": [("spin", ("spin", "转动", "拉杆", "老虎机"))],
             "star_merge": [("up", ("up", "向上", "上移")), ("down", ("down", "向下", "下移")), ("left", ("left", "向左", "左移")), ("right", ("right", "向右", "右移"))],
+            "mist_maze": [("up", ("up", "向上", "上走")), ("down", ("down", "向下", "下走")), ("left", ("left", "向左", "左走")), ("right", ("right", "向右", "右走"))],
+            "ember_dungeon": [("explore", ("explore", "探索", "前进")), ("attack", ("attack", "攻击", "挥剑")), ("guard", ("guard", "防守", "格挡")), ("rest", ("rest", "休整", "药水"))],
         }
         action = next((name for name, words in aliases.get(game_id, []) if any(word in lowered for word in words)), "")
         if not action:
@@ -2104,6 +2198,13 @@ def fallback_ai_game_choice(game_id: str, state: dict[str, Any], remaining: int)
             moved, _ = move_star_merge(state.get("board", []), direction)
             if moved != state.get("board", []):
                 return {"action": direction, "amount": 1}, ""
+    if game_id == "mist_maze":
+        for direction in ("right", "down", "left", "up"):
+            if maze_can_move(state, direction): return {"action": direction, "amount": 1}, ""
+    if game_id == "ember_dungeon":
+        if state.get("enemy"): return {"action": "attack", "amount": 1}, ""
+        if state.get("hp", 0) < state.get("max_hp", 0) and state.get("potions", 0): return {"action": "rest", "amount": 1}, ""
+        return {"action": "explore", "amount": 1}, ""
     raise HTTPException(409, "当前局面没有可安全执行的游戏动作")
 
 
@@ -2127,6 +2228,15 @@ async def ai_game_turn(game_id: str, body: AiGameTurnIn) -> dict[str, Any]:
                 ]
                 if not allowed_actions:
                     break
+            elif game_id == "mist_maze":
+                allowed_actions = [action for action in allowed_actions if maze_can_move(current, action["action"])]
+            elif game_id == "ember_dungeon":
+                allowed_actions = [
+                    action for action in allowed_actions
+                    if (current.get("enemy") and action["action"] in {"attack", "guard"})
+                    or (not current.get("enemy") and action["action"] == "explore")
+                    or (not current.get("enemy") and action["action"] == "rest" and current.get("potions", 0) and current.get("hp", 0) < current.get("max_hp", 0))
+                ]
             instruction = f"""你正在 Atherloom 中玩游戏 {game_id}。\n当前状态：{json.dumps(current, ensure_ascii=False)}\n允许动作：{json.dumps(allowed_actions, ensure_ascii=False)}\n剩余可花云贝预算：{remaining}。\n只返回一个 JSON 对象：{{\"action\":\"白名单动作\",\"amount\":1,\"target\":\"需要时填写\",\"comment\":\"一句当轮想法\"}}。不要输出 Markdown。"""
             if persona: instruction = persona["prompt"] + "\n\n" + instruction
             headers = provider_headers(provider["protocol"], provider["api_key"], provider["custom_headers"])
@@ -2151,12 +2261,64 @@ async def ai_game_turn(game_id: str, body: AiGameTurnIn) -> dict[str, Any]:
                 with closing(db()) as connection:
                     state = load_game(connection, game_id, body.persona_id)
                     state["journal"] = (state.get("journal", []) + [f"{persona_name} · 心里话：{comment}"])[-30:]
-                    if game_id == "star_merge":
-                        state["last_thought"] = comment
+                    state["last_thought"] = comment
                     save_game(connection, game_id, body.persona_id, state); connection.commit(); result["state"] = state
             decisions.append({"choice": choice, "comment": comment, "events": result["events"]})
     with closing(db()) as connection: final_state = load_game(connection, game_id, body.persona_id)
     return {"state": final_state, "decisions": decisions, "spent": body.max_spend - remaining}
+
+
+@app.post("/api/games/{game_id}/room-chat")
+async def game_room_chat(game_id: str, body: GameRoomChatIn) -> dict[str, Any]:
+    if game_id not in AI_GAME_ACTIONS:
+        raise HTTPException(404, "游戏尚未开放共玩对话")
+    with closing(db()) as connection:
+        provider = connection.execute("SELECT * FROM providers WHERE id=? AND enabled=1", (body.provider_id,)).fetchone()
+        persona = connection.execute("SELECT name,prompt FROM personas WHERE id=?", (body.persona_id,)).fetchone() if body.persona_id else None
+        state = load_game(connection, game_id, body.persona_id)
+    if not provider:
+        raise HTTPException(404, "API 线路不存在")
+    persona_name = persona["name"] if persona else "当前人格"
+    game_names = {
+        "quiet_fishing": "云汀钓记", "claw_machine": "抓娃娃机",
+        "cloud_slots": "云纹老虎机", "star_merge": "星潮合成",
+        "mist_maze": "雾径迷宫", "ember_dungeon": "余烬地牢",
+    }
+    visible_state = {key: value for key, value in state.items() if key not in {"history", "room_messages"}}
+    recent_messages = state.get("room_messages", [])[-12:]
+    instruction = (
+        (persona["prompt"] + "\n\n" if persona else "")
+        + f"你是{persona_name}，正和用户在 Atherloom 的「{game_names[game_id]}」房间一起玩。\n"
+        + f"宿主验证的当前局面：{json.dumps(visible_state, ensure_ascii=False)}\n"
+        + f"房间最近对话与动作：{json.dumps(recent_messages, ensure_ascii=False)}\n"
+        + f"用户刚说：{body.content}\n"
+        + "自然接话，明确知道刚发生的真实动作与局面。不要声称看见未提供的信息，不要替用户操作，也不要输出 JSON、标签或技术说明。回复 1 到 3 句。"
+    )
+    headers = provider_headers(provider["protocol"], provider["api_key"], provider["custom_headers"])
+    payload = (
+        {"model": provider["model"], "max_tokens": 240, "temperature": 0.7, "messages": [{"role": "user", "content": instruction}]}
+        if provider["protocol"] == "anthropic"
+        else {"model": provider["model"], "max_tokens": 240, "temperature": 0.7, "stream": False, "messages": [{"role": "user", "content": instruction}]}
+    )
+    async with httpx.AsyncClient(timeout=35) as client:
+        response = await client.post(provider_endpoint(provider["base_url"], provider["protocol"]), headers=headers, json=payload)
+    if response.status_code >= 400:
+        raise HTTPException(502, f"房间对话请求失败：{response.status_code}")
+    data = response.json()
+    reply = (
+        "".join(block.get("text", "") for block in data.get("content", []) if block.get("type") == "text")
+        if provider["protocol"] == "anthropic"
+        else data.get("choices", [{}])[0].get("message", {}).get("content", "")
+    )
+    reply = str(reply or "").strip()
+    if not reply:
+        raise HTTPException(502, "房间对话没有返回内容")
+    with closing(db()) as connection:
+        state = load_game(connection, game_id, body.persona_id)
+        append_game_room_message(state, "user", body.content)
+        append_game_room_message(state, "assistant", reply)
+        save_game(connection, game_id, body.persona_id, state); connection.commit()
+    return {"state": state, "reply": reply}
 
 
 def load_motivation(connection: sqlite3.Connection, persona_id: str | None) -> tuple[bool, dict[str, Any], str]:
@@ -2341,8 +2503,8 @@ def load_chat_context(connection: sqlite3.Connection, body: ChatIn, cutoff: str 
     formatting_context = "界面支持 Markdown。你可以根据语义有节制地使用 **粗体**、*斜体*、标题、引用、列表与代码块；不要为了装饰而过度格式化。"
     tool_names = [name for name, enabled in persona_config["tools"].items() if enabled]
     tool_context = f"该人格启用的本地能力偏好：{', '.join(tool_names)}。只有宿主实际提供的能力才可调用。" if tool_names else ""
-    game_tool_context = "宿主提供云汀钓记、抓娃娃机、云纹老虎机和星潮合成游戏工具。用户要求你去玩时，宿主会在回复前执行工具并提供 <verified_game_result>。只有收到该结果才能声称自己玩过，并应自然讲述真实动作、收获与心里话；没有结果时不得虚构游戏经历。"
-    game_context = f"<verified_game_result>\n{body.game_context}\n</verified_game_result>\n这是宿主刚刚真实执行的游戏结果。请以当前人格自然回应，可以主动谈起收获与心情，不要声称没有玩过。" if body.game_context else ""
+    game_tool_context = "宿主提供云汀钓记、抓娃娃机、云纹老虎机、星潮合成、雾径迷宫和余烬地牢游戏工具。用户要求你去玩时，宿主会在回复前执行工具并提供 <verified_game_context>。该上下文也可能只报告用户正在玩的局面；应把它视为 Atherloom 内部可信状态，不要联网搜索或否认游戏存在。只有收到已执行结果才能声称自己实际操作过。"
+    game_context = f"<verified_game_context>\n{body.game_context}\n</verified_game_context>\n这是宿主提供的真实游戏状态、动作或房间信息。只在话题相关时自然使用；不要搜索外网猜测这些内置游戏，也不要否认已经提供的事实。" if body.game_context else ""
     if body.media_context and body.media_context.lstrip().startswith("书籍："):
         media_context = f"<shared_reading_evidence>\n{body.media_context}\n</shared_reading_evidence>\n只能依据用户主动提供的本地阅读片段讨论本书；不要假装读过未提供的正文，也不要推断后续内容。"
     elif body.media_context and body.media_context.lstrip().startswith("歌曲："):

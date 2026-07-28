@@ -763,6 +763,26 @@ class LocalClientTests(unittest.TestCase):
         self.assertEqual(undone["turn"], before["turn"])
         self.assertEqual(undone["history"], [])
 
+    def test_game_actions_feed_the_shared_room_context(self):
+        played = self.client.post("/api/games/star_merge/action", json={"action": "left"}).json()["state"]
+        self.assertEqual(played["room_messages"][-1]["role"], "event")
+        self.assertIn("向左滑动", played["room_messages"][-1]["content"])
+        self.assertIn("room_messages", app_module.default_fishing_state())
+        self.assertIn("last_thought", app_module.default_claw_state())
+
+    def test_maze_and_dungeon_use_verified_host_rules(self):
+        catalog_ids = {item["id"] for item in self.client.get("/api/games").json()}
+        self.assertTrue({"mist_maze", "ember_dungeon"}.issubset(catalog_ids))
+        blocked = self.client.post("/api/games/mist_maze/action", json={"action": "down"})
+        self.assertEqual(blocked.status_code, 409)
+        moved = self.client.post("/api/games/mist_maze/action", json={"action": "right"}).json()["state"]
+        self.assertEqual((moved["player"], moved["turn"]), ([1, 2], 1))
+        explored = self.client.post("/api/games/ember_dungeon/action", json={"action": "explore"}).json()["state"]
+        self.assertIsNotNone(explored["enemy"])
+        fought = self.client.post("/api/games/ember_dungeon/action", json={"action": "guard"}).json()["state"]
+        self.assertLess(fought["enemy"]["hp"], fought["enemy"]["max_hp"])
+        self.assertEqual(fought["room_messages"][-1]["role"], "event")
+
     def test_star_merge_ai_actions_and_fallback_only_choose_legal_moves(self):
         choice, _ = app_module.parse_ai_game_choice(
             '{"action":"down","comment":"keep the large tile low"}', "star_merge"
@@ -807,10 +827,10 @@ class LocalClientTests(unittest.TestCase):
         body = app_module.ChatIn(conversation_id=conversation["id"], content="你去钓鱼", provider_id=provider["id"], game_context="Ara 钓到了银尾鲫，心里很开心。")
         with app_module.closing(app_module.db()) as connection:
             _, _, messages = app_module.load_chat_context(connection, body)
-        self.assertIn("verified_game_result", messages[0]["content"])
+        self.assertIn("verified_game_context", messages[0]["content"])
         self.assertIn("Ara 钓到了银尾鲫", messages[0]["content"])
         self.assertIn("游戏工具", messages[0]["content"])
-        self.assertIn("不得虚构游戏经历", messages[0]["content"])
+        self.assertIn("只有收到已执行结果才能声称自己实际操作过", messages[0]["content"])
 
 
 if __name__ == "__main__":
