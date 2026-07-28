@@ -95,6 +95,21 @@ function renderBookNotes(){
   document.querySelectorAll("[data-bookmark-delete]").forEach(button=>button.onclick=()=>{writeBookLocal("bookmarks",bookmarks.filter(item=>item.id!==button.dataset.bookmarkDelete));renderBookNotes();});
   document.querySelectorAll("[data-annotation-delete]").forEach(button=>button.onclick=()=>{writeBookLocal("annotations",annotations.filter(item=>item.id!==button.dataset.annotationDelete));renderBookNotes();});
 }
+const bookEncodingLabels={utf8:"UTF-8",gb18030:"GB18030 / GBK",big5:"Big5",utf16le:"UTF-16 LE",utf16be:"UTF-16 BE"};
+function bookTextScore(text){
+  const replacements=(text.match(/\uFFFD/g)||[]).length,controls=(text.match(/[\u0000-\u0008\u000B\u000C\u000E-\u001F]/g)||[]).length;
+  const mojibake=(text.match(/[ÃÂåäæçéèïð]/g)||[]).length+(text.match(/(?:锟斤拷|烫烫烫|屯屯屯)/g)||[]).length*8;
+  const readable=(text.match(/[\u3400-\u9FFF，。！？；：“”‘’（）《》]/g)||[]).length;
+  return replacements*100+controls*25+mojibake*4-Math.min(readable,500)*0.02;
+}
+function decodeBookBytes(buffer){
+  const bytes=new Uint8Array(buffer),bom=bytes.length>=2?(bytes[0]<<8)|bytes[1]:0;
+  const preferred=bom===0xFFFE?["utf-16le"]:bom===0xFEFF?["utf-16be"]:bytes[0]===0xEF&&bytes[1]===0xBB&&bytes[2]===0xBF?["utf-8"]:((bytes.filter((value,index)=>index%2===0&&value===0).length>bytes.length/8)?["utf-16be"]:(bytes.filter((value,index)=>index%2===1&&value===0).length>bytes.length/8)?["utf-16le"]:[]);
+  const candidates=[...new Set([...preferred,"utf-8","gb18030","big5"])],decoded=[];
+  for(const encoding of candidates){try{const text=new TextDecoder(encoding,{fatal:encoding==="utf-8"}).decode(bytes).replace(/^\uFEFF/,"");decoded.push({text,encoding,score:bookTextScore(text)-(preferred[0]===encoding?20:0)});}catch{}}
+  if(!decoded.length)throw new Error("无法识别这本书的文字编码");
+  return decoded.sort((a,b)=>a.score-b.score)[0];
+}
 async function openLocalBook(file) {
   if (!file) return;
   const reader = $("#bookReader");
@@ -120,7 +135,8 @@ async function openLocalBook(file) {
       return;
     }
     const limit = 2 * 1024 * 1024;
-    const text = await file.slice(0, limit).text();
+    const decoded = decodeBookBytes(await file.slice(0, limit).arrayBuffer());
+    const text = decoded.text;
     const pre = document.createElement("pre");
     pre.textContent = text;
     reader.replaceChildren(pre);
@@ -128,7 +144,8 @@ async function openLocalBook(file) {
     setBookControls(true);renderBookNotes();
     reader.scrollTop = Number(localStorage.getItem(key) || 0);
     reader.onscroll = () => localStorage.setItem(key, String(reader.scrollTop));
-    status.textContent = file.size > limit ? `${file.name} · 已打开前 2 MB，避免设备卡顿` : `${file.name} · 本地文件`;
+    const encoding=bookEncodingLabels[decoded.encoding.replaceAll("-","")]||decoded.encoding.toUpperCase();
+    status.textContent = file.size > limit ? `${file.name} · 已自动识别 ${encoding}；打开前 2 MB，避免设备卡顿` : `${file.name} · 已自动识别 ${encoding}`;
   } catch (error) {
     reader.innerHTML = `<div class="game-empty"><span>!</span><h3>这本书没有打开</h3><p>${escapeHtml(error.message || "无法读取本地文件")}</p></div>`;
     status.textContent = `${file.name} · 打开失败`;
@@ -327,7 +344,7 @@ function renderMcpServers(){const list=$("#mcpServerList");if(!list)return;list.
 function resetMcpForm(){const form=$("#mcpServerForm");form.reset();form.elements.enabled.checked=true;form.elements.headers.value="{}";form.elements.env.value="{}";delete form.dataset.editing;$("#cancelMcpEdit").hidden=true;$("#saveMcpServer").textContent="保存连接";updateMcpTransportFields();}
 
 function renderSettings() {
-  $("#providerList").innerHTML = state.providers.map(p => `<div class="list-card"><div><strong>${escapeHtml(p.name)}</strong><small>${escapeHtml(p.protocol)} · ${escapeHtml(p.model)} · 温度 ${p.temperature ?? 0.7} · ${p.has_api_key ? "Key 已保存" : "无 Key"}</small></div><div class="provider-card-actions"><button data-edit-provider="${p.id}">编辑</button><button data-delete-provider="${p.id}">删除</button></div></div>`).join("") || ($("#providerForm").hidden ? `<div class="empty-provider"><p class="muted">还没有 API 线路。</p><button class="primary" id="emptyAddProvider">添加第一条线路</button></div>` : "");
+  $("#providerList").innerHTML = state.providers.map(p => `<div class="list-card"><div><strong>${escapeHtml(p.name)}</strong><small>${p.local_bridge?`仅限本机 · 授权工作区：${escapeHtml(p.workspace_name)}`:`${escapeHtml(p.protocol)} · ${escapeHtml(p.model)} · 温度 ${p.temperature ?? 0.7} · ${p.has_api_key ? "Key 已保存" : "无 Key"}`}</small></div>${p.local_bridge?`<span class="persona-scope">安全桥</span>`:`<div class="provider-card-actions"><button data-edit-provider="${p.id}">编辑</button><button data-delete-provider="${p.id}">删除</button></div>`}</div>`).join("") || ($("#providerForm").hidden ? `<div class="empty-provider"><p class="muted">还没有 API 线路。</p><button class="primary" id="emptyAddProvider">添加第一条线路</button></div>` : "");
   $("#personaList").innerHTML = state.personas.map(p => `<div class="list-card"><div><strong>${escapeHtml(p.name)}</strong><small>${escapeHtml(p.prompt.slice(0, 70) || "空白人格")}</small></div><div class="provider-card-actions"><button data-edit-persona="${p.id}">编辑</button><button data-delete-persona="${p.id}">删除</button></div></div>`).join("");
   renderWorldbooks();
   renderMcpServers();
@@ -500,10 +517,13 @@ async function loadInnerWriting(){
   $("#boardSealed").hidden=!board.sealed_count;$("#boardSealed").textContent=board.sealed_count?`有 ${board.sealed_count} 条密封留言，仅 AI 可见。`:"";
   const spaces={user:"我的私人日记",shared:"共同日记",ai:"AI 私人日记"};
   $("#journalList").innerHTML=state.journals.map(item=>`<article class="journal-paper"><header><div><span>${spaces[item.space]||item.space} · ${item.author==="ai"?"AI 写":"我写"}</span><h4>${escapeHtml(item.title)}</h4></div><time>${new Date(item.updated_at).toLocaleString()}</time></header><p>${escapeHtml(item.content)}</p><footer><span>${item.visible_to_ai?"AI 可读":"不提供给 AI"} · ${item.visible_to_user?"我可读":"对我密封"}</span><div><button data-edit-journal="${item.id}">编辑</button><button data-delete-journal="${item.id}">删除</button></div></footer></article>`).join("")||`<p class="muted">还没有日记。你可以先写一篇只属于自己的，也可以邀请 AI 一起写。</p>`;
-  $("#boardList").innerHTML=state.board_messages.map(item=>{const fromPersona=item.author_role==="assistant"||item.author==="ai",authorName=fromPersona?(item.author==="ai"?(activePersona()?.name||"当前人格"):item.author):"我的留言";return `<article class="board-note ${fromPersona?"from-ai":"from-user"}"><span>${escapeHtml(fromPersona?`${authorName}的留言`:authorName)}</span><p>${escapeHtml(item.content)}</p><footer>${new Date(item.created_at).toLocaleString()} · ${item.visible_to_ai?"当前人格可读":"不提供给当前人格"} <button data-delete-board="${item.id}">移除</button></footer></article>`;}).join("")||`<p class="muted">留言板还是空的。</p>`;
+  $("#boardList").innerHTML=state.board_messages.map(item=>{const fromPersona=item.author_role==="assistant"||item.author==="ai",authorName=fromPersona?(item.author==="ai"?(activePersona()?.name||"当前人格"):item.author):"我的留言",replySource=item.reply_to?state.board_messages.find(source=>source.id===item.reply_to):null;return `<article class="board-note ${fromPersona?"from-ai":"from-user"}">${replySource?`<small class="board-reply-context">回复：${escapeHtml(replySource.content.slice(0,80))}</small>`:""}<span>${escapeHtml(fromPersona?`${authorName}的留言`:authorName)}</span><p>${escapeHtml(item.content)}</p><footer>${new Date(item.created_at).toLocaleString()} · ${item.visible_to_ai?"当前人格可读":"不提供给当前人格"} ${fromPersona?`<button data-reply-board="${item.id}">回复</button>`:""} <button data-delete-board="${item.id}">移除</button></footer><form class="board-inline-reply" data-board-reply-form="${item.id}" hidden><textarea rows="2" placeholder="回复这条留言……" required></textarea><div><button type="button" data-cancel-board-reply="${item.id}">取消</button><button type="submit">送出回复</button></div></form></article>`;}).join("")||`<p class="muted">留言板还是空的。</p>`;
   document.querySelectorAll("[data-edit-journal]").forEach(button=>button.onclick=()=>{const item=state.journals.find(row=>row.id===button.dataset.editJournal),form=$("#journalForm");form.dataset.editing=item.id;form.elements.title.value=item.title;form.elements.content.value=item.content;form.elements.space.value=item.space;form.elements.visible_to_user.checked=!!item.visible_to_user;form.elements.visible_to_ai.checked=!!item.visible_to_ai;$("#cancelJournalEdit").hidden=false;form.scrollIntoView({behavior:"smooth",block:"start"});});
   document.querySelectorAll("[data-delete-journal]").forEach(button=>button.onclick=async()=>{if(!confirm("删除这篇日记？"))return;await api(`/api/journals/${key}/${button.dataset.deleteJournal}`,{method:"DELETE"});loadInnerWriting();});
   document.querySelectorAll("[data-delete-board]").forEach(button=>button.onclick=async()=>{await api(`/api/board/${key}/${button.dataset.deleteBoard}`,{method:"DELETE"});loadInnerWriting();});
+  document.querySelectorAll("[data-reply-board]").forEach(button=>button.onclick=()=>{const form=document.querySelector(`[data-board-reply-form="${CSS.escape(button.dataset.replyBoard)}"]`);form.hidden=!form.hidden;if(!form.hidden)form.querySelector("textarea").focus();});
+  document.querySelectorAll("[data-cancel-board-reply]").forEach(button=>button.onclick=()=>{document.querySelector(`[data-board-reply-form="${CSS.escape(button.dataset.cancelBoardReply)}"]`).hidden=true;});
+  document.querySelectorAll("[data-board-reply-form]").forEach(form=>form.onsubmit=async event=>{event.preventDefault();const content=form.querySelector("textarea").value.trim();if(!content)return;const submit=form.querySelector('[type="submit"]');submit.disabled=true;try{const saved=await api(`/api/board/${key}`,{method:"POST",body:JSON.stringify({content,author:"user",visible_to_user:true,visible_to_ai:true,reply_to:form.dataset.boardReplyForm})});if(!saved?.id)throw new Error("留言板没有返回已保存的回复");await loadInnerWriting();}catch(error){alert(`回复没有保存：${error.message}`);submit.disabled=false;}});
 }
 async function renderRuntimePanel(){
   const provider=activeProvider(),worldbooks=selectedWorldbookIds().map(id=>state.worldbooks.find(item=>item.id===id)).filter(Boolean),lastAssistant=[...state.messages].reverse().find(item=>item.role==="assistant");
@@ -619,7 +639,7 @@ function saveAppSettings() {
 
 $("#prompt").addEventListener("input", e => { e.target.style.height = "auto"; e.target.style.height = `${Math.min(e.target.scrollHeight, 180)}px`;saveCurrentDraft();updateComposerState();renderContextUsage(); });
 $("#attachmentButton").onclick=event=>{event.stopPropagation();$("#attachmentMenu").hidden=!$("#attachmentMenu").hidden;};document.querySelectorAll("[data-attachment-source]").forEach(button=>button.onclick=()=>{const inputs={camera:$("#cameraInput"),images:$("#imageInput"),files:$("#fileInput")};$("#attachmentMenu").hidden=true;inputs[button.dataset.attachmentSource].click();});[$("#cameraInput"),$("#imageInput"),$("#fileInput")].forEach(input=>input.onchange=async event=>{await addAttachments(event.target.files);event.target.value="";$("#send").disabled=false;});
-function roleplayProviderOptions(selected=""){return state.providers.map(provider=>`<option value="${provider.id}" ${provider.id===selected?"selected":""}>${escapeHtml(provider.name)} · ${escapeHtml(provider.model)}</option>`).join("");}
+function roleplayProviderOptions(selected=""){return state.providers.filter(provider=>!provider.local_bridge).map(provider=>`<option value="${provider.id}" ${provider.id===selected?"selected":""}>${escapeHtml(provider.name)} · ${escapeHtml(provider.model)}</option>`).join("");}
 function roleplayPersonaOptions(selected=""){return `<option value="">不绑定人格</option>`+state.personas.map(persona=>`<option value="${persona.id}" ${persona.id===selected?"selected":""}>${escapeHtml(persona.name)}</option>`).join("");}
 function renderRoleplayProse(value){return String(value||"").split(/\n+/).filter(Boolean).map(line=>{const match=line.match(/^([^：:\n]{1,24})[：:]\s*([\s\S]*)$/);if(!match)return `<div class="roleplay-speaker legacy"><b>旧稿·未署名</b><p>${escapeHtml(line)}</p></div>`;const speaker=match[1].trim(),kind=speaker==="旁白"?" narration":"";return `<div class="roleplay-speaker${kind}"><b>${escapeHtml(speaker)}</b><p>${escapeHtml(match[2])}</p></div>`;}).join("");}
 function addRoleplayCastRow(actor={}){
