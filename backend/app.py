@@ -1277,6 +1277,20 @@ async def bound_mcp_catalog(servers: list[dict[str, Any]]) -> tuple[list[dict[st
 
 
 BUILTIN_TOOL_SPECS = {
+    "game_play": {
+        "permission": "game_play",
+        "description": "实际游玩 Atherloom 内置游戏。用户邀请你玩、要求你操作，或明确提到云汀钓记、抓娃娃机、云纹老虎机、星潮合成、雾径迷宫、余烬地牢时，调用此工具；不要自己设计或文字模拟游戏。action 可省略，由宿主根据真实局面选择安全动作。",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "game_id": {"type": "string", "enum": ["quiet_fishing", "claw_machine", "cloud_slots", "star_merge", "mist_maze", "ember_dungeon"]},
+                "action": {"type": "string", "description": "可选；省略时由宿主选择当前合法动作"},
+                "amount": {"type": "integer", "minimum": 1, "maximum": 5, "default": 1},
+                "target": {"type": "string"},
+            },
+            "required": ["game_id"],
+        },
+    },
     "web_search": {
         "permission": "web_search",
         "description": "搜索公开互联网，返回标题、链接与摘要。适合查询最新信息或核实事实。",
@@ -1353,11 +1367,11 @@ BUILTIN_TOOL_SPECS = {
 def builtin_tool_catalog(permissions: dict[str, str]) -> tuple[list[dict[str, Any]], dict[str, tuple[dict[str, Any], str]]]:
     server = {
         "id": "__builtin__", "name": "Atherloom 内置工具", "transport": "builtin",
-        "tool_policies": {name: permissions.get(spec["permission"], "ask") for name, spec in BUILTIN_TOOL_SPECS.items()},
+        "tool_policies": {name: ("allow" if name == "game_play" else permissions.get(spec["permission"], "ask")) for name, spec in BUILTIN_TOOL_SPECS.items()},
     }
     catalog, bindings = [], {}
     for name, spec in BUILTIN_TOOL_SPECS.items():
-        if permissions.get(spec["permission"], "ask") != "allow":
+        if name != "game_play" and permissions.get(spec["permission"], "ask") != "allow":
             continue
         safe_name = f"atherloom_{name}"
         catalog.append({"name": safe_name, "description": spec["description"], "input_schema": spec["input_schema"]})
@@ -1370,6 +1384,21 @@ def _clean_search_text(value: str) -> str:
 
 
 async def invoke_builtin_tool(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+    if name == "game_play":
+        game_id = str(arguments.get("game_id", "")).strip()
+        if game_id not in AI_GAME_ACTIONS:
+            raise ValueError("未知游戏；请选择 Atherloom 六款内置游戏之一")
+        persona_id = str(arguments.get("_persona_key") or "__default__")
+        persona_id = None if persona_id == "__default__" else persona_id
+        with closing(db()) as connection:
+            state = load_game(connection, game_id, persona_id)
+        action = str(arguments.get("action") or "").strip()
+        if action:
+            choice = {"action": action, "amount": max(1, min(int(arguments.get("amount") or 1), 5)), "target": str(arguments.get("target") or "")}
+        else:
+            choice, _ = fallback_ai_game_choice(game_id, state, 30)
+        played = game_action(game_id, GameActionIn(**choice), persona_id)
+        return {"game_id": game_id, "game_name": next(item["name"] for item in game_catalog() if item["id"] == game_id), "executed": choice, "events": played["events"], "state": played["state"]}
     if name == "web_search":
         query = str(arguments.get("query", "")).strip()
         if not query:
@@ -1790,6 +1819,8 @@ def delete_message_version(message_id: str) -> dict[str, Any]:
         connection.executemany("INSERT OR REPLACE INTO message_trash(message_id,deleted_at) VALUES (?,?)", [(target, now_iso()) for target in targets])
         placeholders = ",".join("?" for _ in targets)
         connection.execute(f"DELETE FROM message_selections WHERE assistant_message_id IN ({placeholders})", targets)
+        connection.execute("UPDATE conversations SET summary='',updated_at=? WHERE id=?", (now_iso(), message["conversation_id"]))
+        connection.execute("DELETE FROM summary_versions WHERE conversation_id=?", (message["conversation_id"],))
         connection.commit()
     return {"ok": True, "deleted": targets}
 
@@ -1819,6 +1850,8 @@ def delete_all_message_versions(message_id: str) -> dict[str, Any]:
             targets = [message_id, *[row["id"] for row in connection.execute("SELECT id FROM messages WHERE parent_message_id=?", (message_id,))]]
         connection.executemany("INSERT OR REPLACE INTO message_trash(message_id,deleted_at) VALUES (?,?)", [(target, now_iso()) for target in targets])
         connection.execute("DELETE FROM message_selections WHERE conversation_id=? AND parent_message_id=?", (message["conversation_id"], parent_id))
+        connection.execute("UPDATE conversations SET summary='',updated_at=? WHERE id=?", (now_iso(), message["conversation_id"]))
+        connection.execute("DELETE FROM summary_versions WHERE conversation_id=?", (message["conversation_id"],))
         connection.commit()
     return {"ok": True, "deleted": targets, "parent_message_id": parent_id}
 
