@@ -2599,7 +2599,7 @@ def load_chat_context(connection: sqlite3.Connection, body: ChatIn, cutoff: str 
     formatting_context = "界面支持 Markdown。你可以根据语义有节制地使用 **粗体**、*斜体*、标题、引用、列表与代码块；不要为了装饰而过度格式化。"
     tool_names = [name for name, enabled in persona_config["tools"].items() if enabled]
     tool_context = f"该人格启用的本地能力偏好：{', '.join(tool_names)}。只有宿主实际提供的能力才可调用。" if tool_names else ""
-    game_tool_context = "宿主提供云汀钓记、抓娃娃机、云纹老虎机、星潮合成、雾径迷宫和余烬地牢游戏工具。用户要求你去玩时，宿主会在回复前执行工具并提供 <verified_game_context>。该上下文也可能只报告用户正在玩的局面；应把它视为 Atherloom 内部可信状态，不要联网搜索或否认游戏存在。只有收到已执行结果才能声称自己实际操作过。"
+    game_tool_context = "Atherloom 宿主真实内置六款可执行游戏工具：云汀钓记、抓娃娃机、云纹老虎机、星潮合成、雾径迷宫、余烬地牢。这些不是需要你设计、模拟、联网搜索或确认是否存在的文字游戏。用户说“玩抓娃娃机”等游玩指令时，宿主会先执行对应游戏并通过 <verified_game_context> 提供结果；你必须依据结果自然回应，绝不能声称要创建一个虚拟游戏。只有收到已执行结果才能声称自己实际操作过。"
     game_context = f"<verified_game_context>\n{body.game_context}\n</verified_game_context>\n这是宿主提供的真实游戏状态、动作或房间信息。只在话题相关时自然使用；不要搜索外网猜测这些内置游戏，也不要否认已经提供的事实。" if body.game_context else ""
     if body.media_context and body.media_context.lstrip().startswith("书籍："):
         media_context = f"<shared_reading_evidence>\n{body.media_context}\n</shared_reading_evidence>\n只能依据用户主动提供的本地阅读片段讨论本书；不要假装读过未提供的正文，也不要推断后续内容。"
