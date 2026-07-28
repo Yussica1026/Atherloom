@@ -26,6 +26,23 @@ class LocalClientTests(unittest.TestCase):
     def test_bootstrap_starts_with_clean_persona_library(self):
         payload = self.client.get("/api/bootstrap").json()
         self.assertEqual(payload["personas"], [])
+        codex = next((item for item in payload["providers"] if item["id"] == app_module.CODEX_PROVIDER_ID), None)
+        self.assertIsNotNone(codex)
+        self.assertTrue(codex["local_bridge"])
+        self.assertNotIn("command", codex)
+        self.assertNotIn("\\", codex["workspace_name"])
+        self.assertNotIn("/", codex["workspace_name"])
+
+    def test_codex_bridge_rejects_non_loopback_hosts(self):
+        conversation = self.client.post("/api/conversations", json={
+            "provider_id": app_module.CODEX_PROVIDER_ID,
+        }).json()
+        remote = TestClient(app_module.app, base_url="http://192.0.2.10")
+        response = remote.post("/api/chat", json={
+            "conversation_id": conversation["id"], "content": "test",
+            "provider_id": app_module.CODEX_PROVIDER_ID,
+        })
+        self.assertEqual(response.status_code, 403)
 
     def test_roleplay_story_keeps_independent_drafts_and_exact_checkpoint(self):
         narrator = self.client.post("/api/providers", json={"name":"旁白","protocol":"openai","base_url":"https://example.com/v1","model":"n"}).json()
@@ -536,6 +553,10 @@ class LocalClientTests(unittest.TestCase):
         self.assertEqual(listed["sealed_count"], 1)
         board = self.client.post("/api/board/persona-a", json={"content": "hello", "visible_to_ai": False}).json()
         self.assertEqual(self.client.get("/api/board/persona-a").json()["messages"][0]["id"], board["id"])
+        reply = self.client.post("/api/board/persona-a", json={
+            "content": "reply", "visible_to_ai": True, "reply_to": board["id"],
+        }).json()
+        self.assertEqual(reply["reply_to"], board["id"])
 
     def test_ai_diary_tool_writes_as_ai_and_can_seal_content(self):
         result = asyncio.run(app_module.invoke_builtin_tool("journal_create", {
