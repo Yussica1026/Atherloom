@@ -739,6 +739,33 @@ class LocalClientTests(unittest.TestCase):
         self.assertEqual(slots["state"]["turn"], 1)
         self.assertEqual(len(slots["state"]["reels"]), 3)
 
+    def test_star_merge_is_a_deterministic_ai_only_puzzle(self):
+        merged, score = app_module.move_star_merge(
+            [2, 2, 2, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], "left"
+        )
+        self.assertEqual(merged[:4], [4, 4, 0, 0])
+        self.assertEqual(score, 8)
+        played = self.client.post("/api/games/star_merge/action", json={"action": "left"}).json()
+        self.assertEqual(played["state"]["turn"], 1)
+        self.assertEqual(played["state"]["score"], 0)
+        self.assertEqual(sum(value > 0 for value in played["state"]["board"]), 3)
+        loaded = self.client.get("/api/games/star_merge/state").json()["state"]
+        self.assertEqual(loaded["board"], played["state"]["board"])
+        reset = self.client.post("/api/games/star_merge/action", json={"action": "reset"}).json()["state"]
+        self.assertEqual((reset["turn"], reset["score"], reset["best"]), (0, 0, 2))
+
+    def test_star_merge_ai_actions_and_fallback_only_choose_legal_moves(self):
+        choice, _ = app_module.parse_ai_game_choice(
+            '{"action":"down","comment":"keep the large tile low"}', "star_merge"
+        )
+        self.assertEqual(choice["action"], "down")
+        state = app_module.default_star_merge_state()
+        fallback, _ = app_module.fallback_ai_game_choice("star_merge", state, 0)
+        moved, _ = app_module.move_star_merge(state["board"], fallback["action"])
+        self.assertNotEqual(moved, state["board"])
+        with self.assertRaises(Exception):
+            app_module.parse_ai_game_choice('{"action":"reset"}', "star_merge")
+
     def test_ai_game_choices_are_whitelisted_and_budgeted(self):
         choice, comment = app_module.parse_ai_game_choice('{"action":"grab","amount":9,"comment":"试试中间"}', "claw_machine")
         self.assertEqual(choice, {"action": "grab", "amount": 1, "target": ""})
