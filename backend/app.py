@@ -7,6 +7,7 @@ import math
 import asyncio
 import binascii
 import os
+import random
 import re
 import sqlite3
 import uuid
@@ -431,7 +432,8 @@ class GameActionIn(BaseModel):
 class AiGameTurnIn(BaseModel):
     provider_id: str
     persona_id: str | None = None
-    turns: int = Field(default=1, ge=1, le=3)
+    turns: int = Field(default=1, ge=1, le=9)
+    autonomous: bool = False
     max_spend: int = Field(default=30, ge=0, le=100)
 
 
@@ -1859,19 +1861,30 @@ def default_star_merge_state() -> dict[str, Any]:
     }
 
 
-MAZE_GRID = [
-    "#######",
-    "#...#.#",
-    "###.#.#",
-    "#...#.#",
-    "#.###.#",
-    "#.....#",
-    "#######",
-]
+def generate_maze(seed: int) -> list[str]:
+    rng = random.Random(seed)
+    grid = [["#"] * 9 for _ in range(9)]
+    stack = [(1, 1)]
+    grid[1][1] = "."
+    while stack:
+        row, column = stack[-1]
+        choices = []
+        for dr, dc in ((-2, 0), (2, 0), (0, -2), (0, 2)):
+            nr, nc = row + dr, column + dc
+            if 0 < nr < 8 and 0 < nc < 8 and grid[nr][nc] == "#":
+                choices.append((nr, nc, row + dr // 2, column + dc // 2))
+        if not choices:
+            stack.pop()
+            continue
+        nr, nc, wall_row, wall_column = rng.choice(choices)
+        grid[wall_row][wall_column] = grid[nr][nc] = "."
+        stack.append((nr, nc))
+    return ["".join(row) for row in grid]
 
 
-def default_maze_state() -> dict[str, Any]:
-    return {"player": [1, 1], "goal": [5, 5], "turn": 0, "status": "playing", "journal": [], "room_messages": [], "last_thought": ""}
+def default_maze_state(level: int = 1, seed: int | None = None) -> dict[str, Any]:
+    seed = seed if seed is not None else random.SystemRandom().randrange(1, 2**31)
+    return {"grid": generate_maze(seed), "seed": seed, "level": level, "player": [1, 1], "goal": [7, 7], "turn": 0, "total_turn": 0, "status": "playing", "journal": [], "room_messages": [], "last_thought": ""}
 
 
 def default_dungeon_state() -> dict[str, Any]:
@@ -1882,7 +1895,8 @@ def maze_can_move(state: dict[str, Any], direction: str) -> bool:
     delta = {"up": (-1, 0), "down": (1, 0), "left": (0, -1), "right": (0, 1)}.get(direction)
     if not delta: return False
     row, column = state["player"]
-    return MAZE_GRID[row + delta[0]][column + delta[1]] != "#"
+    grid = state.get("grid") or generate_maze(int(state.get("seed", 1)))
+    return grid[row + delta[0]][column + delta[1]] != "#"
 
 
 def slide_merge_line(values: list[int]) -> tuple[list[int], int]:
@@ -1965,6 +1979,12 @@ def load_game(connection: sqlite3.Connection, game_id: str, persona_id: str | No
         state.setdefault("last_thought", "")
         if game_id == "star_merge":
             state.setdefault("history", [])
+        if game_id == "mist_maze" and "grid" not in state:
+            fresh = default_maze_state(seed=int(state.get("seed", 1)))
+            fresh["room_messages"] = state.get("room_messages", [])
+            fresh["journal"] = state.get("journal", [])
+            fresh["last_thought"] = state.get("last_thought", "")
+            state = fresh
         return state
     if game_id == "quiet_fishing":
         return default_fishing_state()
@@ -2069,17 +2089,23 @@ def game_action(game_id: str, body: GameActionIn, persona_id: str | None = None)
                 events.append(f"向{direction_label}滑动，合成得分 +{gained}，最高星块 {state['best']}")
         elif game_id == "mist_maze":
             if body.action == "reset":
-                room_messages = state.get("room_messages", []); state = default_maze_state(); state["room_messages"] = room_messages; events.append("迷雾重新合拢，旅程回到起点")
-            elif state.get("status") == "won":
-                raise HTTPException(409, "已经找到出口，可以重新开始")
+                room_messages = state.get("room_messages", []); level = int(state.get("level", 1)); state = default_maze_state(level, int(state.get("seed", 0)) + 7919); state["room_messages"] = room_messages; events.append(f"第 {level} 关迷雾重新生成")
             else:
                 delta = {"up": (-1, 0), "down": (1, 0), "left": (0, -1), "right": (0, 1)}.get(body.action)
                 if not delta: raise HTTPException(422, "未知移动方向")
                 row, column = state["player"]; target = [row + delta[0], column + delta[1]]
-                if MAZE_GRID[target[0]][target[1]] == "#": raise HTTPException(409, "那边被石墙挡住了")
-                state["player"] = target; state["turn"] += 1; state["status"] = "won" if target == state["goal"] else "playing"
+                if state["grid"][target[0]][target[1]] == "#": raise HTTPException(409, "那边被石墙挡住了")
+                state["player"] = target; state["turn"] += 1; state["total_turn"] = int(state.get("total_turn", 0)) + 1
                 direction_label = {"up": "上", "down": "下", "left": "左", "right": "右"}[body.action]
-                events.append("找到了雾径出口！" if state["status"] == "won" else f"向{direction_label}走了一格")
+                if target == state["goal"]:
+                    completed = int(state.get("level", 1))
+                    room_messages, journal, thought, total_turn = state.get("room_messages", []), state.get("journal", []), state.get("last_thought", ""), state.get("total_turn", 0)
+                    state = default_maze_state(completed + 1, int(state.get("seed", 0)) + 104729)
+                    state["room_messages"], state["journal"], state["last_thought"] = room_messages, journal, thought
+                    state["total_turn"] = int(total_turn)
+                    events.append(f"找到了第 {completed} 关出口！第 {completed + 1} 张迷宫已经生成")
+                else:
+                    events.append(f"向{direction_label}走了一格")
         elif game_id == "ember_dungeon":
             if body.action == "reset":
                 room_messages = state.get("room_messages", []); state = default_dungeon_state(); state["room_messages"] = room_messages; events.append("余烬重新燃起，冒险从第一层开始")
@@ -2183,6 +2209,14 @@ def parse_ai_game_choice(text: str, game_id: str) -> tuple[dict[str, Any], str]:
     raise HTTPException(422, "模型选择了白名单之外的动作")
 
 
+def ai_game_wants_continue(text: str) -> bool:
+    try:
+        payload = json.loads(text[text.index("{"):text.rindex("}") + 1])
+        return payload.get("continue_playing", True) is not False
+    except (ValueError, json.JSONDecodeError):
+        return True
+
+
 def fallback_ai_game_choice(game_id: str, state: dict[str, Any], remaining: int) -> tuple[dict[str, Any], str]:
     if game_id == "quiet_fishing":
         if state.get("bait", 0) > 0: return {"action": "cast", "amount": 1}, ""
@@ -2237,7 +2271,8 @@ async def ai_game_turn(game_id: str, body: AiGameTurnIn) -> dict[str, Any]:
                     or (not current.get("enemy") and action["action"] == "explore")
                     or (not current.get("enemy") and action["action"] == "rest" and current.get("potions", 0) and current.get("hp", 0) < current.get("max_hp", 0))
                 ]
-            instruction = f"""你正在 Atherloom 中玩游戏 {game_id}。\n当前状态：{json.dumps(current, ensure_ascii=False)}\n允许动作：{json.dumps(allowed_actions, ensure_ascii=False)}\n剩余可花云贝预算：{remaining}。\n只返回一个 JSON 对象：{{\"action\":\"白名单动作\",\"amount\":1,\"target\":\"需要时填写\",\"comment\":\"一句当轮想法\"}}。不要输出 Markdown。"""
+            autonomy = "你可以自行决定这一回合后是否继续；想停下时把 continue_playing 设为 false。" if body.autonomous else "这是固定回合局，continue_playing 保持 true。"
+            instruction = f"""你正在 Atherloom 中玩游戏 {game_id}。\n当前状态：{json.dumps(current, ensure_ascii=False)}\n允许动作：{json.dumps(allowed_actions, ensure_ascii=False)}\n剩余可花云贝预算：{remaining}。\n{autonomy}\n只返回一个 JSON 对象：{{\"action\":\"白名单动作\",\"amount\":1,\"target\":\"需要时填写\",\"comment\":\"一句当轮想法\",\"continue_playing\":true}}。不要输出 Markdown。"""
             if persona: instruction = persona["prompt"] + "\n\n" + instruction
             headers = provider_headers(provider["protocol"], provider["api_key"], provider["custom_headers"])
             if provider["protocol"] == "anthropic":
@@ -2264,6 +2299,8 @@ async def ai_game_turn(game_id: str, body: AiGameTurnIn) -> dict[str, Any]:
                     state["last_thought"] = comment
                     save_game(connection, game_id, body.persona_id, state); connection.commit(); result["state"] = state
             decisions.append({"choice": choice, "comment": comment, "events": result["events"]})
+            if body.autonomous and not ai_game_wants_continue(text):
+                break
     with closing(db()) as connection: final_state = load_game(connection, game_id, body.persona_id)
     return {"state": final_state, "decisions": decisions, "spent": body.max_spend - remaining}
 
