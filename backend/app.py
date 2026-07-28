@@ -2250,7 +2250,7 @@ async def ai_game_turn(game_id: str, body: AiGameTurnIn) -> dict[str, Any]:
         persona = connection.execute("SELECT name, prompt FROM personas WHERE id=?", (body.persona_id,)).fetchone() if body.persona_id else None
         persona_name = persona["name"] if persona else "当前人格"
     if not provider: raise HTTPException(404, "API 线路不存在")
-    decisions, remaining = [], body.max_spend
+    decisions, remaining, wants_continue = [], body.max_spend, True
     async with httpx.AsyncClient(timeout=35) as client:
         for _ in range(body.turns):
             with closing(db()) as connection: current = load_game(connection, game_id, body.persona_id)
@@ -2299,10 +2299,11 @@ async def ai_game_turn(game_id: str, body: AiGameTurnIn) -> dict[str, Any]:
                     state["last_thought"] = comment
                     save_game(connection, game_id, body.persona_id, state); connection.commit(); result["state"] = state
             decisions.append({"choice": choice, "comment": comment, "events": result["events"]})
-            if body.autonomous and not ai_game_wants_continue(text):
+            wants_continue = ai_game_wants_continue(text)
+            if body.autonomous and not wants_continue:
                 break
     with closing(db()) as connection: final_state = load_game(connection, game_id, body.persona_id)
-    return {"state": final_state, "decisions": decisions, "spent": body.max_spend - remaining}
+    return {"state": final_state, "decisions": decisions, "spent": body.max_spend - remaining, "continue_playing": wants_continue}
 
 
 @app.post("/api/games/{game_id}/room-chat")
