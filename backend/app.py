@@ -102,7 +102,8 @@ def init_db() -> None:
               kind TEXT NOT NULL DEFAULT 'fact', source_conversation_id TEXT,
               source_message_id TEXT, starred INTEGER NOT NULL DEFAULT 0,
               archived INTEGER NOT NULL DEFAULT 0, deleted_at TEXT,
-              created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+              created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+              persona_key TEXT NOT NULL DEFAULT '__unassigned__'
             );
             CREATE TABLE IF NOT EXISTS memory_audit (
               id TEXT PRIMARY KEY, memory_id TEXT NOT NULL, action TEXT NOT NULL,
@@ -215,6 +216,10 @@ def init_db() -> None:
             connection.execute("ALTER TABLE providers ADD COLUMN cache_mode TEXT NOT NULL DEFAULT 'auto'")
         if "prompt_cache_key" not in columns:
             connection.execute("ALTER TABLE providers ADD COLUMN prompt_cache_key TEXT NOT NULL DEFAULT ''")
+        memory_columns = {row["name"] for row in connection.execute("PRAGMA table_info(memories)")}
+        if "persona_key" not in memory_columns:
+            connection.execute("ALTER TABLE memories ADD COLUMN persona_key TEXT NOT NULL DEFAULT '__unassigned__'")
+        connection.execute("CREATE INDEX IF NOT EXISTS memories_persona_updated ON memories(persona_key, updated_at DESC)")
         motivation_columns = {row["name"] for row in connection.execute("PRAGMA table_info(motivation_states)")}
         if "offline_mode" not in motivation_columns:
             connection.execute("ALTER TABLE motivation_states ADD COLUMN offline_mode TEXT NOT NULL DEFAULT 'limited'")
@@ -361,6 +366,7 @@ class AppSettingsIn(BaseModel):
 class MemoryVectorRebuildIn(BaseModel):
     provider_id: str = ""
     model: str = Field(default="", max_length=200)
+    persona_key: str = Field(default="__unassigned__", min_length=1, max_length=120)
 
 
 class MemoryIn(BaseModel):
@@ -369,6 +375,7 @@ class MemoryIn(BaseModel):
     kind: str = Field(default="fact", pattern="^(fact|preference|relationship|promise|event|emotion|summary|diary|other)$")
     source_conversation_id: str | None = None
     source_message_id: str | None = None
+    persona_key: str = Field(default="__unassigned__", min_length=1, max_length=120)
 
 
 class MemoryState(BaseModel):
@@ -609,9 +616,9 @@ def memory_dict(row: sqlite3.Row) -> dict[str, Any]:
 
 
 @app.get("/api/memories")
-def list_memories(q: str = "", include_archived: bool = False, include_trash: bool = False) -> list[dict[str, Any]]:
-    clauses = []
-    params: list[Any] = []
+def list_memories(persona_key: str = "__unassigned__", q: str = "", include_archived: bool = False, include_trash: bool = False) -> list[dict[str, Any]]:
+    clauses = ["persona_key=?"]
+    params: list[Any] = [persona_key]
     if not include_archived:
         clauses.append("archived=0")
     clauses.append("deleted_at IS NOT NULL" if include_trash else "deleted_at IS NULL")
@@ -630,8 +637,10 @@ def create_memory(body: MemoryIn) -> dict[str, Any]:
     created = now_iso()
     with closing(db()) as connection:
         connection.execute(
-            "INSERT INTO memories VALUES (?, ?, ?, ?, ?, ?, 0, 0, NULL, ?, ?)",
-            (memory_id, body.title, body.content, body.kind, body.source_conversation_id, body.source_message_id, created, created),
+            """INSERT INTO memories
+               (id,title,content,kind,source_conversation_id,source_message_id,starred,archived,deleted_at,created_at,updated_at,persona_key)
+               VALUES (?, ?, ?, ?, ?, ?, 0, 0, NULL, ?, ?, ?)""",
+            (memory_id, body.title, body.content, body.kind, body.source_conversation_id, body.source_message_id, created, created, body.persona_key),
         )
         connection.execute("INSERT INTO memory_audit VALUES (?, ?, 'create', '', ?)", (str(uuid.uuid4()), memory_id, created))
         connection.commit()
@@ -644,8 +653,8 @@ def update_memory(memory_id: str, body: MemoryIn) -> dict[str, Any]:
     updated = now_iso()
     with closing(db()) as connection:
         cursor = connection.execute(
-            "UPDATE memories SET title=?,content=?,kind=?,updated_at=? WHERE id=? AND deleted_at IS NULL",
-            (body.title, body.content, body.kind, updated, memory_id),
+            "UPDATE memories SET title=?,content=?,kind=?,persona_key=?,updated_at=? WHERE id=? AND deleted_at IS NULL",
+            (body.title, body.content, body.kind, body.persona_key, updated, memory_id),
         )
         if not cursor.rowcount:
             raise HTTPException(404, "记忆不存在")
@@ -1380,6 +1389,7 @@ async def invoke_builtin_tool(name: str, arguments: dict[str, Any]) -> dict[str,
         return {"query": query, "results": results, "result_count": len(results)}
     if name == "memory_search":
         query = str(arguments.get("query", "")).strip()
+        persona_key = str(arguments.get("_persona_key") or "__unassigned__")
         query_vector, provider_id, model = await query_memory_vector(query) if query else (None, "", "")
         with closing(db()) as connection:
             if query:
@@ -1388,13 +1398,14 @@ async def invoke_builtin_tool(name: str, arguments: dict[str, Any]) -> dict[str,
                     query_vector=query_vector,
                     embedding_provider_id=provider_id,
                     embedding_model=model,
+                    persona_key=persona_key,
                 )
                 return {"memories": [{
                     "memory_id": item["id"], "title": item["title"], "content": item["content"],
                     "kind": item["kind"], "reason": item["reason"],
                 } for item in recalled]}
             else:
-                rows = connection.execute("SELECT * FROM memories WHERE deleted_at IS NULL ORDER BY starred DESC,updated_at DESC LIMIT 20").fetchall()
+                rows = connection.execute("SELECT * FROM memories WHERE persona_key=? AND deleted_at IS NULL ORDER BY starred DESC,updated_at DESC LIMIT 20", (persona_key,)).fetchall()
         return {"memories": [{"memory_id": row["id"], "title": row["title"], "content": row["content"], "kind": row["kind"], "updated_at": row["updated_at"]} for row in rows]}
     if name == "memory_create":
         source_message_id = str(arguments.get("source_message_id") or arguments.get("_source_message_id") or "").strip() or None
@@ -1411,13 +1422,14 @@ async def invoke_builtin_tool(name: str, arguments: dict[str, Any]) -> dict[str,
             kind=str(arguments.get("kind") or "fact"),
             source_conversation_id=source_conversation_id,
             source_message_id=source_message_id,
+            persona_key=str(arguments.get("_persona_key") or "__unassigned__"),
         )
         saved = create_memory(body)
         return {"created": True, "memory_id": saved["id"], "title": saved["title"], "kind": saved["kind"]}
     if name == "memory_update":
         memory_id = str(arguments.get("memory_id", "")).strip()
         with closing(db()) as connection:
-            row = connection.execute("SELECT * FROM memories WHERE id=? AND deleted_at IS NULL", (memory_id,)).fetchone()
+            row = connection.execute("SELECT * FROM memories WHERE id=? AND persona_key=? AND deleted_at IS NULL", (memory_id, str(arguments.get("_persona_key") or "__unassigned__"))).fetchone()
         if not row:
             raise ValueError("找不到该 memory_id；请先调用 memory_search")
         body = MemoryIn(
@@ -1426,6 +1438,7 @@ async def invoke_builtin_tool(name: str, arguments: dict[str, Any]) -> dict[str,
             kind=str(arguments.get("kind", row["kind"])),
             source_conversation_id=row["source_conversation_id"],
             source_message_id=row["source_message_id"],
+            persona_key=row["persona_key"],
         )
         saved = update_memory(memory_id, body)
         return {"updated": True, "memory_id": saved["id"], "title": saved["title"], "kind": saved["kind"]}
@@ -1649,6 +1662,32 @@ def update_conversation_state(conversation_id: str, body: ConversationState) -> 
     return dict(row)
 
 
+@app.delete("/api/conversations/{conversation_id}")
+def delete_conversation(conversation_id: str) -> dict[str, bool]:
+    with closing(db()) as connection:
+        if not connection.execute("SELECT 1 FROM conversations WHERE id=?", (conversation_id,)).fetchone():
+            raise HTTPException(404, "会话不存在")
+        message_ids = [row["id"] for row in connection.execute("SELECT id FROM messages WHERE conversation_id=?", (conversation_id,))]
+        if message_ids:
+            placeholders = ",".join("?" for _ in message_ids)
+            favorite_ids = [row["id"] for row in connection.execute(
+                f"SELECT id FROM favorites WHERE source_message_id IN ({placeholders})", message_ids
+            )]
+            if favorite_ids:
+                favorite_placeholders = ",".join("?" for _ in favorite_ids)
+                connection.execute(f"DELETE FROM favorite_owners WHERE favorite_id IN ({favorite_placeholders})", favorite_ids)
+                connection.execute(f"DELETE FROM favorites WHERE id IN ({favorite_placeholders})", favorite_ids)
+            connection.execute(f"DELETE FROM message_trash WHERE message_id IN ({placeholders})", message_ids)
+        connection.execute("DELETE FROM message_selections WHERE conversation_id=?", (conversation_id,))
+        connection.execute("DELETE FROM summary_versions WHERE conversation_id=?", (conversation_id,))
+        connection.execute("DELETE FROM messages WHERE conversation_id=?", (conversation_id,))
+        connection.execute("UPDATE memories SET source_conversation_id=NULL WHERE source_conversation_id=?", (conversation_id,))
+        connection.execute("UPDATE mcp_audit SET conversation_id=NULL WHERE conversation_id=?", (conversation_id,))
+        connection.execute("DELETE FROM conversations WHERE id=?", (conversation_id,))
+        connection.commit()
+    return {"deleted": True}
+
+
 @app.get("/api/search")
 def search_conversations(q: str = "") -> list[dict[str, Any]]:
     term = q.strip()
@@ -1846,7 +1885,10 @@ def default_fishing_state() -> dict[str, Any]:
 
 
 def default_claw_state() -> dict[str, Any]:
-    return {"coins": 100, "turn": 0, "position": 2, "prizes": ["云朵兔", "星星熊", "橘子猫", "月亮狗", "小海豹"], "inventory": {}, "journal": [], "room_messages": [], "last_thought": ""}
+    return {"coins": 100, "turn": 0, "position": 2, "prizes": ["云朵兔", "星星熊", "橘子猫", "月亮狗", "小海豹"], "inventory": {}, "last_checkin": "", "journal": [], "room_messages": [], "last_thought": ""}
+
+
+CLAW_PRIZE_VALUES = {"云朵兔": 16, "星星熊": 18, "橘子猫": 22, "月亮狗": 20, "小海豹": 24}
 
 
 def default_slots_state() -> dict[str, Any]:
@@ -2035,6 +2077,14 @@ def game_action(game_id: str, body: GameActionIn, persona_id: str | None = None)
         if game_id == "claw_machine":
             if body.action == "move_left": state["position"] = max(0, state["position"] - 1); events.append("爪子向左移动")
             elif body.action == "move_right": state["position"] = min(len(state["prizes"]) - 1, state["position"] + 1); events.append("爪子向右移动")
+            elif body.action == "check_in":
+                today = datetime.now().astimezone().date().isoformat()
+                if state.get("last_checkin") == today: raise HTTPException(409, "今天已经签到过了")
+                state["last_checkin"] = today; state["coins"] += 50; events.append("每日签到，领取 50 云贝")
+            elif body.action == "sell_all":
+                income = sum(CLAW_PRIZE_VALUES.get(name, 15) * count for name, count in state.get("inventory", {}).items())
+                if not income: raise HTTPException(409, "收藏柜里还没有可以出售的娃娃")
+                state["inventory"] = {}; state["coins"] += income; events.append(f"出售全部娃娃，获得 {income} 云贝")
             elif body.action == "grab":
                 if state["coins"] < 10: raise HTTPException(409, "云贝不够")
                 state["coins"] -= 10; state["turn"] += 1; prize = state["prizes"][state["position"]]
@@ -2168,7 +2218,7 @@ def game_action(game_id: str, body: GameActionIn, persona_id: str | None = None)
 
 AI_GAME_ACTIONS = {
     "quiet_fishing": [{"action": "cast", "amount": 1}, {"action": "buy_bait", "amount": 5}, {"action": "sell_all", "amount": 1}, *[{"action": "travel", "target": key, "amount": 1} for key in FISHING_WATERS]],
-    "claw_machine": [{"action": "move_left", "amount": 1}, {"action": "move_right", "amount": 1}, {"action": "grab", "amount": 1}],
+    "claw_machine": [{"action": "move_left", "amount": 1}, {"action": "move_right", "amount": 1}, {"action": "grab", "amount": 1}, {"action": "check_in", "amount": 1}, {"action": "sell_all", "amount": 1}],
     "cloud_slots": [{"action": "spin", "amount": 1}],
     "star_merge": [{"action": direction, "amount": 1} for direction in ("up", "down", "left", "right")],
     "mist_maze": [{"action": direction, "amount": 1} for direction in ("up", "down", "left", "right")],
@@ -2225,6 +2275,8 @@ def fallback_ai_game_choice(game_id: str, state: dict[str, Any], remaining: int)
         if remaining >= 25 and state.get("coins", 0) >= 25: return {"action": "buy_bait", "amount": 5}, ""
     if game_id == "claw_machine":
         if remaining >= 10 and state.get("coins", 0) >= 10: return {"action": "grab", "amount": 1}, ""
+        if state.get("inventory"): return {"action": "sell_all", "amount": 1}, ""
+        if state.get("last_checkin") != datetime.now().astimezone().date().isoformat(): return {"action": "check_in", "amount": 1}, ""
         return {"action": "move_right", "amount": 1}, ""
     if game_id == "cloud_slots" and remaining >= 5 and state.get("coins", 0) >= 5:
         return {"action": "spin", "amount": 1}, ""
@@ -2331,13 +2383,13 @@ async def game_room_chat(game_id: str, body: GameRoomChatIn) -> dict[str, Any]:
         + f"宿主验证的当前局面：{json.dumps(visible_state, ensure_ascii=False)}\n"
         + f"房间最近对话与动作：{json.dumps(recent_messages, ensure_ascii=False)}\n"
         + f"用户刚说：{body.content}\n"
-        + "自然接话，明确知道刚发生的真实动作与局面。不要声称看见未提供的信息，不要替用户操作，也不要输出 JSON、标签或技术说明。回复 1 到 3 句。"
+        + "自然接话，明确知道刚发生的真实动作与局面。不要声称看见未提供的信息，不要替用户操作，也不要输出 JSON、标签或技术说明。回复 1 到 3 句，并把最后一句完整说完。"
     )
     headers = provider_headers(provider["protocol"], provider["api_key"], provider["custom_headers"])
     payload = (
-        {"model": provider["model"], "max_tokens": 240, "temperature": 0.7, "messages": [{"role": "user", "content": instruction}]}
+        {"model": provider["model"], "max_tokens": 640, "temperature": 0.7, "messages": [{"role": "user", "content": instruction}]}
         if provider["protocol"] == "anthropic"
-        else {"model": provider["model"], "max_tokens": 240, "temperature": 0.7, "stream": False, "messages": [{"role": "user", "content": instruction}]}
+        else {"model": provider["model"], "max_tokens": 640, "temperature": 0.7, "stream": False, "messages": [{"role": "user", "content": instruction}]}
     )
     async with httpx.AsyncClient(timeout=35) as client:
         response = await client.post(provider_endpoint(provider["base_url"], provider["protocol"]), headers=headers, json=payload)
@@ -2363,7 +2415,7 @@ async def game_room_chat(game_id: str, body: GameRoomChatIn) -> dict[str, Any]:
 def load_motivation(connection: sqlite3.Connection, persona_id: str | None) -> tuple[bool, dict[str, Any], str]:
     row = connection.execute("SELECT * FROM motivation_states WHERE persona_key=?", (motivation_key(persona_id),)).fetchone()
     if not row:
-        return False, default_state(), "limited"
+        return True, default_state(), "limited"
     mode = row["offline_mode"] if "offline_mode" in row.keys() else "limited"
     return bool(row["enabled"]), normalize(json.loads(row["state_json"])), mode
 
@@ -2507,9 +2559,17 @@ def relevant_roleplay_archive(connection: sqlite3.Connection, query: str, limit:
 
 
 def load_chat_context(connection: sqlite3.Connection, body: ChatIn, cutoff: str | None = None) -> tuple[sqlite3.Row, str, list[dict[str, str]]]:
-    provider = connection.execute("SELECT * FROM providers WHERE id=? AND enabled=1", (body.provider_id,)).fetchone()
+    conversation = connection.execute("SELECT * FROM conversations WHERE id=?", (body.conversation_id,)).fetchone()
+    if not conversation:
+        raise HTTPException(404, "会话不存在")
+    if (conversation["persona_id"] or None) != (body.persona_id or None):
+        raise HTTPException(409, "当前会话属于另一个人格，已阻止跨人格读取")
+    if conversation["provider_id"] and conversation["provider_id"] != body.provider_id:
+        raise HTTPException(409, "当前会话绑定了其他模型线路，已阻止跨线路覆盖")
+    provider_id = conversation["provider_id"] or body.provider_id
+    provider = connection.execute("SELECT * FROM providers WHERE id=? AND enabled=1", (provider_id,)).fetchone()
     if not provider:
-        raise HTTPException(404, "API 配置不存在或已停用")
+        raise HTTPException(404, "当前人格绑定的 API 配置不存在或已停用")
     persona_prompt = ""
     persona_config = normalize_persona_config({})
     if body.persona_id:
@@ -2517,9 +2577,6 @@ def load_chat_context(connection: sqlite3.Connection, body: ChatIn, cutoff: str 
         config_row = connection.execute("SELECT config_json FROM persona_configs WHERE persona_id=?", (body.persona_id,)).fetchone()
         persona_config = normalize_persona_config(config_row["config_json"] if config_row else {})
         persona_prompt = f"<assistant_persona active=\"true\">\n{persona['prompt']}\n</assistant_persona>" if persona and persona["prompt"].strip() else ""
-    conversation = connection.execute("SELECT * FROM conversations WHERE id=?", (body.conversation_id,)).fetchone()
-    if not conversation:
-        raise HTTPException(404, "会话不存在")
     query = """SELECT messages.role, messages.content FROM messages
       WHERE messages.conversation_id=?
       AND NOT EXISTS (SELECT 1 FROM message_trash t WHERE t.message_id=messages.id)
@@ -2652,11 +2709,12 @@ async def query_memory_vector(query: str) -> tuple[list[float] | None, str, str]
 
 
 @app.get("/api/memories/vector/status")
-def memory_vector_status() -> dict[str, Any]:
+def memory_vector_status(persona_key: str = "__unassigned__") -> dict[str, Any]:
     with closing(db()) as connection:
         enabled, provider_id, model = vector_memory_config(connection)
         memories = connection.execute(
-            "SELECT id,title,content FROM memories WHERE archived=0 AND deleted_at IS NULL"
+            "SELECT id,title,content FROM memories WHERE persona_key=? AND archived=0 AND deleted_at IS NULL",
+            (persona_key,),
         ).fetchall()
         indexed_rows = {
             row["memory_id"]: row for row in connection.execute(
@@ -2694,7 +2752,8 @@ async def rebuild_memory_vectors(body: MemoryVectorRebuildIn) -> dict[str, Any]:
             "SELECT * FROM providers WHERE id=? AND enabled=1", (provider_id,)
         ).fetchone()
         memories = connection.execute(
-            "SELECT id,title,content FROM memories WHERE archived=0 AND deleted_at IS NULL ORDER BY updated_at"
+            "SELECT id,title,content FROM memories WHERE persona_key=? AND archived=0 AND deleted_at IS NULL ORDER BY updated_at",
+            (body.persona_key,),
         ).fetchall()
     if not provider:
         raise HTTPException(422, "请选择一条可用的 API 线路")
@@ -2905,11 +2964,15 @@ def retrieve_memories(
     query_vector: list[float] | None = None,
     embedding_provider_id: str = "",
     embedding_model: str = "",
+    persona_key: str = "__unassigned__",
 ) -> list[dict[str, Any]]:
     query_terms = text_bigrams(query)
     if not query_terms and not query_vector:
         return []
-    rows = list(connection.execute("SELECT * FROM memories WHERE archived=0 AND deleted_at IS NULL"))
+    rows = list(connection.execute(
+        "SELECT * FROM memories WHERE persona_key=? AND archived=0 AND deleted_at IS NULL",
+        (persona_key,),
+    ))
     if not rows:
         return []
     vector_rows: dict[str, sqlite3.Row] = {}
@@ -3032,6 +3095,7 @@ async def chat(body: ChatIn) -> StreamingResponse:
                 query_vector=query_vector,
                 embedding_provider_id=embedding_provider_id,
                 embedding_model=embedding_model,
+                persona_key=motivation_key(body.persona_id),
             )
         else:
             memory_sources = []
