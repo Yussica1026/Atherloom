@@ -160,7 +160,7 @@ class LocalClientTests(unittest.TestCase):
     def test_builtin_tools_follow_permissions_and_mutate_memory_by_id(self):
         tools, bindings = app_module.builtin_tool_catalog({"web_search":"allow","memory_read":"allow","memory_write":"allow"})
         names = {tool["name"] for tool in tools}
-        self.assertEqual(names, {"atherloom_web_search", "atherloom_memory_search", "atherloom_memory_create", "atherloom_memory_update"})
+        self.assertEqual(names, {"atherloom_game_play", "atherloom_web_search", "atherloom_memory_search", "atherloom_memory_create", "atherloom_memory_update"})
         self.assertEqual(bindings["atherloom_memory_update"][1], "memory_update")
         conversation = self.client.post("/api/conversations", json={"title": "来源测试"}).json()
         source_message_id = "source-message"
@@ -183,7 +183,11 @@ class LocalClientTests(unittest.TestCase):
         self.assertTrue(updated["updated"])
         self.assertEqual(self.client.get("/api/memories?q=温牛奶").json()[0]["id"], created["memory_id"])
         denied, _ = app_module.builtin_tool_catalog({"web_search":"deny","memory_read":"ask","memory_write":"deny"})
-        self.assertEqual(denied, [])
+        self.assertEqual([tool["name"] for tool in denied], ["atherloom_game_play"])
+        played = asyncio.run(app_module.invoke_builtin_tool("game_play", {"game_id": "claw_machine"}))
+        self.assertEqual(played["game_id"], "claw_machine")
+        self.assertEqual(played["executed"]["action"], "grab")
+        self.assertEqual(played["state"]["turn"], 1)
 
     def test_deepseek_dsml_tool_call_is_parsed(self):
         content = (
@@ -303,7 +307,7 @@ class LocalClientTests(unittest.TestCase):
         conversation_id, user_id = str(uuid.uuid4()), str(uuid.uuid4())
         first_id, second_id = str(uuid.uuid4()), str(uuid.uuid4())
         with app_module.closing(app_module.db()) as connection:
-            connection.execute("INSERT INTO conversations VALUES (?, '消息操作', NULL, NULL, '', ?, ?, 0, 0, 0)", (conversation_id, app_module.now_iso(), app_module.now_iso()))
+            connection.execute("INSERT INTO conversations VALUES (?, '消息操作', NULL, NULL, '包含旧问题的摘要', ?, ?, 0, 0, 0)", (conversation_id, app_module.now_iso(), app_module.now_iso()))
             connection.execute("INSERT INTO messages VALUES (?, ?, 'user', '旧问题', NULL, NULL, ?, '', NULL)", (user_id, conversation_id, "2026-07-22T11:00:00"))
             connection.execute("INSERT INTO messages VALUES (?, ?, 'assistant', '第一版', NULL, 'm', ?, '', ?)", (first_id, conversation_id, "2026-07-22T11:00:01", user_id))
             connection.execute("INSERT INTO messages VALUES (?, ?, 'assistant', '第二版', NULL, 'm', ?, '', ?)", (second_id, conversation_id, "2026-07-22T11:00:02", user_id))
@@ -315,6 +319,9 @@ class LocalClientTests(unittest.TestCase):
         self.assertEqual(set(deleted.json()["deleted"]), {first_id, second_id})
         remaining = self.client.get(f"/api/conversations/{conversation_id}/messages").json()
         self.assertEqual([row["id"] for row in remaining], [user_id])
+        with app_module.closing(app_module.db()) as connection:
+            summary = connection.execute("SELECT summary FROM conversations WHERE id=?", (conversation_id,)).fetchone()["summary"]
+        self.assertEqual(summary, "")
 
     def test_provider_is_saved_but_key_is_masked(self):
         response = self.client.post("/api/providers", json={
