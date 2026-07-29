@@ -362,6 +362,7 @@ class AppSettingsIn(BaseModel):
     vector_memory_enabled: bool = False
     embedding_provider_id: str = ""
     embedding_model: str = Field(default="", max_length=200)
+    vision_provider_id: str = ""
     stream_speed: str = Field(default="standard", pattern="^(slow|standard|fast)$")
 
 
@@ -414,6 +415,7 @@ class ChatIn(BaseModel):
     conversation_id: str
     content: str = Field(min_length=1)
     provider_id: str
+    vision_provider_id: str = ""
     persona_id: str | None = None
     reuse_user_message_id: str | None = None
     attachments: list[dict[str, Any]] = Field(default_factory=list, max_length=8)
@@ -576,6 +578,7 @@ def bootstrap() -> dict[str, Any]:
         "vector_memory_enabled": settings_rows.get("vector_memory_enabled", "false") == "true",
         "embedding_provider_id": settings_rows.get("embedding_provider_id", ""),
         "embedding_model": settings_rows.get("embedding_model", ""),
+        "vision_provider_id": settings_rows.get("vision_provider_id", ""),
         "stream_speed": settings_rows.get("stream_speed", "standard"),
     }}
 
@@ -599,6 +602,7 @@ def save_settings(body: AppSettingsIn) -> dict[str, Any]:
             "vector_memory_enabled": "true" if body.vector_memory_enabled else "false",
             "embedding_provider_id": body.embedding_provider_id,
             "embedding_model": body.embedding_model,
+            "vision_provider_id": body.vision_provider_id,
             "stream_speed": body.stream_speed,
         }
         connection.executemany(
@@ -1223,7 +1227,7 @@ def provider_tool_followup(
                 json.dumps({"tool": call["name"], "result": result["content"]}, ensure_ascii=False)
                 for call, result in zip(calls, results)
             )
-            + "\n</tool_results>\n以上是宿主刚刚执行工具得到的真实结果。"
+            + "\n</tool_results>\n以上是 Atherloom 刚刚执行工具得到的真实结果。"
             "请根据结果继续完成任务；需要其他工具时可再次调用，不要输出 DSML 源码或伪造结果。"
         )
         return [
@@ -1281,12 +1285,12 @@ async def bound_mcp_catalog(servers: list[dict[str, Any]]) -> tuple[list[dict[st
 BUILTIN_TOOL_SPECS = {
     "game_play": {
         "permission": "game_play",
-        "description": "实际游玩 Atherloom 内置游戏。用户邀请你玩、要求你操作，或明确提到云汀钓记、抓娃娃机、云纹老虎机、星潮合成、雾径迷宫、余烬地牢时，调用此工具；不要自己设计或文字模拟游戏。action 可省略，由宿主根据真实局面选择安全动作。",
+        "description": "实际游玩 Atherloom 内置游戏。用户邀请你玩、要求你操作，或明确提到云汀钓记、抓娃娃机、云纹老虎机、星潮合成、雾径迷宫、余烬地牢时，调用此工具；不要自己设计或文字模拟游戏。action 可省略，由 Atherloom 根据真实局面选择安全动作。",
         "input_schema": {
             "type": "object",
             "properties": {
                 "game_id": {"type": "string", "enum": ["quiet_fishing", "claw_machine", "cloud_slots", "star_merge", "mist_maze", "ember_dungeon"]},
-                "action": {"type": "string", "description": "可选；省略时由宿主选择当前合法动作"},
+                "action": {"type": "string", "description": "可选；省略时由 Atherloom 选择当前可用动作"},
                 "amount": {"type": "integer", "minimum": 1, "maximum": 5, "default": 1},
                 "target": {"type": "string"},
             },
@@ -2050,7 +2054,7 @@ def game_catalog() -> list[dict[str, Any]]:
         {"id": "cloud_slots", "name": "云纹老虎机", "icon": "✦", "status": "playable", "description": "只使用游戏内云贝的确定性三轴小游戏。"},
         {"id": "star_merge", "name": "星潮合成", "icon": "▦", "status": "playable", "description": "你亲手合成星块，或把棋盘交给当前人格。"},
         {"id": "mist_maze", "name": "雾径迷宫", "icon": "⌁", "status": "playable", "description": "你与人格轮流探路，在有限视野里找到出口。"},
-        {"id": "ember_dungeon", "name": "余烬地牢", "icon": "⚔", "status": "playable", "description": "探索、迎战与休整都由宿主判定的轻量冒险。"},
+        {"id": "ember_dungeon", "name": "余烬地牢", "icon": "⚔", "status": "playable", "description": "探索、迎战与休整都由 Atherloom 判定的轻量冒险。"},
     ]
 
 
@@ -2421,7 +2425,7 @@ async def game_room_chat(game_id: str, body: GameRoomChatIn) -> dict[str, Any]:
     instruction = (
         (persona["prompt"] + "\n\n" if persona else "")
         + f"你是{persona_name}，正和用户在 Atherloom 的「{game_names[game_id]}」房间一起玩。\n"
-        + f"宿主验证的当前局面：{json.dumps(visible_state, ensure_ascii=False)}\n"
+        + f"Atherloom 验证的当前局面：{json.dumps(visible_state, ensure_ascii=False)}\n"
         + f"房间最近对话与动作：{json.dumps(recent_messages, ensure_ascii=False)}\n"
         + f"用户刚说：{body.content}\n"
         + "自然接话，明确知道刚发生的真实动作与局面。不要声称看见未提供的信息，不要替用户操作，也不要输出 JSON、标签或技术说明。回复 1 到 3 句，并把最后一句完整说完。"
@@ -2611,6 +2615,13 @@ def load_chat_context(connection: sqlite3.Connection, body: ChatIn, cutoff: str 
     provider = connection.execute("SELECT * FROM providers WHERE id=? AND enabled=1", (provider_id,)).fetchone()
     if not provider:
         raise HTTPException(404, "当前人格绑定的 API 配置不存在或已停用")
+    if body.vision_provider_id and any(item.get("kind") == "image" for item in body.attachments):
+        vision_provider = connection.execute("SELECT * FROM providers WHERE id=? AND enabled=1", (body.vision_provider_id,)).fetchone()
+        if not vision_provider:
+            raise HTTPException(404, "图片理解线路不存在或已停用")
+        if vision_provider["vision_mode"] == "text":
+            raise HTTPException(422, "指定的图片理解线路被设置为仅文本，请换一条支持图片的线路")
+        provider = vision_provider
     persona_prompt = ""
     persona_config = normalize_persona_config({})
     if body.persona_id:
@@ -2639,9 +2650,9 @@ def load_chat_context(connection: sqlite3.Connection, body: ChatIn, cutoff: str 
     question_context = ("用户允许你在合适时主动提问、自然追问或发起新话题。需要用户选择时，先自然地说一句引导语，再在回复末尾严格输出 <questions>[{\"question\":\"问题\",\"options\":[\"选项一\",\"选项二\",\"选项三\"]}]</questions>；可包含 1 至 4 个问题，每题 2 至 5 个简短选项，不要在标签外重复选项。用户明确要求你提问时必须使用此格式。不要机械地每轮都提问。" if proactive_questions else "除非完成当前请求确实缺少必要信息，否则不要主动反问或发起问卷；优先直接回应用户。")
     formatting_context = "界面支持 Markdown。你可以根据语义有节制地使用 **粗体**、*斜体*、标题、引用、列表与代码块；不要为了装饰而过度格式化。"
     tool_names = [name for name, enabled in persona_config["tools"].items() if enabled]
-    tool_context = f"该人格启用的本地能力偏好：{', '.join(tool_names)}。只有宿主实际提供的能力才可调用。" if tool_names else ""
-    game_tool_context = "Atherloom 宿主真实内置六款可执行游戏工具：云汀钓记、抓娃娃机、云纹老虎机、星潮合成、雾径迷宫、余烬地牢。这些不是需要你设计、模拟、联网搜索或确认是否存在的文字游戏。用户说“玩抓娃娃机”等游玩指令时，宿主会先执行对应游戏并通过 <verified_game_context> 提供结果；你必须依据结果自然回应，绝不能声称要创建一个虚拟游戏。只有收到已执行结果才能声称自己实际操作过。"
-    game_context = f"<verified_game_context>\n{body.game_context}\n</verified_game_context>\n这是宿主提供的真实游戏状态、动作或房间信息。只在话题相关时自然使用；不要搜索外网猜测这些内置游戏，也不要否认已经提供的事实。" if body.game_context else ""
+    tool_context = f"该人格启用的本地能力偏好：{', '.join(tool_names)}。只有 Atherloom 实际提供的能力才可调用。" if tool_names else ""
+    game_tool_context = "Atherloom 真实内置六款可执行游戏工具：云汀钓记、抓娃娃机、云纹老虎机、星潮合成、雾径迷宫、余烬地牢。这些不是需要你设计、模拟、联网搜索或确认是否存在的文字游戏。用户说“玩抓娃娃机”等游玩指令时，Atherloom 会先执行对应游戏并通过 <verified_game_context> 提供结果；你必须依据结果自然回应，绝不能声称要创建一个虚拟游戏。只有收到已执行结果才能声称自己实际操作过。"
+    game_context = f"<verified_game_context>\n{body.game_context}\n</verified_game_context>\n这是 Atherloom 提供的真实游戏状态、动作或房间信息。只在话题相关时自然使用；不要搜索外网猜测这些内置游戏，也不要否认已经提供的事实。" if body.game_context else ""
     if body.media_context and body.media_context.lstrip().startswith("书籍："):
         media_context = f"<shared_reading_evidence>\n{body.media_context}\n</shared_reading_evidence>\n只能依据用户主动提供的本地阅读片段讨论本书；不要假装读过未提供的正文，也不要推断后续内容。"
     elif body.media_context and body.media_context.lstrip().startswith("歌曲："):
@@ -3278,7 +3289,7 @@ async def chat(body: ChatIn) -> StreamingResponse:
                             for index, call in enumerate(calls):
                                 if index >= allowed:
                                     results.append(
-                                        {"content": "本轮工具调用超过安全预算，宿主未执行", "is_error": True}
+                                        {"content": "本轮工具调用超过安全预算，Atherloom 未执行", "is_error": True}
                                     )
                                     continue
                                 server, original = mcp_bindings[call["name"]]
