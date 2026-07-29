@@ -908,6 +908,30 @@ class LocalClientTests(unittest.TestCase):
         self.assertIn("游戏工具", messages[0]["content"])
         self.assertIn("只有收到已执行结果才能声称自己实际操作过", messages[0]["content"])
 
+    def test_chat_message_template_formats_provider_copy_without_changing_source(self):
+        source = [{"role": "user", "content": "你好"}, {"role": "system", "content": "规则"}]
+        formatted = app_module.format_provider_chat_messages(source, "{{role}}｜{{date}}｜{{message}}")
+        self.assertRegex(formatted[0]["content"], r"^用户｜\d{4}-\d{2}-\d{2}｜你好$")
+        self.assertEqual(formatted[1]["content"], "规则")
+        self.assertEqual(source[0]["content"], "你好")
+
+    def test_typing_presence_contains_metadata_but_not_unsent_text(self):
+        provider = self.client.post("/api/providers", json={"name": "输入状态", "protocol": "openai", "base_url": "https://example.com/v1", "api_key": "test", "model": "test-model"}).json()
+        conversation = self.client.post("/api/conversations", json={"provider_id": provider["id"]}).json()
+        body = app_module.ChatIn(conversation_id=conversation["id"], content="最终发出的消息", provider_id=provider["id"], typing_context="用户输入约 8 秒，发送前停顿约 2 秒。")
+        with app_module.closing(app_module.db()) as connection:
+            _, _, messages = app_module.load_chat_context(connection, body)
+        self.assertIn("<typing_presence>", messages[0]["content"])
+        self.assertIn("不含未发送正文", messages[0]["content"])
+
+    def test_dream_vault_can_store_and_claim_a_quarantined_dream(self):
+        created = self.client.post("/api/dreams/persona-a", json={"title": "雾里的门", "raw_text": "我梦见一扇门。", "kind": "quarantined"}).json()
+        self.assertFalse(created["claimed"])
+        claimed = self.client.post(f"/api/dreams/persona-a/{created['id']}/claim", json={"note": "愿意留下它"}).json()
+        self.assertTrue(claimed["claimed"])
+        self.assertEqual(claimed["claim_note"], "愿意留下它")
+        self.assertEqual(self.client.get("/api/dreams/persona-a").json()["entries"][0]["title"], "雾里的门")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -131,6 +131,12 @@ def init_db() -> None:
               author TEXT NOT NULL DEFAULT 'user', visible_to_user INTEGER NOT NULL DEFAULT 1,
               visible_to_ai INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS dream_entries (
+              id TEXT PRIMARY KEY, persona_key TEXT NOT NULL, kind TEXT NOT NULL DEFAULT 'dream',
+              title TEXT NOT NULL, summary TEXT NOT NULL, raw_text TEXT NOT NULL,
+              necropsy TEXT NOT NULL DEFAULT '', claimed INTEGER NOT NULL DEFAULT 0,
+              claim_note TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+            );
             CREATE TABLE IF NOT EXISTS board_messages (
               id TEXT PRIMARY KEY, persona_key TEXT NOT NULL, content TEXT NOT NULL,
               author TEXT NOT NULL DEFAULT 'user', visible_to_user INTEGER NOT NULL DEFAULT 1,
@@ -351,6 +357,7 @@ class AppSettingsIn(BaseModel):
     summary_prompt: str = Field(default=DEFAULT_SUMMARY_PROMPT, min_length=20, max_length=10000)
     display_name: str = Field(default="", max_length=40)
     proactive_questions: bool = False
+    typing_presence_enabled: bool = True
     tool_permissions: dict[str, str] = Field(default_factory=lambda: {
         "web_search": "allow", "file_read": "allow", "memory_read": "allow", "memory_write": "ask",
         "diary_write": "ask", "delete": "ask"
@@ -411,6 +418,22 @@ class BoardMessageIn(BaseModel):
     reply_to: str | None = None
 
 
+class DreamIn(BaseModel):
+    title: str = Field(min_length=1, max_length=120)
+    raw_text: str = Field(min_length=1, max_length=30000)
+    kind: str = Field(default="dream", pattern="^(dream|quarantined)$")
+    summary: str = Field(default="", max_length=1000)
+    necropsy: str = Field(default="", max_length=2000)
+
+
+class DreamClaimIn(BaseModel):
+    note: str = Field(default="", max_length=10000)
+
+
+class DreamGenerateIn(BaseModel):
+    provider_id: str
+
+
 class ChatIn(BaseModel):
     conversation_id: str
     content: str = Field(min_length=1)
@@ -420,6 +443,7 @@ class ChatIn(BaseModel):
     reuse_user_message_id: str | None = None
     attachments: list[dict[str, Any]] = Field(default_factory=list, max_length=8)
     local_time: str = Field(default="", max_length=80)
+    typing_context: str = Field(default="", max_length=240)
     game_context: str = Field(default="", max_length=2400)
     media_context: str = Field(default="", max_length=16000)
     worldbook_ids: list[str] = Field(default_factory=list, max_length=50)
@@ -531,6 +555,7 @@ PERSONA_CONFIG_DEFAULTS = {
     "quick_phrases": [], "custom_headers": {}, "custom_body": {}, "regex_rules": [],
     "tools": {"time": True, "clipboard": False, "tts": False, "ask_user": True, "calculator": True},
     "mcp_servers": [], "provider_id": "", "stream_enabled": None, "startup_chat": "resume", "pinned": False,
+    "message_template": "{{message}}",
 }
 
 
@@ -548,8 +573,31 @@ def normalize_persona_config(value: Any) -> dict[str, Any]:
         if not isinstance(config.get(key), list): config[key] = []
     for key in ("custom_headers", "custom_body"):
         if not isinstance(config.get(key), dict): config[key] = {}
+    if not isinstance(config.get("message_template"), str) or not config["message_template"].strip():
+        config["message_template"] = "{{message}}"
     if config.get("startup_chat") not in ("resume", "new"): config["startup_chat"] = "resume"
     return config
+
+
+def render_chat_message_template(template: str, role: str, message: str, moment: datetime | None = None) -> str:
+    moment = moment or datetime.now().astimezone()
+    values = {
+        "role": {"user": "用户", "assistant": "助手"}.get(role, role),
+        "message": message,
+        "time": moment.strftime("%H:%M"),
+        "date": moment.strftime("%Y-%m-%d"),
+    }
+    return re.sub(r"\{\{\s*(role|message|time|date)\s*\}\}", lambda match: values[match.group(1)], template or "{{message}}")
+
+
+def format_provider_chat_messages(messages: list[dict[str, Any]], template: str) -> list[dict[str, Any]]:
+    formatted: list[dict[str, Any]] = []
+    for source in messages:
+        item = dict(source)
+        if item.get("role") in ("user", "assistant") and isinstance(item.get("content"), str):
+            item["content"] = render_chat_message_template(template, item["role"], item["content"])
+        formatted.append(item)
+    return formatted
 
 
 @app.get("/api/bootstrap")
@@ -570,6 +618,7 @@ def bootstrap() -> dict[str, Any]:
         "default_summary_prompt": DEFAULT_SUMMARY_PROMPT,
         "display_name": settings_rows.get("display_name", ""),
         "proactive_questions": settings_rows.get("proactive_questions", "false") == "true",
+        "typing_presence_enabled": settings_rows.get("typing_presence_enabled", "true") == "true",
         "tool_permissions": json.loads(settings_rows.get("tool_permissions", '{"web_search":"allow","file_read":"allow","memory_read":"allow","memory_write":"ask","diary_write":"ask","delete":"ask"}')),
         "font_scale": int(settings_rows.get("font_scale", "100")),
         "message_density": settings_rows.get("message_density", "comfortable"),
@@ -594,6 +643,7 @@ def save_settings(body: AppSettingsIn) -> dict[str, Any]:
             "summary_prompt": body.summary_prompt,
             "display_name": body.display_name,
             "proactive_questions": "true" if body.proactive_questions else "false",
+            "typing_presence_enabled": "true" if body.typing_presence_enabled else "false",
             "tool_permissions": json.dumps(body.tool_permissions, ensure_ascii=False),
             "font_scale": str(body.font_scale),
             "message_density": body.message_density,
@@ -745,6 +795,85 @@ def delete_journal(persona_key: str, entry_id: str) -> dict[str, bool]:
             raise HTTPException(404, "日记不存在")
         connection.commit()
     return {"ok": True}
+
+
+@app.get("/api/dreams/{persona_key}")
+def list_dreams(persona_key: str) -> dict[str, Any]:
+    with closing(db()) as connection:
+        rows = connection.execute(
+            "SELECT * FROM dream_entries WHERE persona_key=? ORDER BY created_at DESC LIMIT 200",
+            (persona_key,),
+        ).fetchall()
+    return {"entries": [dict(row) for row in rows]}
+
+
+@app.post("/api/dreams/{persona_key}")
+def create_dream(persona_key: str, body: DreamIn) -> dict[str, Any]:
+    dream_id, created = str(uuid.uuid4()), now_iso()
+    summary = body.summary.strip() or body.raw_text.strip().replace("\n", " ")[:180]
+    claimed = body.kind == "dream"
+    with closing(db()) as connection:
+        connection.execute(
+            "INSERT INTO dream_entries VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+            (dream_id, persona_key, body.kind, body.title, summary, body.raw_text,
+             body.necropsy, int(claimed), body.raw_text if claimed else "", created, created),
+        )
+        connection.commit()
+        row = connection.execute("SELECT * FROM dream_entries WHERE id=?", (dream_id,)).fetchone()
+    return dict(row)
+
+
+@app.post("/api/dreams/{persona_key}/{dream_id}/claim")
+def claim_dream(persona_key: str, dream_id: str, body: DreamClaimIn) -> dict[str, Any]:
+    with closing(db()) as connection:
+        row = connection.execute(
+            "SELECT * FROM dream_entries WHERE id=? AND persona_key=?", (dream_id, persona_key)
+        ).fetchone()
+        if not row:
+            raise HTTPException(404, "梦境不存在")
+        note = body.note.strip() or row["raw_text"]
+        connection.execute(
+            "UPDATE dream_entries SET claimed=1,claim_note=?,updated_at=? WHERE id=?",
+            (note, now_iso(), dream_id),
+        )
+        connection.commit()
+        row = connection.execute("SELECT * FROM dream_entries WHERE id=?", (dream_id,)).fetchone()
+    return dict(row)
+
+
+@app.post("/api/dreams/{persona_key}/generate")
+async def generate_dream(persona_key: str, body: DreamGenerateIn) -> dict[str, Any]:
+    with closing(db()) as connection:
+        provider = connection.execute(
+            "SELECT * FROM providers WHERE id=? AND enabled=1", (body.provider_id,)
+        ).fetchone()
+        if not provider:
+            raise HTTPException(404, "做梦线路不存在或已停用")
+        if persona_key == "__default__":
+            rows = connection.execute(
+                "SELECT m.role,m.content FROM messages m JOIN conversations c ON c.id=m.conversation_id "
+                "WHERE c.persona_id IS NULL ORDER BY m.created_at DESC LIMIT 80"
+            ).fetchall()
+            persona_name, persona_prompt = "当前人格", ""
+        else:
+            rows = connection.execute(
+                "SELECT m.role,m.content FROM messages m JOIN conversations c ON c.id=m.conversation_id "
+                "WHERE c.persona_id=? ORDER BY m.created_at DESC LIMIT 80", (persona_key,)
+            ).fetchall()
+            persona = connection.execute("SELECT name,prompt FROM personas WHERE id=?", (persona_key,)).fetchone()
+            persona_name = persona["name"] if persona else "当前人格"
+            persona_prompt = persona["prompt"] if persona else ""
+    fragments = "\n".join(f"{row['role']}：{row['content']}" for row in reversed(rows))
+    if not fragments.strip():
+        raise HTTPException(409, "这个人格还没有足够的对话碎片可以入梦")
+    system = (
+        f"你是{persona_name}。{persona_prompt}\n"
+        "根据近期真实对话碎片写一场第一人称梦境。梦可以超现实、跳跃、诗意，但必须明确是梦，"
+        "不能把梦中事件声称为现实历史，也不能生成标题、解释、JSON 或分析。正文控制在 300 到 900 字。"
+    )
+    raw = await roleplay_model_once(provider, system, f"近期对话碎片：\n{fragments[-16000:]}")
+    title = f"{persona_name}的梦 · {datetime.now().strftime('%m月%d日')}"
+    return create_dream(persona_key, DreamIn(title=title, raw_text=raw, kind="dream"))
 
 
 @app.get("/api/board/{persona_key}")
@@ -2666,7 +2795,8 @@ def load_chat_context(connection: sqlite3.Connection, body: ChatIn, cutoff: str 
     worldbook_before="<worldbook_instructions>\n"+"\n\n".join(before)+"\n</worldbook_instructions>" if before else "";worldbook_after="<worldbook_instructions>\n"+"\n\n".join(after)+"\n</worldbook_instructions>" if after else ""
     roleplay_context = relevant_roleplay_archive(connection, body.content)
     stable_parts = [part for part in (worldbook_before,persona_prompt,worldbook_after,conversation["summary"] if persona_config["history_enabled"] else "",question_context,formatting_context,tool_context,game_tool_context) if part]
-    runtime_parts = [part for part in (time_context,game_context,media_context,roleplay_context) if part]
+    typing_context = f"<typing_presence>{body.typing_context}</typing_presence>\n这是用户主动开启的输入状态元数据，不含未发送正文；只在语气确实相关时轻微参考，不要声称看见了用户没发出的文字。" if body.typing_context else ""
+    runtime_parts = [part for part in (time_context,typing_context,game_context,media_context,roleplay_context) if part]
     system_parts = [*stable_parts, "\n\n<runtime_context>\n" + "\n\n".join(runtime_parts) + "\n</runtime_context>" if runtime_parts else ""]
     if system_parts:
         messages.insert(0, {"role": "system", "content": "\n\n".join(system_parts)})
@@ -3204,11 +3334,11 @@ async def chat(body: ChatIn) -> StreamingResponse:
             if memory_sources:
                 yield json.dumps({"memory_sources": [{"id": item["id"], "title": item["title"], "kind": item["kind"]} for item in memory_sources]}, ensure_ascii=False) + "\n"
             async with httpx.AsyncClient(timeout=180) as client:
-                provider_messages = [dict(message) for message in messages]
+                provider_messages = format_provider_chat_messages(messages, persona_config["message_template"])
                 if body.attachments:
                     for message in reversed(provider_messages):
                         if message["role"] == "user":
-                            message["content"] = attachment_content(body.content, body.attachments, provider["protocol"], provider["vision_mode"])
+                            message["content"] = attachment_content(str(message["content"]), body.attachments, provider["protocol"], provider["vision_mode"])
                             break
                 if provider["protocol"] == "anthropic":
                     system = "\n\n".join(m["content"] for m in provider_messages if m["role"] == "system")
