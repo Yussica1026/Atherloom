@@ -397,6 +397,17 @@ class LocalClientTests(unittest.TestCase):
             app_module.attachment_content("image", [{"kind": "image", "mime": "image/jpeg", "data": "data:image/jpeg;base64,YWJj"}], "openai", "text")
         self.assertEqual(raised.exception.status_code, 422)
 
+    def test_dedicated_vision_provider_handles_image_without_rebinding_chat(self):
+        text = self.client.post("/api/providers", json={"name":"DS","protocol":"deepseek","base_url":"https://example.com/v1","model":"ds","vision_mode":"text"}).json()
+        vision = self.client.post("/api/providers", json={"name":"Vision","protocol":"openai","base_url":"https://example.com/v1","model":"vision","vision_mode":"openai"}).json()
+        conversation = self.client.post("/api/conversations", json={"provider_id":text["id"]}).json()
+        body = app_module.ChatIn(conversation_id=conversation["id"], content="看图", provider_id=text["id"], vision_provider_id=vision["id"], attachments=[{"kind":"image","mime":"image/jpeg","data":"data:image/jpeg;base64,YWJj"}])
+        with app_module.closing(app_module.db()) as connection:
+            provider, _, _ = app_module.load_chat_context(connection, body)
+        self.assertEqual(provider["id"], vision["id"])
+        current = next(item for item in self.client.get("/api/bootstrap").json()["conversations"] if item["id"] == conversation["id"])
+        self.assertEqual(current["provider_id"], text["id"])
+
     def test_reroll_context_contains_original_user_message_once(self):
         provider = self.client.post("/api/providers", json={"name":"测试","protocol":"openai","base_url":"https://example.com/v1","model":"m"}).json()
         conversation = self.client.post("/api/conversations", json={"provider_id":provider["id"]}).json()

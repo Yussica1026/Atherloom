@@ -100,7 +100,7 @@ function renderBookNotes(){
 }
 const bookEncodingLabels={utf8:"UTF-8",gb18030:"GB18030 / GBK",big5:"Big5",utf16le:"UTF-16 LE",utf16be:"UTF-16 BE"};
 function bookTextScore(text){const replacements=(text.match(/\uFFFD/g)||[]).length,controls=(text.match(/[\u0000-\u0008\u000B\u000C\u000E-\u001F]/g)||[]).length,mojibake=(text.match(/[ÃÂåäæçéèïð]/g)||[]).length+(text.match(/(?:锟斤拷|烫烫烫|屯屯屯)/g)||[]).length*8,readable=(text.match(/[\u3400-\u9FFF，。！？；：“”‘’（）《》]/g)||[]).length;return replacements*100+controls*25+mojibake*4-Math.min(readable,500)*.02;}
-function decodeBookBytes(buffer){const bytes=new Uint8Array(buffer),bom=bytes.length>=2?(bytes[0]<<8)|bytes[1]:0,preferred=bom===0xFFFE?["utf-16le"]:bom===0xFEFF?["utf-16be"]:bytes[0]===0xEF&&bytes[1]===0xBB&&bytes[2]===0xBF?["utf-8"]:((bytes.filter((value,index)=>index%2===0&&value===0).length>bytes.length/8)?["utf-16be"]:(bytes.filter((value,index)=>index%2===1&&value===0).length>bytes.length/8)?["utf-16le"]:[]),candidates=[...new Set([...preferred,"utf-8","gb18030","big5"])],decoded=[];for(const encoding of candidates){try{const text=new TextDecoder(encoding,{fatal:encoding==="utf-8"}).decode(bytes).replace(/^\uFEFF/,"");decoded.push({text,encoding,score:bookTextScore(text)-(preferred[0]===encoding?20:0)});}catch{}}if(!decoded.length)throw new Error("无法识别这本书的文字编码");return decoded.sort((a,b)=>a.score-b.score)[0];}
+function decodeBookBytes(buffer){const bytes=new Uint8Array(buffer),bom=bytes.length>=2?(bytes[0]<<8)|bytes[1]:0,preferred=bom===0xFFFE?["utf-16le"]:bom===0xFEFF?["utf-16be"]:bytes[0]===0xEF&&bytes[1]===0xBB&&bytes[2]===0xBF?["utf-8"]:((bytes.filter((value,index)=>index%2===0&&value===0).length>bytes.length/8)?["utf-16be"]:(bytes.filter((value,index)=>index%2===1&&value===0).length>bytes.length/8)?["utf-16le"]:[]);try{if(!preferred.length||preferred[0]==="utf-8"){const text=new TextDecoder("utf-8",{fatal:true}).decode(bytes).replace(/^\uFEFF/,"");return {text,encoding:"utf-8",score:bookTextScore(text)};}}catch{}const candidates=[...new Set([...preferred,"gb18030","big5","utf-8"])],decoded=[];for(const encoding of candidates){try{const text=new TextDecoder(encoding,{fatal:encoding==="utf-8"}).decode(bytes).replace(/^\uFEFF/,"");decoded.push({text,encoding,score:bookTextScore(text)-(preferred[0]===encoding?20:0)});}catch{}}if(!decoded.length)throw new Error("无法识别这本书的文字编码");return decoded.sort((a,b)=>a.score-b.score)[0];}
 async function openLocalBook(file) {
   if (!file) return;
   const reader = $("#bookReader");
@@ -131,7 +131,7 @@ async function openLocalBook(file) {
     const pre = document.createElement("pre");
     pre.textContent = text;
     reader.replaceChildren(pre);
-    currentBook={title:file.name,key,text};
+    currentBook={title:file.name,key,text};loadBookAiChat();
     setBookControls(true);renderBookNotes();
     reader.scrollTop = Number(localStorage.getItem(key) || 0);
     reader.onscroll = () => localStorage.setItem(key, String(reader.scrollTop));
@@ -251,7 +251,7 @@ async function openGame(gameId) {
   $("#gameEmpty").hidden=true;$("#fishingStage").hidden=gameId!=="quiet_fishing";$("#clawStage").hidden=gameId!=="claw_machine";$("#slotsStage").hidden=gameId!=="cloud_slots";$("#starMergeStage").hidden=gameId!=="star_merge";$("#mazeStage").hidden=gameId!=="mist_maze";$("#dungeonStage").hidden=gameId!=="ember_dungeon";
   $("#aiGameControls").hidden=!Object.keys(gameNames).includes(gameId);$("#gameRoom").hidden=!Object.keys(gameNames).includes(gameId);
   $("#aiGameTitle").textContent=`交给 ${activePersonaName()}`;
-  $("#aiGameStatus").textContent=gameId==="star_merge"?"当前人格会读取完整棋盘，只能选择上下左右；每一步都由宿主验证。":"当前人格会读取局面，只能执行白名单动作；单次预算最多 30 云贝。";
+  $("#aiGameStatus").textContent=gameId==="star_merge"?"当前人格会读取完整棋盘，只能选择上下左右；每一步都由 Atherloom 验证。":"当前人格会读取局面，只能执行可用动作；单次预算最多 30 云贝。";
   if(!Object.keys(gameNames).includes(gameId)){$("#gameEmpty").hidden=false;const game=gameState.catalog.find(item=>item.id===gameId);$("#gameEmpty").innerHTML=`<span>${game.icon}</span><h3>${escapeHtml(game.name)}</h3><p>${escapeHtml(game.description)}</p>`;return;}
   const payload = await api(`/api/games/${gameId}/state${personaQuery()}`);
   storeGameState(gameId,payload.state);if(gameId==="quiet_fishing")gameState.waters=payload.waters;renderCurrentGame(gameId);
@@ -276,7 +276,7 @@ function parseGameRequest(content){
 }
 async function prepareChatGameContext(content){
   const request=parseGameRequest(content),text=String(content||""),mentioned=/(?:迷宫|雾径|探路)/.test(text)?"mist_maze":/(?:地牢|打怪|冒险|余烬)/.test(text)?"ember_dungeon":/(?:2048|星潮|合成游戏|数字合成)/.test(text)?"star_merge":/(?:抓娃娃|娃娃机|下爪)/.test(text)?"claw_machine":/(?:老虎机|拉杆|转盘|摇奖)/.test(text)?"cloud_slots":/(?:钓鱼|抛竿|鱼塘)/.test(text)?"quiet_fishing":null;
-  if(!request){const gameId=mentioned||gameState.current||localStorage.getItem("atherloom:last-game");if(!gameId)return /游戏库|小游戏/.test(text)?"Atherloom 内置游戏库目前包含：云汀钓记、抓娃娃机、云纹老虎机、星潮合成、雾径迷宫和余烬地牢。它们支持用户亲自操作、交给当前人格和独立共玩对话。":"";try{const payload=await api(`/api/games/${gameId}/state${personaQuery()}`),current=payload.state,recent=(current.journal||[]).slice(-5).join("；")||"还没有动作",visible=Object.fromEntries(Object.entries(current).filter(([key])=>!["history","room_messages"].includes(key)));return `用户最近正在 Atherloom 内置游戏「${gameNames[gameId]}」中和当前人格一起玩。当前宿主存档：${JSON.stringify(visible)}。最近动作：${recent}。这是应用内真实状态，不是需要联网搜索的外部游戏。`;}catch{return "";}}
+  if(!request){const gameId=mentioned||gameState.current||localStorage.getItem("atherloom:last-game");if(!gameId)return /游戏库|小游戏/.test(text)?"Atherloom 内置游戏库目前包含：云汀钓记、抓娃娃机、云纹老虎机、星潮合成、雾径迷宫和余烬地牢。它们支持用户亲自操作、交给当前人格和独立共玩对话。":"";try{const payload=await api(`/api/games/${gameId}/state${personaQuery()}`),current=payload.state,recent=(current.journal||[]).slice(-5).join("；")||"还没有动作",visible=Object.fromEntries(Object.entries(current).filter(([key])=>!["history","room_messages"].includes(key)));return `用户最近正在 Atherloom 内置游戏「${gameNames[gameId]}」中和当前人格一起玩。当前应用存档：${JSON.stringify(visible)}。最近动作：${recent}。这是应用内真实状态，不是需要联网搜索的外部游戏。`;}catch{return "";}}
   const provider=activeProvider();if(!provider)return "";
   const {gameId,turns,autonomous}=request,name=activePersonaName();
   try{
@@ -284,7 +284,7 @@ async function prepareChatGameContext(content){
     storeGameState(gameId,payload.state);if(gameState.current===gameId)renderCurrentGame(gameId);
     const details=payload.decisions.flatMap(item=>[...(item.events||[]),item.comment?`心里话：${item.comment}`:""]).filter(Boolean);
     const stateSummary=gameId==="quiet_fishing"?`当前鱼篓：${Object.entries(payload.state.catch||{}).map(([fish,count])=>`${fish}×${count}`).join("、")||"空"}；鱼饵 ${payload.state.bait}，云贝 ${payload.state.coins}`:gameId==="claw_machine"?`当前收藏：${Object.entries(payload.state.inventory||{}).map(([prize,count])=>`${prize}×${count}`).join("、")||"空"}；云贝 ${payload.state.coins}`:gameId==="cloud_slots"?`当前转轮：${(payload.state.reels||[]).join(" · ")}；云贝 ${payload.state.coins}`:gameId==="star_merge"?`当前得分 ${payload.state.score}，最高星块 ${payload.state.best}，状态 ${payload.state.status}`:gameId==="mist_maze"?`当前位置 ${payload.state.player.join(",")}，已经走 ${payload.state.turn} 步，状态 ${payload.state.status}`:`当前第 ${payload.state.floor} 层，体力 ${payload.state.hp}/${payload.state.max_hp}，${payload.state.enemy?`正在迎战 ${payload.state.enemy.name}`:"暂时安全"}`;
-    return `${name} 已通过宿主游戏工具真实游玩「${gameNames[gameId]}」${payload.decisions.length} 个回合。${details.join("；")}。${stateSummary}。这是已执行结果，不是想象或角色扮演。`;
+    return `${name} 已通过 Atherloom 游戏工具真实游玩「${gameNames[gameId]}」${payload.decisions.length} 个回合。${details.join("；")}。${stateSummary}。这是已执行结果，不是想象或角色扮演。`;
   }catch(error){return `${name} 已调用「${gameNames[gameId]}」游戏工具，但执行失败：${error.message}。请如实告诉用户失败原因，不要假装玩过。`;}
 }
 
@@ -436,6 +436,8 @@ async function bootstrap() {
   $("#embeddingProvider").innerHTML = `<option value="">选择 API 线路</option>` + state.providers.filter(item=>item.protocol!=="anthropic").map(item=>`<option value="${item.id}">${escapeHtml(item.name)}</option>`).join("");
   $("#embeddingProvider").value = state.settings.embedding_provider_id || "";
   $("#embeddingModel").value = state.settings.embedding_model || "";
+  $("#visionProvider").innerHTML=`<option value="">跟随当前聊天线路</option>`+state.providers.filter(item=>item.vision_mode!=="text").map(item=>`<option value="${item.id}">${escapeHtml(item.name)} · ${escapeHtml(item.model)}</option>`).join("");
+  $("#visionProvider").value=state.settings.vision_provider_id||"";
   document.querySelectorAll("[data-permission]").forEach(select => select.value = state.settings.tool_permissions?.[select.dataset.permission] || "ask");
   applyAppearance();
   renderProfile(); renderTimeGreeting(); renderHistory(); renderSettings(); renderPickers(); renderMcpAudit(); updateMcpTransportFields(); await refreshVectorMemoryStatus();
@@ -530,7 +532,7 @@ async function generateReply(content, reuseUserMessageId = null, attachments = [
   let presenter;
   try {
     const gameContext=reuseUserMessageId?"":await prepareChatGameContext(content);
-    const response = await fetch("/api/chat", { method: "POST",headers: { "Content-Type": "application/json" },signal:controller.signal,body: JSON.stringify({ conversation_id:conversationId,content: content || "重新生成",attachments,provider_id: provider.id,persona_id:personaId,reuse_user_message_id:reuseUserMessageId,local_time: localTimeContext(),game_context:gameContext,media_context:mediaContext,worldbook_ids:worldbookIds }) });
+    const response = await fetch("/api/chat", { method: "POST",headers: { "Content-Type": "application/json" },signal:controller.signal,body: JSON.stringify({ conversation_id:conversationId,content: content || "重新生成",attachments,provider_id: provider.id,vision_provider_id:state.settings.vision_provider_id||"",persona_id:personaId,reuse_user_message_id:reuseUserMessageId,local_time: localTimeContext(),game_context:gameContext,media_context:mediaContext,worldbook_ids:worldbookIds }) });
     if (!response.ok) throw new Error(`请求失败 ${response.status}`);
     const reader=response.body.getReader(),decoder=new TextDecoder();presenter=createStreamPresenter(assistant,assistant.streaming,messages,conversationId);let pending="";
     while(true){const {value,done}=await reader.read();if(done)break;pending+=decoder.decode(value,{stream:true});const lines=pending.split("\n");pending=lines.pop();for(const line of lines){if(!line)continue;const event=JSON.parse(line);if(event.error)throw new Error(event.error);let structureUpdated=false;if(event.memory_sources){assistant.memory_sources=event.memory_sources;structureUpdated=true;}if(typeof event.delta==="string"&&event.delta!=="null")presenter.push(event.delta);if(typeof event.reasoning_delta==="string"&&event.reasoning_delta!=="null"){assistant.reasoning+=event.reasoning_delta;structureUpdated=true;}if(structureUpdated)updateStreamingMessage(assistant,messages,conversationId);if(event.done){await presenter.finish();assistant.pending=false;assistant.streaming=false;assistant.id=event.assistant_id;assistant.parent_message_id=event.user_id;const pendingUser=[...messages].reverse().find(m=>m.role==="user"&&!m.id);if(pendingUser)pendingUser.id=event.user_id;if(event.title){const conversation=state.conversations.find(c=>c.id===conversationId);if(conversation)conversation.title=event.title;}if(state.current===conversationId){renderCurrentTitle();renderMessages({stickToBottom:streamFollow});}renderHistory();}}}
@@ -670,7 +672,7 @@ async function restoreLocalBackup(file) {
 
 let settingsSaveTimer;
 function appSettingsPayload(){
-  return {auto_title_mode:$("#autoTitleMode").value,summary_enabled:$("#summaryEnabled").checked,summary_trigger_rounds:Number($("#summaryRounds").value),summary_prompt:$("#summaryPrompt").value,display_name:$("#displayName").value.trim(),proactive_questions:$("#proactiveQuestions").checked,font_scale:Number($("#fontScale").value),message_density:$("#messageDensity").value,code_theme:$("#codeTheme").value,memory_strategy:$("#memoryStrategy").value,vector_memory_enabled:$("#vectorMemoryEnabled").checked,embedding_provider_id:$("#embeddingProvider").value,embedding_model:$("#embeddingModel").value.trim(),stream_speed:$("#streamSpeed").value,tool_permissions:Object.fromEntries([...document.querySelectorAll("[data-permission]")].map(select=>[select.dataset.permission,select.value]))};
+  return {auto_title_mode:$("#autoTitleMode").value,summary_enabled:$("#summaryEnabled").checked,summary_trigger_rounds:Number($("#summaryRounds").value),summary_prompt:$("#summaryPrompt").value,display_name:$("#displayName").value.trim(),proactive_questions:$("#proactiveQuestions").checked,font_scale:Number($("#fontScale").value),message_density:$("#messageDensity").value,code_theme:$("#codeTheme").value,memory_strategy:$("#memoryStrategy").value,vector_memory_enabled:$("#vectorMemoryEnabled").checked,embedding_provider_id:$("#embeddingProvider").value,embedding_model:$("#embeddingModel").value.trim(),vision_provider_id:$("#visionProvider").value,stream_speed:$("#streamSpeed").value,tool_permissions:Object.fromEntries([...document.querySelectorAll("[data-permission]")].map(select=>[select.dataset.permission,select.value]))};
 }
 async function refreshVectorMemoryStatus(){
   try{const status=await api(`/api/memories/vector/status?persona_key=${encodeURIComponent(memoryPersonaKey())}`);$("#vectorMemoryStatus").textContent=status.total?`已索引 ${status.indexed}/${status.total}${status.stale?` · ${status.stale} 条待更新`:""}`:"当前人格记忆库为空";return status;}catch(error){$("#vectorMemoryStatus").textContent=`状态读取失败：${error.message}`;return null;}
@@ -701,6 +703,7 @@ function saveAppSettings() {
       vector_memory_enabled: $("#vectorMemoryEnabled").checked,
       embedding_provider_id: $("#embeddingProvider").value,
       embedding_model: $("#embeddingModel").value.trim(),
+      vision_provider_id: $("#visionProvider").value,
       stream_speed: $("#streamSpeed").value,
       tool_permissions
     }) });
@@ -837,8 +840,12 @@ $("#memoryStrategy").onchange = saveAppSettings;
 $("#vectorMemoryEnabled").onchange = saveAppSettings;
 $("#embeddingProvider").onchange = saveAppSettings;
 $("#embeddingModel").oninput = saveAppSettings;
+$("#visionProvider").onchange = saveAppSettings;
 $("#rebuildMemoryVectors").onclick = rebuildMemoryVectors;
 $("#resetSummaryPrompt").onclick = () => { $("#summaryPrompt").value = $("#summaryPrompt").dataset.defaultPrompt; saveAppSettings(); };
+function insertTemplateVariable(target,value){if(!target)return;target.focus();const start=target.selectionStart??target.value.length,end=target.selectionEnd??start;target.setRangeText(value,start,end,"end");target.dispatchEvent(new Event("input",{bubbles:true}));}
+document.querySelectorAll("[data-template-variable]").forEach(button=>button.onclick=()=>insertTemplateVariable($("#personaForm").elements.prompt,button.dataset.templateVariable));
+document.querySelectorAll("[data-summary-variable]").forEach(button=>button.onclick=()=>insertTemplateVariable($("#summaryPrompt"),button.dataset.summaryVariable));
 document.querySelectorAll("[data-permission]").forEach(select => select.onchange = saveAppSettings);
 $("#enableAiTools").onclick = () => {
   for (const name of ["web_search", "file_read", "memory_read", "memory_write", "diary_write"]) {
@@ -889,10 +896,16 @@ $("#addAnnotation").onclick=()=>{
   if(!currentBook)return;const selected=selectedBookText();if(!selected){$("#bookStatus").textContent="请先在正文里选择一段文字";return;}const note=prompt("写下对这段文字的批注：","");if(note===null)return;const items=readBookLocal("annotations");items.unshift({id:crypto.randomUUID?.()||String(Date.now()),...selected,note:note.trim().slice(0,5000),created_at:new Date().toISOString()});writeBookLocal("annotations",items.slice(0,500));renderBookNotes();showReadingTab("annotations");getSelection()?.removeAllRanges();
 };
 $("#askBookAi").onclick=()=>{if(currentBook){showReadingTab("ai");$("#bookAiQuestion").focus();}};
+let bookAiMessages=[];
+function bookAiChatKey(){return `atherloom:book-ai:${currentBook?.key||"lobby"}`;}
+function loadBookAiChat(){try{bookAiMessages=JSON.parse(localStorage.getItem(bookAiChatKey())||"[]");}catch{bookAiMessages=[];}renderBookAiChat();}
+function saveBookAiChat(){localStorage.setItem(bookAiChatKey(),JSON.stringify(bookAiMessages.slice(-40)));}
+function renderBookAiChat(){const log=$("#bookAiChat");if(!log)return;log.innerHTML=bookAiMessages.length?bookAiMessages.map(item=>`<article class="${item.role}"><b>${item.role==="user"?"你":escapeHtml(activePersonaName())}</b><p>${escapeHtml(item.content||"")}</p></article>`).join(""):`<p class="watch-chat-empty">选中一段文字，或者在阅读位置直接问他。</p>`;requestAnimationFrame(()=>log.scrollTop=log.scrollHeight);}
 $("#bookAiForm").onsubmit=async event=>{
   event.preventDefault();const question=$("#bookAiQuestion").value.trim();if(!question||!currentBook)return;if(!activeProvider())return openSettings("providers");if(!state.current)await newConversation();
   const selected=selectedBookText(),position=currentBookPosition(),evidence=(selected?.quote||currentBook.text.slice(Math.max(0,position.offset-2000),position.offset+2000)).slice(0,4000),context=[`书籍：${currentBook.title}`,`本地阅读位置：约 ${Math.round(position.ratio*100)}%`,`证据范围：只包含用户选中的文字或当前位置附近最多 4,000 字`,`阅读片段：\n${evidence}`].join("\n");
-  $("#bookAiQuestion").value="";$("#mediaSpace").hidden=true;state.messages.push({role:"user",content:question,media_context:context});renderMessages();await generateReply(question,null,[],context);
+  const button=event.target.querySelector("button"),assistant={role:"assistant",content:""};$("#bookAiQuestion").value="";bookAiMessages.push({role:"user",content:question},{...assistant});renderBookAiChat();button.disabled=true;button.textContent="正在共读…";
+  try{const response=await fetch("/api/chat",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({conversation_id:state.current,content:question,provider_id:activeProvider().id,persona_id:state.persona,local_time:localTimeContext(),media_context:context,worldbook_ids:selectedWorldbookIds()})});if(!response.ok)throw new Error((await response.json().catch(()=>({}))).detail||`请求失败 ${response.status}`);const reader=response.body.getReader(),decoder=new TextDecoder();let pending="";while(true){const {value,done}=await reader.read();if(done)break;pending+=decoder.decode(value,{stream:true});const lines=pending.split("\n");pending=lines.pop();for(const line of lines){if(!line)continue;const packet=JSON.parse(line);if(packet.error)throw new Error(packet.error);if(typeof packet.delta==="string"&&packet.delta!=="null"){assistant.content+=packet.delta;bookAiMessages[bookAiMessages.length-1].content=assistant.content;renderBookAiChat();}}}saveBookAiChat();}catch(error){bookAiMessages[bookAiMessages.length-1].content=`共读回应失败：${error.message}`;renderBookAiChat();saveBookAiChat();}finally{button.disabled=false;button.textContent="一起读这一段";}
 };
 let movieUrl,movieProgressKey,watchCues=[],watchMessages=[],watchSource={title:"私人放映室",kind:"local"};
 function watchChatKey(){return `atherloom:watch-chat:${movieProgressKey||"lobby"}`;}
