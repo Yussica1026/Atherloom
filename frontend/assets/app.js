@@ -192,12 +192,14 @@ async function updateHistoryState(id, action) {
   if(action==="delete"){
     if(!confirm(`删除对话“${conversation.title}”？这会删除其中的消息，其他人格和其他对话不受影响。`))return;
     const previous=[...state.conversations],wasCurrent=state.current===id;
+    $("#conversationPopover").hidden=true;
     state.conversations=state.conversations.filter(item=>item.id!==id);state.message_cache.delete(id);
     if(wasCurrent){state.current=null;state.messages=[];renderCurrentTitle();renderMessages();}
     renderHistory();
-    try{await api(`/api/conversations/${id}`,{method:"DELETE"});}
+    try{await api(`/api/conversations/${id}`,{method:"DELETE"});const fresh=await api("/api/bootstrap");state.conversations=(fresh.conversations||[]).filter(item=>item.id!==id);}
     catch(error){state.conversations=previous;if(wasCurrent)state.current=id;renderHistory();throw error;}
-    if(wasCurrent){const next=state.conversations.find(item=>(item.persona_id||null)===(state.persona||null));if(next)await openConversation(next.id);else await newConversation();}
+    const currentWasRemoved=wasCurrent||!state.current||!state.conversations.some(item=>item.id===state.current);
+    if(currentWasRemoved){state.current=null;state.messages=[];state.version_selection={};renderCurrentTitle();renderMessages();const next=state.conversations.find(item=>(item.persona_id||null)===(state.persona||null));if(next)await openConversation(next.id);else await newConversation();}
     renderHistory();return;
   }
   const key = action === "pin" ? "pinned" : action === "star" ? "starred" : "archived";
