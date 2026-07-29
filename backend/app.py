@@ -370,6 +370,9 @@ class AppSettingsIn(BaseModel):
     embedding_provider_id: str = ""
     embedding_model: str = Field(default="", max_length=200)
     vision_provider_id: str = ""
+    search_provider: str = Field(default="builtin", pattern="^(builtin|tavily|brave|custom)$")
+    search_api_key: str = Field(default="", max_length=500)
+    search_endpoint: str = Field(default="", max_length=1000)
     stream_speed: str = Field(default="standard", pattern="^(slow|standard|fast)$")
 
 
@@ -628,6 +631,9 @@ def bootstrap() -> dict[str, Any]:
         "embedding_provider_id": settings_rows.get("embedding_provider_id", ""),
         "embedding_model": settings_rows.get("embedding_model", ""),
         "vision_provider_id": settings_rows.get("vision_provider_id", ""),
+        "search_provider": settings_rows.get("search_provider", "builtin"),
+        "search_api_key": settings_rows.get("search_api_key", ""),
+        "search_endpoint": settings_rows.get("search_endpoint", ""),
         "stream_speed": settings_rows.get("stream_speed", "standard"),
     }}
 
@@ -653,6 +659,9 @@ def save_settings(body: AppSettingsIn) -> dict[str, Any]:
             "embedding_provider_id": body.embedding_provider_id,
             "embedding_model": body.embedding_model,
             "vision_provider_id": body.vision_provider_id,
+            "search_provider": body.search_provider,
+            "search_api_key": body.search_api_key,
+            "search_endpoint": body.search_endpoint,
             "stream_speed": body.stream_speed,
         }
         connection.executemany(

@@ -13,7 +13,7 @@
   <title>Atherloom</title>
   <link rel="manifest" href="manifest.json">
   <link rel="icon" href="assets/app-icon.svg" type="image/svg+xml">
-  <link rel="stylesheet" href="assets/app.css?v=0506">
+  <link rel="stylesheet" href="assets/app.css?v=0507">
   <script>
     // Recovery path for browsers that retained a failed external stylesheet
     // response. This keeps user data untouched and injects only verified CSS.
@@ -480,6 +480,12 @@
           <div class="permission-list">
             <h4>网络</h4>
             <div class="setting-row"><div><strong>联网与网页读取 <span class="recommend">推荐：始终允许</span></strong><small>使用 Atherloom 内置网络搜索；也可在 MCP 页连接其他搜索／浏览服务</small></div><select data-permission="web_search"><option value="allow">始终允许</option><option value="ask">每次询问</option><option value="deny">禁止</option></select></div>
+            <div class="search-route-config">
+              <label>网页搜索线路<select id="searchProvider"><option value="builtin">内置免费搜索（文章＋百科）</option><option value="tavily">Tavily Search</option><option value="brave">Brave Search</option><option value="custom">自定义搜索 API</option></select></label>
+              <label id="searchApiKeyField">搜索 API Key<input id="searchApiKey" type="password" autocomplete="new-password" placeholder="只保存在当前设备"></label>
+              <label id="searchEndpointField" hidden>自定义接口地址<input id="searchEndpoint" type="url" placeholder="https://example.com/search"></label>
+              <small id="searchRouteHelp">免费线路无需 Key；实时性与覆盖面受公开索引限制。</small>
+            </div>
             <div class="form-actions"><button type="button" class="ghost" id="openMcpFromTools">添加其他联网 MCP</button></div>
             <h4>文件</h4>
             <div class="setting-row"><div><strong>读取用户选择的文件 <span class="recommend">推荐：始终允许</span></strong><small>只读取你通过拍照、选择图片或选择文件明确交给当前对话的内容；不会扫描设备</small></div><select data-permission="file_read"><option value="allow">始终允许</option><option value="ask">每次询问</option><option value="deny">禁止</option></select></div>
@@ -552,11 +558,11 @@
   <div class="message-menu-backdrop" id="messageEditor" hidden><form class="message-editor" role="dialog" aria-label="修改消息"><h3>修改内容</h3><textarea id="messageEditContent" rows="7" required></textarea><div class="form-actions"><button type="button" class="ghost" id="cancelMessageEdit">取消</button><button class="primary">保存修改</button></div></form></div>
   <div class="message-menu-backdrop" id="instructionPicker" hidden><section class="message-editor instruction-picker" role="dialog" aria-label="指令注入"><h3>指令注入</h3><p class="muted">仅对当前聊天窗口生效，可随时取消。</p><div id="instructionBookList" class="instruction-book-list"></div><div class="form-actions"><button type="button" class="primary" id="closeInstructionPicker">完成</button></div></section></div>
   <div class="message-menu-backdrop" id="worldbookEntryEditor" hidden><form class="message-editor worldbook-entry-editor" role="dialog" aria-label="世界书条目"><h3>世界书条目</h3><label>条目名称<input name="name" maxlength="100" required></label><label>内容<textarea name="content" rows="8" required></textarea></label><label class="check-label"><input name="enabled" type="checkbox" checked>启用条目</label><label class="check-label"><input name="constant" type="checkbox">常驻激活</label><label>关键词（每行一个）<textarea name="keywords" rows="3"></textarea></label><div class="entry-options"><label class="check-label"><input name="use_regex" type="checkbox">使用正则</label><label class="check-label"><input name="case_sensitive" type="checkbox">区分大小写</label><label>扫描深度<input name="scan_depth" type="number" min="1" max="100" value="4"></label><label>注入位置<select name="position"><option value="system_before">系统提示前</option><option value="system_after" selected>系统提示后</option><option value="history_before">对话历史前</option><option value="history_after">对话历史后</option></select></label><label>注入角色<select name="role"><option value="system">系统</option><option value="user">用户</option><option value="assistant">助手</option></select></label><label>优先级<input name="priority" type="number" min="-9999" max="9999" value="0"></label></div><div class="form-actions"><button type="button" class="ghost" id="cancelWorldbookEntry">取消</button><button class="primary">保存条目</button></div></form></div>
-  <script src="assets/standalone.js?v=0506"></script>
-  <script src="assets/app.js?v=0506" defer></script>
+  <script src="assets/standalone.js?v=0507"></script>
+  <script src="assets/app.js?v=0507" defer></script>
   <script>
     if ('serviceWorker' in navigator) {
-      navigator.serviceWorker.register('service-worker.js?v=105', { updateViaCache: 'none' }).then(registration => registration.update());
+      navigator.serviceWorker.register('service-worker.js?v=106', { updateViaCache: 'none' }).then(registration => registration.update());
       // Never reload an active room when a new shell takes control. The fresh
       // assets are used on the next natural navigation/open instead.
       navigator.serviceWorker.addEventListener('controllerchange', () => {
