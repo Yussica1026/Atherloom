@@ -705,6 +705,23 @@ class LocalClientTests(unittest.TestCase):
             self.assertIsNone(connection.execute("SELECT 1 FROM conversations WHERE id=?", (first["id"],)).fetchone())
             self.assertIsNotNone(connection.execute("SELECT 1 FROM conversations WHERE id=?", (second["id"],)).fetchone())
 
+    def test_homestead_is_persona_scoped_and_exposes_separate_api(self):
+        first = self.client.post("/api/homestead/action?persona_id=flora-a", json={"action": "plant", "target": 0, "species": "sunbell"}).json()
+        second = self.client.get("/api/homestead?persona_id=flora-b").json()
+        self.assertEqual(first["state"]["garden"][0]["species"], "sunbell")
+        self.assertIsNone(second["state"]["garden"][0])
+        self.assertIn("flowers", first["catalog"])
+        self.assertTrue(first["allowed_actions"])
+
+    def test_homestead_ai_management_requires_explicit_authorization(self):
+        untouched = self.client.post("/api/homestead/ai-manage?persona_id=ai-garden").json()
+        self.assertIsNone(untouched["ai_action"])
+        self.client.post("/api/homestead/action?persona_id=ai-garden", json={
+            "action": "configure_management", "enabled": True, "max_actions_per_day": 4, "daily_budget": 30,
+        })
+        managed = self.client.post("/api/homestead/ai-manage?persona_id=ai-garden").json()
+        self.assertIsNotNone(managed["ai_action"])
+
     def test_motivation_rejects_unknown_event_names(self):
         response = self.client.post("/api/motivation/__default__/event", json={"event": "unknown_legacy_event"})
         self.assertEqual(response.status_code, 422)
@@ -747,7 +764,8 @@ class LocalClientTests(unittest.TestCase):
 
     def test_original_fishing_game_has_isolated_persistent_saves(self):
         catalog = self.client.get("/api/games").json()
-        self.assertEqual(catalog[0]["id"], "quiet_fishing")
+        self.assertIn("quiet_fishing", [item["id"] for item in catalog])
+        self.assertEqual(catalog[0]["id"], "homestead")
         cast = self.client.post("/api/games/quiet_fishing/action", json={"action": "cast", "amount": 2}).json()
         self.assertEqual(cast["state"]["turn"], 2)
         self.assertEqual(cast["state"]["bait"], 6)
