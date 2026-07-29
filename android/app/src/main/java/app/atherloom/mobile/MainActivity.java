@@ -261,13 +261,19 @@ public class MainActivity extends Activity {
             try {
                 JSONObject request=new JSONObject(raw);String query=request.optString("query").trim();int limit=Math.max(1,Math.min(request.optInt("max_results",5),8));
                 if(query.isEmpty())throw new Exception("搜索关键词不能为空");
-                String endpoint="https://api.duckduckgo.com/?q="+URLEncoder.encode(query,"UTF-8")+"&format=json&no_html=1&skip_disambig=1";
-                connection=(HttpURLConnection)new URL(endpoint).openConnection();connection.setConnectTimeout(20000);connection.setReadTimeout(25000);connection.setRequestProperty("User-Agent","Atherloom/0.5 Android");
-                int status=connection.getResponseCode();String response=read(status>=400?connection.getErrorStream():connection.getInputStream());if(status>=400)throw new Exception("搜索服务 HTTP "+status);
-                JSONObject data=new JSONObject(response),output=new JSONObject().put("query",query);JSONArray results=new JSONArray();
-                if(!data.optString("AbstractURL").isEmpty())results.put(new JSONObject().put("title",data.optString("Heading",query)).put("url",data.optString("AbstractURL")).put("snippet",data.optString("AbstractText")));
-                JSONArray related=data.optJSONArray("RelatedTopics");if(related!=null)for(int i=0;i<related.length()&&results.length()<limit;i++){JSONObject row=related.optJSONObject(i);if(row==null)continue;if(row.has("Topics")){JSONArray nested=row.optJSONArray("Topics");row=nested!=null&&nested.length()>0?nested.optJSONObject(0):null;}if(row!=null&&!row.optString("FirstURL").isEmpty())results.put(new JSONObject().put("title",row.optString("Text").split(" - ")[0]).put("url",row.optString("FirstURL")).put("snippet",row.optString("Text")));}
-                return output.put("results",results).put("result_count",results.length()).toString();
+                boolean generic=query.matches("^(随便看看|随便搜搜|看看新闻|今日热点|有什么新闻|最近有什么|搜点有趣的)$");
+                String effective=generic?"科技 OR 文化 OR 科学 OR 艺术":query;JSONArray results=new JSONArray();
+                try {
+                    String endpoint="https://api.gdeltproject.org/api/v2/doc/doc?query="+URLEncoder.encode(effective,"UTF-8")+"&mode=artlist&maxrecords="+limit+"&format=json&sort=hybridrel";
+                    connection=(HttpURLConnection)new URL(endpoint).openConnection();connection.setConnectTimeout(15000);connection.setReadTimeout(20000);connection.setRequestProperty("User-Agent","Atherloom/0.5 Android");
+                    int status=connection.getResponseCode();if(status<400){JSONObject data=new JSONObject(read(connection.getInputStream()));JSONArray articles=data.optJSONArray("articles");if(articles!=null)for(int i=0;i<articles.length()&&results.length()<limit;i++){JSONObject row=articles.optJSONObject(i);if(row!=null&&!row.optString("url").isEmpty())results.put(new JSONObject().put("title",row.optString("title",effective)).put("url",row.optString("url")).put("snippet",(row.optString("domain")+" · "+row.optString("seendate")).replaceAll("^ · | · $","")).put("source","GDELT"));}}
+                } catch(Exception ignored) {} finally {if(connection!=null){connection.disconnect();connection=null;}}
+                if(results.length()==0)try {
+                    String endpoint="https://zh.wikipedia.org/w/api.php?action=query&list=search&srsearch="+URLEncoder.encode(effective,"UTF-8")+"&srlimit="+limit+"&format=json&origin=*";
+                    connection=(HttpURLConnection)new URL(endpoint).openConnection();connection.setConnectTimeout(15000);connection.setReadTimeout(20000);connection.setRequestProperty("User-Agent","Atherloom/0.5 Android");
+                    int status=connection.getResponseCode();if(status<400){JSONObject data=new JSONObject(read(connection.getInputStream())).optJSONObject("query");JSONArray rows=data==null?null:data.optJSONArray("search");if(rows!=null)for(int i=0;i<rows.length()&&results.length()<limit;i++){JSONObject row=rows.optJSONObject(i);if(row!=null){String title=row.optString("title");results.put(new JSONObject().put("title",title).put("url","https://zh.wikipedia.org/wiki/"+URLEncoder.encode(title.replace(" ","_"),"UTF-8")).put("snippet",row.optString("snippet").replaceAll("<[^>]+>","")).put("source","Wikipedia"));}}}
+                } catch(Exception ignored) {}
+                return new JSONObject().put("query",query).put("effective_query",effective).put("results",results).put("result_count",results.length()).put("notice",results.length()>0?"":"搜索通道暂时没有返回结果，请换一个更具体的关键词。").toString();
             } catch(Exception error){return failure(error);} finally {if(connection!=null)connection.disconnect();}
         }
 
