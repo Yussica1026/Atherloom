@@ -22,6 +22,9 @@
 ### Android 发布
 
 - Android 独立版升级至 `0.5.37-standalone`，versionCode `43`；沿用固定签名 GitHub Actions 构建与证书指纹校验。
+- 发布提交 `44b27ab` 与标签 `v0.5.37` 已推送。固定签名构建 `30458791670` completed / success，Release 已生成 `Atherloom-Android.apk`。
+- APK 大小 1,907,855 字节；实测 SHA-256：`e2e9cb6fad216113c80c14176f348b1724814d2a6e8787a31fd9966aa93f0dee`。
+- 下载地址：<https://github.com/Yussica1026/Atherloom/releases/download/v0.5.37/Atherloom-Android.apk>
 
 ## 2026-07-29 · v0.5.36
 
