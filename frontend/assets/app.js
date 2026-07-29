@@ -452,6 +452,10 @@ async function bootstrap() {
   $("#embeddingModel").value = state.settings.embedding_model || "";
   $("#visionProvider").innerHTML=`<option value="">跟随当前聊天线路</option>`+state.providers.filter(item=>item.vision_mode!=="text").map(item=>`<option value="${item.id}">${escapeHtml(item.name)} · ${escapeHtml(item.model)}</option>`).join("");
   $("#visionProvider").value=state.settings.vision_provider_id||"";
+  $("#searchProvider").value=state.settings.search_provider||"builtin";
+  $("#searchApiKey").value=state.settings.search_api_key||"";
+  $("#searchEndpoint").value=state.settings.search_endpoint||"";
+  updateSearchRouteFields();
   document.querySelectorAll("[data-permission]").forEach(select => select.value = state.settings.tool_permissions?.[select.dataset.permission] || "ask");
   applyAppearance();
   renderProfile(); renderTimeGreeting(); renderHistory(); renderSettings(); renderPickers(); renderMcpAudit(); updateMcpTransportFields(); await refreshVectorMemoryStatus();
@@ -645,12 +649,13 @@ async function renameCurrentConversation() {
 function openConversationSwitcher(event) {
   event.stopPropagation();
   const recent = state.conversations.filter(item => !item.archived).slice(0, 30);
-  const items = `<button data-value="__new__"><strong>＋ 新对话</strong></button>${recent.map(item => `<button data-value="${item.id}" class="${item.id === state.current ? "active" : ""}"><strong><span>${escapeHtml(item.title)}</span>${generationDot(item.id)}</strong><small>${item.id === state.current ? "当前对话" : new Date(item.updated_at || item.created_at).toLocaleString("zh-CN")}</small></button>`).join("")}<button data-value="__rename__" ${state.current ? "" : "disabled"}>重命名当前对话</button>`;
+  const items = `<button data-value="__new__"><strong>＋ 新对话</strong></button>${recent.map(item => `<div class="conversation-switch-row"><button data-value="${item.id}" class="${item.id === state.current ? "active" : ""}"><strong><span>${escapeHtml(item.title)}</span>${generationDot(item.id)}</strong><small>${item.id === state.current ? "当前对话" : new Date(item.updated_at || item.created_at).toLocaleString("zh-CN")}</small></button><button type="button" class="conversation-switch-delete" data-delete-switch="${item.id}" aria-label="删除 ${escapeHtml(item.title)}">×</button></div>`).join("")}<button data-value="__rename__" ${state.current ? "" : "disabled"}>重命名当前对话</button>`;
   showPopover(event.currentTarget, $("#conversationPopover"), items, async value => {
     if (value === "__new__") await newConversation();
     else if (value === "__rename__") await renameCurrentConversation();
     else await openConversation(value);
   });
+  $("#conversationPopover").querySelectorAll("[data-delete-switch]").forEach(button=>button.onclick=async event=>{event.stopPropagation();await updateHistoryState(button.dataset.deleteSwitch,"delete");});
 }
 
 function shareConversation() {
@@ -687,8 +692,9 @@ async function restoreLocalBackup(file) {
 }
 
 let settingsSaveTimer;
+function updateSearchRouteFields(){const provider=$("#searchProvider").value,keyField=$("#searchApiKeyField"),endpointField=$("#searchEndpointField"),help=$("#searchRouteHelp");keyField.hidden=provider==="builtin";endpointField.hidden=provider!=="custom";help.textContent={builtin:"免费线路无需 Key；实时性与覆盖面受公开索引限制。",tavily:"需要 Tavily API Key；适合给 AI 提供带链接的实时网页结果。",brave:"需要 Brave Search API Key；使用独立网页索引并返回标题、链接与摘要。",custom:"向自定义地址 POST {query,max_results}；可用 Bearer Key，响应需包含 results 数组。"}[provider];}
 function appSettingsPayload(){
-  return {auto_title_mode:$("#autoTitleMode").value,summary_enabled:$("#summaryEnabled").checked,summary_trigger_rounds:Number($("#summaryRounds").value),summary_prompt:$("#summaryPrompt").value,display_name:$("#displayName").value.trim(),proactive_questions:$("#proactiveQuestions").checked,typing_presence_enabled:$("#typingPresenceEnabled").checked,font_scale:Number($("#fontScale").value),message_density:$("#messageDensity").value,code_theme:$("#codeTheme").value,memory_strategy:$("#memoryStrategy").value,vector_memory_enabled:$("#vectorMemoryEnabled").checked,embedding_provider_id:$("#embeddingProvider").value,embedding_model:$("#embeddingModel").value.trim(),vision_provider_id:$("#visionProvider").value,stream_speed:$("#streamSpeed").value,tool_permissions:Object.fromEntries([...document.querySelectorAll("[data-permission]")].map(select=>[select.dataset.permission,select.value]))};
+  return {auto_title_mode:$("#autoTitleMode").value,summary_enabled:$("#summaryEnabled").checked,summary_trigger_rounds:Number($("#summaryRounds").value),summary_prompt:$("#summaryPrompt").value,display_name:$("#displayName").value.trim(),proactive_questions:$("#proactiveQuestions").checked,typing_presence_enabled:$("#typingPresenceEnabled").checked,font_scale:Number($("#fontScale").value),message_density:$("#messageDensity").value,code_theme:$("#codeTheme").value,memory_strategy:$("#memoryStrategy").value,vector_memory_enabled:$("#vectorMemoryEnabled").checked,embedding_provider_id:$("#embeddingProvider").value,embedding_model:$("#embeddingModel").value.trim(),vision_provider_id:$("#visionProvider").value,search_provider:$("#searchProvider").value,search_api_key:$("#searchApiKey").value.trim(),search_endpoint:$("#searchEndpoint").value.trim(),stream_speed:$("#streamSpeed").value,tool_permissions:Object.fromEntries([...document.querySelectorAll("[data-permission]")].map(select=>[select.dataset.permission,select.value]))};
 }
 async function refreshVectorMemoryStatus(){
   try{const status=await api(`/api/memories/vector/status?persona_key=${encodeURIComponent(memoryPersonaKey())}`);$("#vectorMemoryStatus").textContent=status.total?`已索引 ${status.indexed}/${status.total}${status.stale?` · ${status.stale} 条待更新`:""}`:"当前人格记忆库为空";return status;}catch(error){$("#vectorMemoryStatus").textContent=`状态读取失败：${error.message}`;return null;}
@@ -721,6 +727,9 @@ function saveAppSettings() {
       embedding_provider_id: $("#embeddingProvider").value,
       embedding_model: $("#embeddingModel").value.trim(),
       vision_provider_id: $("#visionProvider").value,
+      search_provider: $("#searchProvider").value,
+      search_api_key: $("#searchApiKey").value.trim(),
+      search_endpoint: $("#searchEndpoint").value.trim(),
       stream_speed: $("#streamSpeed").value,
       tool_permissions
     }) });
@@ -848,6 +857,9 @@ $("#autoTitleMode").onchange = saveAppSettings;
 $("#summaryEnabled").onchange = saveAppSettings;
 $("#proactiveQuestions").onchange = saveAppSettings;
 $("#typingPresenceEnabled").onchange = ()=>{saveAppSettings();updateTypingPresence();};
+$("#searchProvider").onchange=()=>{updateSearchRouteFields();saveAppSettings();};
+$("#searchApiKey").onchange=saveAppSettings;
+$("#searchEndpoint").onchange=saveAppSettings;
 $("#summaryRounds").oninput = event => { $("#summaryRoundsValue").textContent = `${event.target.value} 轮`; saveAppSettings(); };
 $("#summaryPrompt").oninput = saveAppSettings;
 $("#displayName").oninput = saveAppSettings;

@@ -259,6 +259,47 @@ public class MainActivity extends Activity {
         @JavascriptInterface public String webSearch(String raw) {
             HttpURLConnection connection = null;
             try {
+                JSONObject routedRequest=new JSONObject(raw);
+                String routedProvider=routedRequest.optString("provider","builtin");
+                if(!"builtin".equals(routedProvider)){
+                    String routedQuery=routedRequest.optString("query").trim(), routedKey=routedRequest.optString("api_key",""), routedCustomEndpoint=routedRequest.optString("endpoint","");
+                    int routedLimit=Math.max(1,Math.min(routedRequest.optInt("max_results",5),8));
+                    if(routedQuery.isEmpty())throw new Exception("Search query is required");
+                    String routedEndpoint; JSONObject routedPayload=null;
+                    if("tavily".equals(routedProvider)){
+                        if(routedKey.isEmpty())throw new Exception("Tavily API Key is required");
+                        routedEndpoint="https://api.tavily.com/search";
+                        routedPayload=new JSONObject().put("api_key",routedKey).put("query",routedQuery).put("max_results",routedLimit).put("search_depth","advanced");
+                    }else if("brave".equals(routedProvider)){
+                        if(routedKey.isEmpty())throw new Exception("Brave Search API Key is required");
+                        routedEndpoint="https://api.search.brave.com/res/v1/web/search?q="+URLEncoder.encode(routedQuery,"UTF-8")+"&count="+routedLimit;
+                    }else{
+                        if(routedCustomEndpoint.isEmpty())throw new Exception("Custom search endpoint is required");
+                        routedEndpoint=routedCustomEndpoint;
+                        routedPayload=new JSONObject().put("query",routedQuery).put("max_results",routedLimit);
+                    }
+                    connection=(HttpURLConnection)new URL(routedEndpoint).openConnection();
+                    connection.setConnectTimeout(15000);connection.setReadTimeout(30000);
+                    connection.setRequestProperty("Accept","application/json");connection.setRequestProperty("User-Agent","Atherloom/0.5 Android");
+                    if("brave".equals(routedProvider))connection.setRequestProperty("X-Subscription-Token",routedKey);
+                    else{
+                        connection.setRequestMethod("POST");connection.setDoOutput(true);connection.setRequestProperty("Content-Type","application/json");
+                        if("custom".equals(routedProvider)&&!routedKey.isEmpty())connection.setRequestProperty("Authorization","Bearer "+routedKey);
+                        try(OutputStream output=connection.getOutputStream()){output.write(routedPayload.toString().getBytes(StandardCharsets.UTF_8));}
+                    }
+                    int routedStatus=connection.getResponseCode();String routedResponse=read(routedStatus>=400?connection.getErrorStream():connection.getInputStream());
+                    if(routedStatus>=400)throw new Exception("Search HTTP "+routedStatus);
+                    JSONObject routedData=new JSONObject(routedResponse);JSONArray sourceRows;
+                    if("brave".equals(routedProvider)){JSONObject web=routedData.optJSONObject("web");sourceRows=web==null?null:web.optJSONArray("results");}
+                    else sourceRows=routedData.optJSONArray("results");
+                    JSONArray normalized=new JSONArray();
+                    if(sourceRows!=null)for(int i=0;i<sourceRows.length()&&normalized.length()<routedLimit;i++){
+                        JSONObject row=sourceRows.optJSONObject(i);if(row==null)continue;
+                        String url=row.optString("url");if(url.isEmpty())continue;
+                        normalized.put(new JSONObject().put("title",row.optString("title",routedQuery)).put("url",url).put("snippet",row.optString("content",row.optString("description",row.optString("snippet","")))).put("source",routedProvider));
+                    }
+                    return new JSONObject().put("query",routedQuery).put("effective_query",routedQuery).put("results",normalized).put("result_count",normalized.length()).put("notice",normalized.length()>0?"":"Search returned no results").toString();
+                }
                 JSONObject request=new JSONObject(raw);String query=request.optString("query").trim();int limit=Math.max(1,Math.min(request.optInt("max_results",5),8));
                 if(query.isEmpty())throw new Exception("搜索关键词不能为空");
                 boolean generic=query.matches("^(随便看看|随便搜搜|看看新闻|今日热点|有什么新闻|最近有什么|搜点有趣的)$");
