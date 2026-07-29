@@ -331,8 +331,10 @@ class ConversationIn(BaseModel):
     persona_id: str | None = None
 
 
-class ConversationRename(BaseModel):
-    title: str = Field(min_length=1, max_length=100)
+class ConversationUpdate(BaseModel):
+    title: str | None = Field(default=None, min_length=1, max_length=100)
+    provider_id: str | None = None
+    persona_id: str | None = None
 
 
 class ConversationState(BaseModel):
@@ -526,7 +528,7 @@ PERSONA_CONFIG_DEFAULTS = {
     "memory_enabled": True, "history_enabled": True, "summary_frequency": 20,
     "quick_phrases": [], "custom_headers": {}, "custom_body": {}, "regex_rules": [],
     "tools": {"time": True, "clipboard": False, "tts": False, "ask_user": True, "calculator": True},
-    "mcp_servers": [], "provider_id": "", "stream_enabled": None, "startup_chat": "resume",
+    "mcp_servers": [], "provider_id": "", "stream_enabled": None, "startup_chat": "resume", "pinned": False,
 }
 
 
@@ -1666,14 +1668,20 @@ def create_conversation(body: ConversationIn) -> dict[str, Any]:
 
 
 @app.patch("/api/conversations/{conversation_id}")
-def rename_conversation(conversation_id: str, body: ConversationRename) -> dict[str, str]:
-    title = body.title.strip()
+def update_conversation(conversation_id: str, body: ConversationUpdate) -> dict[str, Any]:
+    updates = body.model_dump(exclude_unset=True)
+    if "title" in updates:
+        updates["title"] = updates["title"].strip()
+    if not updates:
+        raise HTTPException(400, "没有需要更新的内容")
+    assignments = ", ".join(f"{key}=?" for key in updates)
     with closing(db()) as connection:
-        cursor = connection.execute("UPDATE conversations SET title=?, updated_at=? WHERE id=?", (title, now_iso(), conversation_id))
+        cursor = connection.execute(f"UPDATE conversations SET {assignments}, updated_at=? WHERE id=?", (*updates.values(), now_iso(), conversation_id))
         connection.commit()
+        row = connection.execute("SELECT * FROM conversations WHERE id=?", (conversation_id,)).fetchone()
     if not cursor.rowcount:
         raise HTTPException(404, "会话不存在")
-    return {"id": conversation_id, "title": title}
+    return dict(row)
 
 
 @app.patch("/api/conversations/{conversation_id}/state")
