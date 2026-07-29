@@ -26,6 +26,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from backend.motivation import DRIVES, EVENTS, apply_event, context_summary, default_state, normalize, tick
+from backend import homestead
 from backend.health import (
     decrypt_sync_envelope,
     encrypt_for_storage,
@@ -146,6 +147,9 @@ def init_db() -> None:
             CREATE TABLE IF NOT EXISTS game_saves (
               game_id TEXT NOT NULL, persona_key TEXT NOT NULL, state_json TEXT NOT NULL,
               updated_at TEXT NOT NULL, PRIMARY KEY(game_id, persona_key)
+            );
+            CREATE TABLE IF NOT EXISTS homestead_saves (
+              persona_key TEXT PRIMARY KEY, state_json TEXT NOT NULL, updated_at TEXT NOT NULL
             );
             CREATE TABLE IF NOT EXISTS favorites (
               id TEXT PRIMARY KEY, source_message_id TEXT NOT NULL UNIQUE,
@@ -479,6 +483,18 @@ class GameRoomChatIn(BaseModel):
     provider_id: str
     persona_id: str | None = None
     content: str = Field(min_length=1, max_length=2000)
+
+
+class HomesteadActionIn(BaseModel):
+    action: str = Field(min_length=1, max_length=80)
+    target: int | None = Field(default=None, ge=0, le=20)
+    species: str = Field(default="", max_length=80)
+    kind: str = Field(default="", max_length=80)
+    name: str = Field(default="", max_length=80)
+    subject: str = Field(default="", max_length=80)
+    enabled: bool | None = None
+    max_actions_per_day: int = Field(default=4, ge=1, le=12)
+    daily_budget: int = Field(default=30, ge=0, le=500)
 
 
 class FavoriteIn(BaseModel):
@@ -2187,6 +2203,7 @@ def fishing_pick(state: dict[str, Any]) -> tuple[str, int]:
 
 def game_catalog() -> list[dict[str, Any]]:
     return [
+        {"id": "homestead", "name": "云芽庭院", "icon": "▧", "status": "playable", "description": "种花、养宠物，也可以授权当前人格照料。"},
         {"id": "quiet_fishing", "name": "云汀钓记", "icon": "◌", "status": "playable", "description": "为 AI 与用户共同设计的原创确定性钓鱼游戏。"},
         {"id": "claw_machine", "name": "抓娃娃机", "icon": "◇", "status": "playable", "description": "移动爪子、选择目标并收集娃娃。"},
         {"id": "cloud_slots", "name": "云纹老虎机", "icon": "✦", "status": "playable", "description": "只使用游戏内云贝的确定性三轴小游戏。"},
@@ -2238,6 +2255,60 @@ def append_game_room_message(state: dict[str, Any], role: str, content: str) -> 
     state["room_messages"] = (
         state.get("room_messages", []) + [{"role": role, "content": content, "created_at": now_iso()}]
     )[-40:]
+
+
+def load_homestead(connection: sqlite3.Connection, persona_id: str | None) -> dict[str, Any]:
+    key = motivation_key(persona_id)
+    row = connection.execute("SELECT state_json FROM homestead_saves WHERE persona_key=?", (key,)).fetchone()
+    return json.loads(row["state_json"]) if row else homestead.default_state()
+
+
+def save_homestead(connection: sqlite3.Connection, persona_id: str | None, state: dict[str, Any]) -> None:
+    connection.execute(
+        "INSERT INTO homestead_saves(persona_key,state_json,updated_at) VALUES(?,?,?) "
+        "ON CONFLICT(persona_key) DO UPDATE SET state_json=excluded.state_json,updated_at=excluded.updated_at",
+        (motivation_key(persona_id), json.dumps(state, ensure_ascii=False), now_iso()),
+    )
+
+
+def homestead_payload(state: dict[str, Any], events: list[str] | None = None, ai_action: dict[str, Any] | None = None) -> dict[str, Any]:
+    return {
+        "state": state,
+        "events": events or [],
+        "ai_action": ai_action,
+        "catalog": {"flowers": homestead.FLOWERS, "pets": homestead.PET_KINDS, "school_subjects": homestead.SCHOOL_SUBJECTS},
+        "allowed_actions": homestead.allowed_actions(state),
+    }
+
+
+@app.get("/api/homestead")
+def get_homestead(persona_id: str | None = None) -> dict[str, Any]:
+    with closing(db()) as connection:
+        state, events = homestead.settle(load_homestead(connection, persona_id))
+        save_homestead(connection, persona_id, state)
+        connection.commit()
+    return homestead_payload(state, events)
+
+
+@app.post("/api/homestead/action")
+def homestead_action(body: HomesteadActionIn, persona_id: str | None = None) -> dict[str, Any]:
+    with closing(db()) as connection:
+        try:
+            state, events = homestead.act(load_homestead(connection, persona_id), body.model_dump(exclude_none=True))
+        except (ValueError, IndexError) as error:
+            raise HTTPException(409, str(error)) from error
+        save_homestead(connection, persona_id, state)
+        connection.commit()
+    return homestead_payload(state, events)
+
+
+@app.post("/api/homestead/ai-manage")
+def homestead_ai_manage(persona_id: str | None = None) -> dict[str, Any]:
+    with closing(db()) as connection:
+        state, events, choice = homestead.auto_manage(load_homestead(connection, persona_id))
+        save_homestead(connection, persona_id, state)
+        connection.commit()
+    return homestead_payload(state, events, choice)
 
 
 @app.get("/api/games")
