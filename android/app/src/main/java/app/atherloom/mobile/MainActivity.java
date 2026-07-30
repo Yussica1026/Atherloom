@@ -9,7 +9,9 @@ import android.content.ClipboardManager;
 import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
 import android.net.Uri;
+import android.os.Build;
 import android.os.Bundle;
+import android.os.Environment;
 import android.os.Handler;
 import android.os.Looper;
 import android.provider.MediaStore;
@@ -32,6 +34,8 @@ import org.json.JSONArray;
 import org.json.JSONObject;
 import org.json.JSONTokener;
 import java.io.BufferedReader;
+import java.io.File;
+import java.io.FileOutputStream;
 import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.io.OutputStream;
@@ -196,6 +200,42 @@ public class MainActivity extends Activity {
 
         @JavascriptInterface public void showNotice(String message) {
             new Handler(Looper.getMainLooper()).post(() -> Toast.makeText(context, message, Toast.LENGTH_LONG).show());
+        }
+
+        @JavascriptInterface public String saveBackup(String requestedName, String content) {
+            String fileName = (requestedName == null ? "" : requestedName).replaceAll("[\\\\/:*?\"<>|]", "-");
+            if (fileName.isEmpty()) fileName = "atherloom-backup.json";
+            try {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    ContentValues values = new ContentValues();
+                    values.put(MediaStore.Downloads.DISPLAY_NAME, fileName);
+                    values.put(MediaStore.Downloads.MIME_TYPE, "application/json");
+                    values.put(MediaStore.Downloads.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS + "/Atherloom");
+                    values.put(MediaStore.Downloads.IS_PENDING, 1);
+                    Uri uri = context.getContentResolver().insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values);
+                    if (uri == null) throw new IllegalStateException("系统没有创建下载文件");
+                    try (OutputStream stream = context.getContentResolver().openOutputStream(uri)) {
+                        if (stream == null) throw new IllegalStateException("无法打开下载文件");
+                        stream.write(content.getBytes(StandardCharsets.UTF_8));
+                    } catch (Exception error) {
+                        context.getContentResolver().delete(uri, null, null);
+                        throw error;
+                    }
+                    values.clear();
+                    values.put(MediaStore.Downloads.IS_PENDING, 0);
+                    context.getContentResolver().update(uri, values, null, null);
+                    return new JSONObject().put("ok", true).put("location", "本机存储/Download/Atherloom/" + fileName).put("uri", uri.toString()).toString();
+                }
+                File directory = new File(context.getExternalFilesDir(Environment.DIRECTORY_DOCUMENTS), "Atherloom");
+                if (!directory.exists() && !directory.mkdirs()) throw new IllegalStateException("无法创建备份目录");
+                File target = new File(directory, fileName);
+                try (OutputStream stream = new FileOutputStream(target)) {
+                    stream.write(content.getBytes(StandardCharsets.UTF_8));
+                }
+                return new JSONObject().put("ok", true).put("location", target.getAbsolutePath()).toString();
+            } catch (Exception error) {
+                return failure(error);
+            }
         }
 
         @JavascriptInterface public String listModels(String raw) {
