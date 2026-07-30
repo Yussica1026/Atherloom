@@ -27,6 +27,20 @@ class LocalClientTests(unittest.TestCase):
         payload = self.client.get("/api/bootstrap").json()
         self.assertEqual(payload["personas"], [])
 
+    def test_life_records_round_trip_and_ai_visibility(self):
+        payload = {"kind":"meal","occurred_at":"2026-07-30T12:00:00+08:00","category":"午餐","title":"番茄鸡蛋面","note":"吃得很饱","metadata":{},"visible_to_ai":True}
+        created = self.client.post("/api/life-records/test-persona", json=payload).json()
+        self.assertEqual(created["title"], "番茄鸡蛋面")
+        listed = self.client.get("/api/life-records/test-persona").json()
+        self.assertEqual(len(listed["entries"]), 1)
+        provider = self.client.post("/api/providers", json={"name":"life-test","protocol":"openai","base_url":"https://example.com/v1","model":"m"}).json()
+        conversation = self.client.post("/api/conversations", json={"provider_id":provider["id"],"persona_id":"test-persona"}).json()
+        with app_module.closing(app_module.db()) as connection:
+            body = app_module.ChatIn(conversation_id=conversation["id"], content="今天午饭吃了什么？", provider_id=provider["id"], persona_id="test-persona")
+            _, _, messages = app_module.load_chat_context(connection, body)
+        removed = self.client.delete(f"/api/life-records/test-persona/{created['id']}")
+        self.assertTrue(removed.json()["ok"])
+
     def test_database_schema_version_is_recorded_and_future_versions_are_refused(self):
         with app_module.closing(app_module.db()) as connection:
             version = connection.execute("PRAGMA user_version").fetchone()[0]

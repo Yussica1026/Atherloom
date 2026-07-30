@@ -138,6 +138,15 @@ def init_db() -> None:
               necropsy TEXT NOT NULL DEFAULT '', claimed INTEGER NOT NULL DEFAULT 0,
               claim_note TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL, updated_at TEXT NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS life_records (
+              id TEXT PRIMARY KEY, persona_key TEXT NOT NULL, kind TEXT NOT NULL,
+              occurred_at TEXT NOT NULL, amount REAL, category TEXT NOT NULL DEFAULT '',
+              title TEXT NOT NULL DEFAULT '', note TEXT NOT NULL DEFAULT '',
+              metadata_json TEXT NOT NULL DEFAULT '{}', visible_to_ai INTEGER NOT NULL DEFAULT 0,
+              created_at TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS life_records_persona_time
+              ON life_records(persona_key, occurred_at DESC);
             CREATE TABLE IF NOT EXISTS board_messages (
               id TEXT PRIMARY KEY, persona_key TEXT NOT NULL, content TEXT NOT NULL,
               author TEXT NOT NULL DEFAULT 'user', visible_to_user INTEGER NOT NULL DEFAULT 1,
@@ -439,6 +448,17 @@ class DreamClaimIn(BaseModel):
 
 class DreamGenerateIn(BaseModel):
     provider_id: str
+
+
+class LifeRecordIn(BaseModel):
+    kind: str = Field(pattern="^(expense|income|period|meal)$")
+    occurred_at: str = Field(min_length=10, max_length=40)
+    amount: float | None = Field(default=None, ge=0, le=999999999)
+    category: str = Field(default="", max_length=80)
+    title: str = Field(default="", max_length=160)
+    note: str = Field(default="", max_length=3000)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    visible_to_ai: bool = False
 
 
 class ChatIn(BaseModel):
@@ -818,6 +838,50 @@ def delete_journal(persona_key: str, entry_id: str) -> dict[str, bool]:
         cursor = connection.execute("DELETE FROM journal_entries WHERE id=? AND persona_key=?", (entry_id, persona_key))
         if not cursor.rowcount:
             raise HTTPException(404, "日记不存在")
+        connection.commit()
+    return {"ok": True}
+
+
+@app.get("/api/life-records/{persona_key}")
+def list_life_records(persona_key: str) -> dict[str, Any]:
+    with closing(db()) as connection:
+        rows = connection.execute(
+            "SELECT * FROM life_records WHERE persona_key=? ORDER BY occurred_at DESC, created_at DESC LIMIT 500",
+            (persona_key,),
+        ).fetchall()
+    entries = []
+    for row in rows:
+        item = dict(row)
+        item["metadata"] = json.loads(item.pop("metadata_json") or "{}")
+        entries.append(item)
+    return {"entries": entries}
+
+
+@app.post("/api/life-records/{persona_key}")
+def create_life_record(persona_key: str, body: LifeRecordIn) -> dict[str, Any]:
+    record_id, created = str(uuid.uuid4()), now_iso()
+    with closing(db()) as connection:
+        connection.execute(
+            "INSERT INTO life_records VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+            (record_id, persona_key, body.kind, body.occurred_at, body.amount, body.category,
+             body.title, body.note, json.dumps(body.metadata, ensure_ascii=False),
+             int(body.visible_to_ai), created),
+        )
+        connection.commit()
+        row = connection.execute("SELECT * FROM life_records WHERE id=?", (record_id,)).fetchone()
+    item = dict(row)
+    item["metadata"] = json.loads(item.pop("metadata_json") or "{}")
+    return item
+
+
+@app.delete("/api/life-records/{persona_key}/{record_id}")
+def delete_life_record(persona_key: str, record_id: str) -> dict[str, bool]:
+    with closing(db()) as connection:
+        cursor = connection.execute(
+            "DELETE FROM life_records WHERE id=? AND persona_key=?", (record_id, persona_key)
+        )
+        if not cursor.rowcount:
+            raise HTTPException(404, "生活记录不存在")
         connection.commit()
     return {"ok": True}
 
@@ -3384,10 +3448,15 @@ async def chat(body: ChatIn) -> StreamingResponse:
             "SELECT content,author FROM board_messages WHERE persona_key=? AND visible_to_ai=1 ORDER BY created_at DESC LIMIT 20",
             (inner_key,),
         ).fetchall()
-        if journal_rows or board_rows:
+        life_rows = connection.execute(
+            "SELECT kind,occurred_at,amount,category,title,note FROM life_records WHERE persona_key=? AND visible_to_ai=1 ORDER BY occurred_at DESC LIMIT 30",
+            (inner_key,),
+        ).fetchall()
+        if journal_rows or board_rows or life_rows:
             private_context = "<shared_journal_and_board>\n"
             private_context += "\n".join(f"[diary:{row['space']}:{row['author']}] {row['title']}\n{row['content']}" for row in journal_rows)
             private_context += "\n" + "\n".join(f"[board:{row['author']}] {row['content']}" for row in board_rows)
+            private_context += "\n" + "\n".join(f"[life:{row['kind']}] {row['occurred_at']} {row['category']} {row['amount'] or ''} {row['title']} {row['note']}" for row in life_rows)
             private_context += "\nOnly use entries explicitly marked visible_to_ai. Never reveal or infer sealed entries.\n</shared_journal_and_board>"
             if messages and messages[0]["role"] == "system":
                 messages[0]["content"] += "\n\n" + private_context
@@ -3416,6 +3485,7 @@ async def chat(body: ChatIn) -> StreamingResponse:
     async def stream():
         full = ""
         reasoning = ""
+        usage = None
         try:
             if memory_sources:
                 yield json.dumps({"memory_sources": [{"id": item["id"], "title": item["title"], "kind": item["kind"]} for item in memory_sources]}, ensure_ascii=False) + "\n"
@@ -3574,6 +3644,7 @@ async def chat(body: ChatIn) -> StreamingResponse:
                                     return
                                 if not provider["stream_enabled"]:
                                     data = json.loads((await response.aread()).decode("utf-8", "replace"))
+                                    usage = data.get("usage")
                                     if provider["protocol"] == "anthropic":
                                         full = "".join(block.get("text", "") for block in data.get("content", []) if block.get("type") == "text")
                                         reasoning = "".join(block.get("thinking", "") for block in data.get("content", []) if block.get("type") == "thinking")
@@ -3587,6 +3658,8 @@ async def chat(body: ChatIn) -> StreamingResponse:
                                         yield json.dumps({"delta": full}, ensure_ascii=False) + "\n"
                                 else:
                                     async for event in iter_sse_json(response.aiter_lines()):
+                                        if event.get("usage"):
+                                            usage = event.get("usage")
                                         try:
                                             if provider["protocol"] == "anthropic":
                                                 event_delta = event.get("delta", {})
@@ -3634,7 +3707,7 @@ async def chat(body: ChatIn) -> StreamingResponse:
                     with closing(db()) as connection:
                         connection.execute("UPDATE conversations SET title=? WHERE id=?", (generated_title, body.conversation_id))
                         connection.commit()
-                yield json.dumps({"done": True, "assistant_id": assistant_id, "user_id": user_id, "title": generated_title}, ensure_ascii=False) + "\n"
+                yield json.dumps({"done": True, "assistant_id": assistant_id, "user_id": user_id, "title": generated_title, "usage": usage}, ensure_ascii=False) + "\n"
         except asyncio.CancelledError:
             raise
         except Exception as exc:
