@@ -8,8 +8,8 @@ android {
         applicationId 'app.atherloom.mobile'
         minSdk 26
         targetSdk 35
-        versionCode 45
-        versionName '0.5.39-standalone'
+        versionCode 46
+        versionName '0.5.40-standalone'
     }
 
     signingConfigs {

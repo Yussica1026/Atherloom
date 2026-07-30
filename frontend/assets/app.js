@@ -236,7 +236,7 @@ async function addAttachments(files){for(const file of [...files]){if(file.size>
 function personaQuery() { return state.persona ? `?persona_id=${encodeURIComponent(state.persona)}` : ""; }
 
 function renderGameCards() {
-  const catalog=[...gameState.catalog,{id:"card_room",name:"云芽棋牌室",icon:"♠",description:"四人桌面、轮流出牌和边玩边聊的原创棋牌房间。"}];
+  const catalog=gameState.catalog.filter(game=>game.id!=="card_room");
   $("#gameCards").innerHTML = catalog.map(game => `<button class="game-card ${game.id === gameState.current ? "active" : ""}" data-game-id="${game.id}"><span class="game-card-icon">${game.icon}</span><span><strong>${escapeHtml(game.name)}</strong><small>${escapeHtml(game.description)}</small></span></button>`).join("");
   document.querySelectorAll("[data-game-id]").forEach(button => button.onclick = () => openGame(button.dataset.gameId));
 }
