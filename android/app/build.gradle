@@ -8,8 +8,8 @@ android {
         applicationId 'app.atherloom.mobile'
         minSdk 26
         targetSdk 35
-        versionCode 46
-        versionName '0.5.40-standalone'
+        versionCode 47
+        versionName '0.5.41-standalone'
     }
 
     signingConfigs {
@@ -37,6 +37,7 @@ android {
 dependencies {
     implementation 'androidx.webkit:webkit:1.12.1'
     implementation 'androidx.security:security-crypto:1.1.0-alpha06'
+    implementation 'com.tom-roush:pdfbox-android:2.0.27.0'
 }
 
 tasks.register('syncWebAssets', Copy) {

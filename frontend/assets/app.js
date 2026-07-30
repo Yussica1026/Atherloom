@@ -124,11 +124,11 @@ async function openLocalBook(file) {
     if (bookObjectUrl) { URL.revokeObjectURL(bookObjectUrl); bookObjectUrl = undefined; }
     reader.onscroll = null;
     if(format==="zip"||format==="mobi")throw new Error(format==="zip"?"检测到 EPUB/ZIP 电子书；当前版本不能直接读取，请先导出为 TXT/Markdown":"检测到 MOBI/AZW 电子书；当前版本不能直接读取，请先导出为 TXT/Markdown");
-    if (isPdf && window.AtherloomNative) {
-      reader.innerHTML = `<div class="game-empty"><span>PDF</span><h3>安卓暂不在应用内打开 PDF</h3><p>部分 Android WebView 打开本地 PDF 会卡死。请先转成 TXT 或 Markdown；后续接入原生 PDF 阅读器。</p></div>`;
-      status.textContent = `${file.name} · 已安全拦截`;
-      window.AtherloomNative.showNotice?.("为避免卡死，安卓暂不在应用内打开 PDF");
-      return;
+    if (isPdf && window.AtherloomNative && window.nativeExtractPdf) {
+      status.textContent = `${file.name} · 正在本机提取文字…`;
+      const bytes=new Uint8Array(await file.arrayBuffer()),encoded=Array.from(bytes,b=>String.fromCharCode(b)).join(""),base64=btoa(encoded),result=await window.nativeExtractPdf(base64);
+      validateBookText(result.text);const pre=document.createElement("pre");pre.textContent=result.text;reader.replaceChildren(pre);currentBook={title:file.name,key,text:result.text};loadBookAiChat();setBookControls(true);renderBookNotes();status.textContent=`${file.name} · 已在本机提取 ${result.pages||""} 页文字`;
+      reader.scrollTop=Number(localStorage.getItem(key)||0);reader.onscroll=()=>localStorage.setItem(key,String(reader.scrollTop));return;
     }
     if (isPdf) {
       bookObjectUrl = URL.createObjectURL(file);
