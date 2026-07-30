@@ -1683,6 +1683,7 @@ let streamScrollFrame=0,streamScrollDue=0,streamFollow=true;
 function chatIsNearBottom(){const area=$("#chatScroll");return area.scrollHeight-area.scrollTop-area.clientHeight<96;}
 function scheduleStreamingScroll(){if(!streamFollow)return;const now=performance.now();if(streamScrollFrame||now<streamScrollDue)return;streamScrollFrame=requestAnimationFrame(()=>{streamScrollFrame=0;streamScrollDue=performance.now()+120;if(streamFollow){const area=$("#chatScroll");area.scrollTop=area.scrollHeight;}});}
 function updateStreamingMessage(message,messages=state.messages,conversationId=state.current) {
+  if(!state.generating.has(conversationId))return;
   if(conversationId!==state.current)return;const index=messages.indexOf(message),article=document.querySelector(`.message[data-index="${index}"]`);
   if(!article){renderMessages({stickToBottom:streamFollow});return;}
   const body=article.querySelector(".message-body"),bubble=article.querySelector(".bubble");
