@@ -1536,7 +1536,8 @@ function openMessageEditor(message){if(!message)return;const editor=$("#messageE
 
 function renderPickers() {
   const provider = activeProvider(); const persona = activePersona();
-  const latestUsage=[...state.messages].reverse().find(item=>item.role==="assistant"&&item.usage)?.usage;
+  let latestUsage=[...state.messages].reverse().find(item=>item.role==="assistant"&&item.usage)?.usage;
+  if(!latestUsage){const last=[...state.messages].reverse().find(item=>item.role==="assistant"&&!item.pending);if(last)latestUsage={total_tokens:estimateTokens(last.content||"")+estimateTokens(last.reasoning||"")};}
   const tokenLabel=latestUsage?.total_tokens!=null?` · ${Number(latestUsage.total_tokens).toLocaleString()} tokens`:latestUsage?.output_tokens!=null?` · ${Number(latestUsage.output_tokens).toLocaleString()} out`:" · tokens—";
   if(provider) $("#modelPicker").textContent += tokenLabel;
   $("#modelPicker").textContent = provider ? `${provider.name} · ${provider.model}⌄` : "添加 API 线路";
@@ -1687,7 +1688,7 @@ function updateStreamingMessage(message,messages=state.messages,conversationId=s
   if(message.memory_sources?.length){let sources=article.querySelector(".memory-sources");if(!sources){sources=document.createElement("div");sources.className="memory-sources";body.insertBefore(sources,body.firstChild);}sources.innerHTML=`本轮使用记忆：${message.memory_sources.map(source=>`<span>${escapeHtml(source.title)}</span>`).join("")}`;}
   if(message.reasoning){let thinking=article.querySelector(".thinking");if(!thinking){thinking=document.createElement("details");thinking.className="thinking";thinking.open=true;thinking.innerHTML="<summary>思考过程</summary><div></div>";body.insertBefore(thinking,bubble);}const reasoning=thinking.querySelector("div");if(reasoning.textContent!==message.reasoning)reasoning.textContent=message.reasoning;}
   if(bubble){if(message.role==="assistant"&&message.streaming){if(message.content){if(bubble.childNodes.length===1&&bubble.firstChild?.nodeType===Node.TEXT_NODE)bubble.firstChild.nodeValue=message.content;else bubble.replaceChildren(document.createTextNode(message.content));}}else bubble.innerHTML=message.role==="assistant"?renderAssistantContent(message.content):escapeHtml(message.content);}
-  scheduleStreamingScroll();
+  renderPickers();scheduleStreamingScroll();
 }
 
 function createStreamPresenter(message, animated, messages=state.messages, conversationId=state.current) {
