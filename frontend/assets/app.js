@@ -331,6 +331,8 @@ function renderHomestead(){
   }
   $("#homesteadInventory").innerHTML=`<span>宠物粮 × ${current.inventory.pet_food||0}</span><span>肥料 × ${current.inventory.fertilizer||0}</span><span>洗护 × ${current.inventory.soap||0}</span>`+Object.entries(current.inventory||{}).filter(([key,count])=>key.startsWith("flower_")&&count>0).map(([key,count])=>`<button class="ghost" data-gift-flower="${key.slice(7)}">花材 × ${count} · 送给宠物</button>`).join("");document.querySelectorAll("[data-gift-flower]").forEach(button=>button.onclick=()=>playHomestead({action:"gift",species:button.dataset.giftFlower}));$("#homesteadEvents").innerHTML=[...(current.events||[])].reverse().slice(0,12).map(item=>`<span>${escapeHtml(item.text)}</span>`).join("");
 }
+function renderHomeProfile(){const profile=JSON.parse(localStorage.getItem("atherloom:home-profile")||"{}");const name=$("#homeCharacterName"),style=$("#homeCharacterStyle");if(!name||!style)return;name.value=profile.name||"";style.value=profile.style||"cloud";$("#roomRug").dataset.style=style.value;$("#roomPetDot").hidden=!gameState.homestead?.pet;$("#roomRug").textContent=(profile.items||[]).join(" · ")||"⌂";}
+function saveHomeProfile(){const profile={name:$("#homeCharacterName").value.trim()||"云芽居民",style:$("#homeCharacterStyle").value,items:[...document.querySelectorAll("[data-room-item].selected")].map(button=>button.textContent)};localStorage.setItem("atherloom:home-profile",JSON.stringify(profile));$("#homeProfileStatus").textContent=`已保存。欢迎回家，${profile.name}。`;renderHomeProfile();}
 async function playHomestead(payload){try{const result=await api(`/api/homestead/action${personaQuery()}`,{method:"POST",body:JSON.stringify(payload)});gameState.homestead=result.state;gameState.homesteadCatalog=result.catalog;renderHomestead();}catch(error){alert(error.message);}}
 function setStarMergeMode(mode){gameState.starMergeMode=mode==="ai"?"ai":"self";renderStarMerge();if(gameState.starMergeMode==="self")$("#starMergeBoard").focus();}
 
@@ -1017,6 +1019,11 @@ $("#lifeRecordForm").onsubmit=async event=>{event.preventDefault();const form=ev
 resetLifeRecordTime();
 $("#homesteadAiNow").onclick=async()=>{try{const result=await api(`/api/homestead/ai-manage${personaQuery()}`,{method:"POST",body:"{}"});gameState.homestead=result.state;gameState.homesteadCatalog=result.catalog;renderHomestead();if(!result.ai_action)alert(result.state.management?.enabled?"现在没有需要代办的照料动作。":"请先打开 AI 管理授权。");}catch(error){alert(error.message);}};
 $("#homesteadDailyClaim").onclick=()=>playHomestead({action:"daily_claim"});
+document.querySelectorAll("[data-homestead-view]").forEach(button=>button.onclick=()=>{document.querySelectorAll("[data-homestead-view]").forEach(item=>item.classList.toggle("active",item===button));const view=button.dataset.homesteadView;$("#homesteadRoom").hidden=view!=="room";$(".homestead-sky").hidden=view!=="yard";document.querySelector(".pet-home").hidden=view!=="yard";document.querySelector(".homestead-bottom").hidden=view!=="yard";});
+document.querySelector('[data-homestead-view="room"]')?.click();
+document.querySelectorAll("[data-room-item]").forEach(button=>button.onclick=()=>button.classList.toggle("selected"));
+$("#saveHomeProfile").onclick=saveHomeProfile;
+$("#homeCharacterStyle").onchange=renderHomeProfile;
 document.querySelectorAll("[data-pet-action]").forEach(button=>button.onclick=()=>playHomestead({action:button.dataset.petAction,...(button.dataset.petAction==="school"?{subject:$("#petSchoolSubject").value}:{})}));
 $("#renamePet").onclick=()=>{const current=gameState.homestead?.pet;if(!current)return;const name=prompt("给小伙伴改名",current.name);if(name?.trim())playHomestead({action:"rename_pet",name:name.trim()});};
 setInterval(()=>{if(gameState.current==="homestead"&&gameState.homestead?.pet)renderHomestead();},30000);
