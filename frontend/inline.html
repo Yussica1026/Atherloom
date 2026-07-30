@@ -1158,8 +1158,11 @@ async function openLocalBook(file) {
     reader.onscroll = null;
     if(format==="zip"||format==="mobi")throw new Error(format==="zip"?"检测到 EPUB/ZIP 电子书；当前版本不能直接读取，请先导出为 TXT/Markdown":"检测到 MOBI/AZW 电子书；当前版本不能直接读取，请先导出为 TXT/Markdown");
     if (isPdf && window.AtherloomNative && window.nativeExtractPdf) {
+      if (file.size > 16 * 1024 * 1024) throw new Error("PDF 文件超过 16 MB；为避免手机内存溢出，请先压缩 PDF 或导出为 TXT/Markdown");
       status.textContent = `${file.name} · 正在本机提取文字…`;
-      const bytes=new Uint8Array(await file.arrayBuffer()),encoded=Array.from(bytes,b=>String.fromCharCode(b)).join(""),base64=btoa(encoded),result=await window.nativeExtractPdf(base64);
+      const bytes=new Uint8Array(await file.arrayBuffer());
+      let binary="";for(let offset=0;offset<bytes.length;offset+=0x8000)binary+=String.fromCharCode(...bytes.subarray(offset,Math.min(offset+0x8000,bytes.length)));
+      const result=await window.nativeExtractPdf(btoa(binary));
       validateBookText(result.text);const pre=document.createElement("pre");pre.textContent=result.text;reader.replaceChildren(pre);currentBook={title:file.name,key,text:result.text};loadBookAiChat();setBookControls(true);renderBookNotes();status.textContent=`${file.name} · 已在本机提取 ${result.pages||""} 页文字`;
       reader.scrollTop=Number(localStorage.getItem(key)||0);reader.onscroll=()=>localStorage.setItem(key,String(reader.scrollTop));return;
     }
