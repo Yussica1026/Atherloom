@@ -251,7 +251,8 @@ async function addAttachments(files){for(const file of [...files]){if(file.size>
 function personaQuery() { return state.persona ? `?persona_id=${encodeURIComponent(state.persona)}` : ""; }
 
 function renderGameCards() {
-  $("#gameCards").innerHTML = gameState.catalog.map(game => `<button class="game-card ${game.id === gameState.current ? "active" : ""}" data-game-id="${game.id}"><span class="game-card-icon">${game.icon}</span><span><strong>${escapeHtml(game.name)}</strong><small>${escapeHtml(game.description)}</small></span></button>`).join("");
+  const catalog=[...gameState.catalog,{id:"card_room",name:"云芽棋牌室",icon:"♠",description:"四人桌面、轮流出牌和边玩边聊的原创棋牌房间。"}];
+  $("#gameCards").innerHTML = catalog.map(game => `<button class="game-card ${game.id === gameState.current ? "active" : ""}" data-game-id="${game.id}"><span class="game-card-icon">${game.icon}</span><span><strong>${escapeHtml(game.name)}</strong><small>${escapeHtml(game.description)}</small></span></button>`).join("");
   document.querySelectorAll("[data-game-id]").forEach(button => button.onclick = () => openGame(button.dataset.gameId));
 }
 
@@ -1018,7 +1019,7 @@ $("#openSettings").onclick = () => {
     $("#displayName").focus({ preventScroll: true });
   });
 };
-$("#openGames").onclick = openGameLibrary; $("#openCardRoom").onclick = async()=>{await openGameLibrary();openGame("card_room");}; $("#closeGames").onclick = () => $("#gameLibrary").hidden = true;
+$("#openGames").onclick = openGameLibrary; $("#closeGames").onclick = () => $("#gameLibrary").hidden = true;
 $("#homesteadAiEnabled").onchange=async event=>{await playHomestead({action:"configure_management",enabled:event.target.checked,max_actions_per_day:4,daily_budget:30});};
 function resetLifeRecordTime(){const date=new Date(Date.now()-new Date().getTimezoneOffset()*60000);$("#lifeRecordForm").elements.occurred_at.value=date.toISOString().slice(0,16);}
 document.querySelectorAll("[data-life-kind]").forEach(button=>button.onclick=()=>{const kind=button.dataset.lifeKind,form=$("#lifeRecordForm");document.querySelectorAll("[data-life-kind]").forEach(item=>item.classList.toggle("active",item===button));form.elements.kind.value=kind;document.querySelectorAll("[data-life-field]").forEach(field=>field.hidden=field.dataset.lifeField!==(kind==="expense"?"money":kind));$("#lifeRecordStatus").textContent="";});
