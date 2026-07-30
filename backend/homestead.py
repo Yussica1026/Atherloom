@@ -190,10 +190,14 @@ def act(source: dict[str, Any], payload: dict[str, Any], now: datetime | None = 
     elif action == "harvest":
         plant = state["garden"][target]
         if not plant or plant["growth"] < 100: raise ValueError("花还没有成熟")
-        state["coins"] += 24; plant["growth"] = 45; plant["bloom_announced"] = False; events.append(f"收获了{plant['name']}，得到 24 云贝。")
+        state["coins"] += 24; state.setdefault("inventory", {})[f"flower_{plant['species']}"] = int(state["inventory"].get(f"flower_{plant['species']}", 0)) + 1; plant["growth"] = 45; plant["bloom_announced"] = False; events.append(f"收获了{plant['name']}，得到花材和 24 云贝。")
     elif action == "clear_plant":
         if not state["garden"][target]: raise ValueError("花盆已经是空的")
         state["garden"][target] = None; events.append("清理了花盆，泥土可以重新播种。")
+    elif action == "gift":
+        pet = state.get("pet"); species = str(payload.get("species", "")); key = f"flower_{species}"
+        if not pet or state.setdefault("inventory", {}).get(key, 0) < 1: raise ValueError("现在没有可以赠送的花材")
+        state["inventory"][key] -= 1; pet["happiness"] = min(100.0, pet["happiness"] + 15); pet["thought"] = "这朵花是给我的吗？我会把它放在窗边。"; events.append(f"把花材送给了{pet['name']}。")
     elif action == "adopt":
         kind, name = str(payload.get("kind", "")), str(payload.get("name", "")).strip()
         if state.get("pet") or kind not in PET_KINDS: raise ValueError("现在不能领养这只宠物")
