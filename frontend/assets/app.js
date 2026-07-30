@@ -251,7 +251,7 @@ async function addAttachments(files){for(const file of [...files]){if(file.size>
 function personaQuery() { return state.persona ? `?persona_id=${encodeURIComponent(state.persona)}` : ""; }
 
 function renderGameCards() {
-  const catalog=[...gameState.catalog,{id:"card_room",name:"云芽棋牌室",icon:"♠",description:"四人桌面、轮流出牌和边玩边聊的原创棋牌房间。"}];
+  const catalog=[...gameState.catalog.filter(game=>game.id!=="homestead"),{id:"card_room",name:"云芽棋牌室",icon:"♠",description:"四人桌面、轮流出牌和边玩边聊的原创棋牌房间。"}];
   $("#gameCards").innerHTML = catalog.map(game => `<button class="game-card ${game.id === gameState.current ? "active" : ""}" data-game-id="${game.id}"><span class="game-card-icon">${game.icon}</span><span><strong>${escapeHtml(game.name)}</strong><small>${escapeHtml(game.description)}</small></span></button>`).join("");
   document.querySelectorAll("[data-game-id]").forEach(button => button.onclick = () => openGame(button.dataset.gameId));
 }
@@ -1019,7 +1019,8 @@ $("#openSettings").onclick = () => {
     $("#displayName").focus({ preventScroll: true });
   });
 };
-$("#openGames").onclick = openGameLibrary; $("#closeGames").onclick = () => $("#gameLibrary").hidden = true;
+async function openHomesteadStandalone(){let space=$("#homesteadStandalone");if(!space){space=document.createElement("section");space.id="homesteadStandalone";space.className="homestead-standalone collection-space";space.innerHTML='<header><div><span class="eyebrow">LITTLE LIVING GARDEN</span><h2>云芽庭院</h2><p>这是你的家，不是小游戏。</p></div><button class="close-button" id="closeHomesteadStandalone">×</button></header><main class="homestead-standalone-main"></main>';document.body.appendChild(space);$("#closeHomesteadStandalone").onclick=()=>space.hidden=true;}const stage=$("#homesteadStage");$(".homestead-standalone-main").appendChild(stage);space.hidden=false;stage.hidden=false;const payload=await api(`/api/homestead${personaQuery()}`);gameState.homestead=payload.state;gameState.homesteadCatalog=payload.catalog;renderHomestead();}
+$("#openGames").onclick = openGameLibrary; $("#openHomestead").onclick=openHomesteadStandalone; $("#closeGames").onclick = () => $("#gameLibrary").hidden = true;
 $("#homesteadAiEnabled").onchange=async event=>{await playHomestead({action:"configure_management",enabled:event.target.checked,max_actions_per_day:4,daily_budget:30});};
 function resetLifeRecordTime(){const date=new Date(Date.now()-new Date().getTimezoneOffset()*60000);$("#lifeRecordForm").elements.occurred_at.value=date.toISOString().slice(0,16);}
 document.querySelectorAll("[data-life-kind]").forEach(button=>button.onclick=()=>{const kind=button.dataset.lifeKind,form=$("#lifeRecordForm");document.querySelectorAll("[data-life-kind]").forEach(item=>item.classList.toggle("active",item===button));form.elements.kind.value=kind;document.querySelectorAll("[data-life-field]").forEach(field=>field.hidden=field.dataset.lifeField!==(kind==="expense"?"money":kind));$("#lifeRecordStatus").textContent="";});
