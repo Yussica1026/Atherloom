@@ -59,6 +59,7 @@ def default_state(now: str | None = None) -> dict[str, Any]:
     return {
         "version": 1,
         "coins": 120,
+        "daily_claim_day": "",
         "last_settled_at": stamp,
         "garden": [None, None, None, None],
         "pet": None,
@@ -164,7 +165,14 @@ def act(source: dict[str, Any], payload: dict[str, Any], now: datetime | None = 
     state, _ = settle(source, moment)
     action, stamp, events = str(payload.get("action", "")), moment.isoformat(), []
     target = int(payload.get("target", 0) or 0)
-    if action == "plant":
+    if action == "daily_claim":
+        day = moment.date().isoformat()
+        if state.get("daily_claim_day") == day:
+            raise ValueError("今天的云贝已经领过了")
+        state["daily_claim_day"] = day
+        state["coins"] += 30
+        events.append("领取了今日云贝，得到 30 云贝。")
+    elif action == "plant":
         species = str(payload.get("species", ""))
         if species not in FLOWERS or target not in range(len(state["garden"])) or state["garden"][target] is not None: raise ValueError("这个花盆现在不能播种")
         data = FLOWERS[species]

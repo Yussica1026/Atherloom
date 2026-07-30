@@ -142,7 +142,7 @@
       <main class="game-stage">
         <div id="gameEmpty" class="game-empty"><span>✦</span><h3>挑一款游戏吧</h3><p>每个人格拥有独立存档，AI 的操作会留下记录。</p></div>
         <section id="homesteadStage" class="mini-game-stage homestead-stage" hidden>
-          <header><div><span class="eyebrow">LITTLE LIVING GARDEN</span><h3>云芽庭院</h3><p>花和宠物会跟着真实时间生活。记得回来看看它们。</p></div><div class="homestead-coins">云贝 <strong id="homesteadCoins">0</strong></div></header>
+          <header><div><span class="eyebrow">LITTLE LIVING GARDEN</span><h3>云芽庭院</h3><p>花和宠物会跟着真实时间生活。记得回来看看它们。</p></div><div class="homestead-wallet"><div class="homestead-coins">云贝 <strong id="homesteadCoins">0</strong></div><button class="ghost" id="homesteadDailyClaim" type="button">领取今日云贝 · +30</button></div></header>
           <div class="homestead-management"><div><strong>照料方式</strong><small id="homesteadManagerStatus">现在由你亲自照料</small></div><label class="switch"><input id="homesteadAiEnabled" type="checkbox"><span></span></label><button class="ghost" id="homesteadAiNow" type="button">请人格照料一次</button></div>
           <div class="homestead-sky"><span class="homestead-sun"></span><div class="homestead-cloud cloud-one"></div><div class="homestead-cloud cloud-two"></div><div id="homesteadGarden" class="homestead-garden"></div></div>
           <section class="pet-home" id="petHome"><div class="pet-room"><div class="pet-window"></div><div id="petAvatar" class="pet-avatar"></div><div class="pet-rug"></div></div><div class="pet-panel"><div id="petEmpty"><h4>领养一位小伙伴</h4><p>它会吃饭、玩耍、上学，也会因为长久无人照料而孤单。</p><div id="petAdoption" class="pet-adoption"></div></div><div id="petDetails" hidden><header><div><h4 id="petName">小伙伴</h4><span id="petMood">心情很好</span></div><button class="ghost" id="renamePet">改名</button></header><blockquote id="petThought" class="pet-thought">今天也想和你待在一起。</blockquote><div id="petMeters" class="pet-meters"></div><div class="pet-actions"><button data-pet-action="feed">喂饭</button><button data-pet-action="rest">送去休息</button><button data-pet-action="play">陪玩</button><button data-pet-action="bathe">洗澡</button><select id="petSchoolSubject"><option value="letters">识字课</option><option value="music">音乐课</option><option value="painting">绘画课</option><option value="manners">礼貌课</option><option value="nature">自然观察</option></select><button data-pet-action="school">送去上学</button></div><div id="petSkills" class="pet-skills"></div></div></div></section>
@@ -329,6 +329,7 @@
         <button data-tab="worldbooks">世界书</button>
         <button data-tab="summary">自动总结</button>
         <button data-tab="memory">记忆库</button>
+        <button data-tab="life">生活记录</button>
         <button data-tab="journal">日记与留言</button>
         <button data-tab="mcp">MCP</button>
         <button data-tab="tools">工具与权限</button>
@@ -420,6 +421,28 @@
             <small class="muted">点击重建会把当前未归档记忆的标题与正文发送给所选向量线路；向量结果只保存在本机。</small>
           </div>
           <p class="privacy-note">自动总结提取的长期记忆会先进入待确认区；确认后才保存，不会直接污染正式记忆库。</p>
+        </section>
+
+        <section class="tab" id="tab-life">
+          <div class="section-heading"><div><span class="life-eyebrow">DAILY LEDGER</span><h3>生活手账</h3><p>钱、身体和每一顿饭，放在同一条日历上慢慢照看。</p></div><span class="persona-scope" id="lifePersonaName">默认人格</span></div>
+          <div class="life-today" id="lifeSummary"></div>
+          <div class="inner-space-tabs life-tabs"><button type="button" class="active" data-life-kind="expense">记一笔</button><button type="button" data-life-kind="period">生理期</button><button type="button" data-life-kind="meal">吃饭</button></div>
+          <form id="lifeRecordForm" class="edit-card visible life-record-form">
+            <input name="kind" value="expense" hidden>
+            <label>时间<input name="occurred_at" type="datetime-local" required></label>
+            <label data-life-field="money">收支<select name="flow"><option value="expense">支出</option><option value="income">收入</option></select></label>
+            <label data-life-field="money">金额<input name="amount" type="number" min="0" step="0.01" inputmode="decimal" placeholder="0.00"></label>
+            <label data-life-field="money">分类<select name="money_category"><option>餐饮</option><option>日用</option><option>交通</option><option>娱乐</option><option>居住</option><option>医疗</option><option>工资</option><option>其他</option></select></label>
+            <label data-life-field="period" hidden>记录<select name="period_event"><option value="start">今天开始</option><option value="flow">经期中</option><option value="end">今天结束</option><option value="symptom">身体感受</option></select></label>
+            <label data-life-field="period" hidden>感受与症状<input name="symptoms" maxlength="160" placeholder="例如：轻微腹痛、情绪平稳"></label>
+            <label data-life-field="meal" hidden>哪一顿<select name="meal_type"><option>早餐</option><option>午餐</option><option>晚餐</option><option>加餐</option><option>饮水</option></select></label>
+            <label data-life-field="meal" hidden>吃了什么<input name="meal_content" maxlength="160" placeholder="例如：番茄鸡蛋面"></label>
+            <label class="life-note">补充<textarea name="note" rows="3" maxlength="3000" placeholder="可不填"></textarea></label>
+            <label class="check-label life-share"><input name="visible_to_ai" type="checkbox"> 允许当前人格在聊天中参考</label>
+            <div class="form-actions"><span class="save-state" id="lifeRecordStatus"></span><button class="primary">记下来</button></div>
+          </form>
+          <div id="lifeRecordList" class="life-record-list"></div>
+          <p class="privacy-note">记录按当前人格分开保存。未勾选时，不会提供给 AI；健康记录只用于个人整理，不能替代医疗建议。</p>
         </section>
 
         <section class="tab" id="tab-journal">
