@@ -6,6 +6,9 @@ function updateTypingPresence(){const target=$("#typingPresence"),enabled=state.
 function consumeTypingContext(){if(state.settings.typing_presence_enabled===false)return "";const now=Date.now(),duration=typingSession.startedAt?Math.max(1,Math.round((now-typingSession.startedAt)/1000)):0,paused=typingSession.lastAt?Math.max(0,Math.round((now-typingSession.lastAt)/1000)):0,keystrokes=typingSession.keystrokes,abandoned=localStorage.getItem(typingAbandonedKey())==="1";localStorage.removeItem(typingAbandonedKey());typingSession.startedAt=typingSession.lastAt=typingSession.keystrokes=0;typingSession.hadText=false;return `用户输入约 ${duration} 秒，键盘活动 ${keystrokes} 次，发送前停顿约 ${paused} 秒${abandoned?"；此前曾输入后清空一次":""}。`;}
 const gameState = { catalog: [], current: null, fishing: null, claw: null, slots: null, starMerge: null, maze: null, dungeon: null, starMergeMode: "self", waters: {} };
 const gameRoomPending = [];
+const ddzRanks=["3","4","5","6","7","8","9","10","J","Q","K","A","2"],ddzSuits=["♠","♥","♣","♦"];
+function freshCardRoom(){const deck=ddzSuits.flatMap(suit=>ddzRanks.map(rank=>`${suit}${rank}`)).concat(["小王","大王"]);for(let i=deck.length-1;i>0;i--){const j=Math.floor(Math.random()*(i+1));[deck[i],deck[j]]=[deck[j],deck[i]];}return {mode:"poker",deck,hand:deck.slice(0,17),bottom:deck.slice(51),played:[],turn:0,landlord:null};}
+const cardRoomState=freshCardRoom();
 const roleplayState = { stories: [], current: null, busy: false, phase: "", backstageEpoch: 0 };
 const roleplayPresets={ancient:"古风。请设定朝代氛围、门阀或江湖关系、礼法约束与一件尚未兑现的旧约。",modern:"现代都市。请设定真实生活场景、人物既有关系与一次意外重逢。",mystery:"悬疑。请设定封闭或受限场景、一条可验证线索、隐藏动机与正在逼近的期限。",fantasy:"幻想世界。请设定独特规则、旅途目标、代价与角色命运的交点。",custom:""};
 function dismissLaunchScreen(){const screen=$("#launchScreen");if(!screen||screen.classList.contains("dismissed"))return;screen.classList.add("dismissed");setTimeout(()=>screen.remove(),320);}
@@ -229,7 +232,8 @@ async function addAttachments(files){for(const file of [...files]){if(file.size>
 function personaQuery() { return state.persona ? `?persona_id=${encodeURIComponent(state.persona)}` : ""; }
 
 function renderGameCards() {
-  $("#gameCards").innerHTML = gameState.catalog.map(game => `<button class="game-card ${game.id === gameState.current ? "active" : ""}" data-game-id="${game.id}"><span class="game-card-icon">${game.icon}</span><span><strong>${escapeHtml(game.name)}</strong><small>${escapeHtml(game.description)}</small></span></button>`).join("");
+  const catalog=[...gameState.catalog,{id:"card_room",name:"云芽棋牌室",icon:"♠",description:"四人桌面、轮流出牌和边玩边聊的原创棋牌房间。"}];
+  $("#gameCards").innerHTML = catalog.map(game => `<button class="game-card ${game.id === gameState.current ? "active" : ""}" data-game-id="${game.id}"><span class="game-card-icon">${game.icon}</span><span><strong>${escapeHtml(game.name)}</strong><small>${escapeHtml(game.description)}</small></span></button>`).join("");
   document.querySelectorAll("[data-game-id]").forEach(button => button.onclick = () => openGame(button.dataset.gameId));
 }
 
@@ -250,6 +254,7 @@ function currentGameSave(){return gameState.current==="quiet_fishing"?gameState.
 function storeGameState(gameId,value){if(gameId==="quiet_fishing")gameState.fishing=value;else if(gameId==="claw_machine")gameState.claw=value;else if(gameId==="cloud_slots")gameState.slots=value;else if(gameId==="star_merge")gameState.starMerge=value;else if(gameId==="mist_maze")gameState.maze=value;else if(gameId==="ember_dungeon")gameState.dungeon=value;}
 function renderCurrentGame(gameId=gameState.current){if(gameId==="quiet_fishing")renderFishing();else if(gameId==="claw_machine")renderClaw();else if(gameId==="cloud_slots")renderSlots();else if(gameId==="star_merge")renderStarMerge();else if(gameId==="mist_maze")renderMaze();else if(gameId==="ember_dungeon")renderDungeon();}
 function renderGameRoom(){const current=currentGameSave();if(!current||!gameState.current)return;const name=activePersonaName(),messages=current.room_messages||[],pending=gameRoomPending.filter(item=>item.gameId===gameState.current);$("#gameRoom").hidden=false;$("#gameRoomTitle").textContent=`和 ${name} 边玩边聊`;$("#gameRoomThoughtName").textContent=`${name}的心里话`;$("#gameRoomThought").textContent=current.last_thought||"接过这一回合后，想法会留在这里。";$("#gameRoomContext").textContent=`正在一起玩「${gameNames[gameState.current]}」· 游玩与聊天可同时进行`;$("#gameRoomMessages").innerHTML=[...messages,...pending.flatMap(item=>[{role:"user",content:item.content},{role:"event",content:item.error||`${name} 一边玩，一边在回复这句话…`}])].map(item=>`<div class="game-room-message ${item.role}">${escapeHtml(item.content)}</div>`).join("")||`<div class="game-room-empty">你们还没说话。先玩一步，或者叫一声他的名字。</div>`;$("#gameRoomMessages").scrollTop=$("#gameRoomMessages").scrollHeight;}
+function renderCardRoom(){const s=cardRoomState;$(".seat-top").innerHTML=`${escapeHtml(activePersonaName())}<small>当前人格 · ${s.landlord==="ai"?"地主":"农民"}</small>`;$(".seat-left").innerHTML="等待另一位人格<small>未入座</small>";$(".seat-right").innerHTML="等待另一位人格<small>未入座</small>";$("#cardRoomHand").innerHTML=s.hand.map((card,i)=>`<button class="playing-card ${i===s.turn%Math.max(1,s.hand.length)?"hint":""}" data-card-index="${i}">${card}</button>`).join("");$("#cardRoomPlayed").innerHTML=s.played.map(card=>`<span>${card}</span>`).join("")||"<small>底牌 3 张 · 等待叫地主</small>";$("#cardRoomStatus").textContent=s.turn%2===0?"轮到你出牌":"当前人格正在思考";$("#cardRoomTurn").textContent=s.turn%2===0?"你的回合":"等待下一轮";$("#cardRoomThought").textContent=s.turn%2?`${activePersonaName()}：我正在看这一轮的牌。`:`${activePersonaName()}：先叫地主，还是先观察牌面？`;document.querySelectorAll("[data-card-index]").forEach(button=>button.onclick=()=>{if(s.turn%2)return;const card=s.hand.splice(Number(button.dataset.cardIndex),1)[0];s.played.push(card);s.turn++;setTimeout(()=>{if(s.turn%2&&s.hand.length){s.played.push(s.hand.shift());s.turn++;renderCardRoom();}},500);renderCardRoom();});}
 function renderClaw(){const current=gameState.claw;if(!current)return;$("#clawCoins").textContent=current.coins;$("#clawTurns").textContent=current.turn;$("#clawHead").style.left=`${current.position*20+10}%`;$("#clawPrizes").innerHTML=current.prizes.map((name,index)=>`<span class="${index===current.position?"targeted":""}">◇<small>${escapeHtml(name)}</small></span>`).join("");$("#clawInventory").innerHTML=Object.entries(current.inventory).map(([name,count])=>`<span><b>${escapeHtml(name)}</b><em>× ${count}</em></span>`).join("")||"<small>还没有抓到娃娃。</small>";$("#clawJournal").innerHTML=[...current.journal].reverse().slice(0,8).map(item=>`<span>${escapeHtml(item)}</span>`).join("")||"<small>机器正在等待第一爪。</small>";const today=new Date().toLocaleDateString("sv-SE");$("#clawCheckin").disabled=current.last_checkin===today;$("#clawCheckin").textContent=current.last_checkin===today?"今天已签到":"每日签到 · +50";$("#clawSellAll").disabled=!Object.keys(current.inventory||{}).length;renderGameRoom();}
 function renderSlots(){const current=gameState.slots;if(!current)return;[$("#slotOne"),$("#slotTwo"),$("#slotThree")].forEach((node,index)=>node.textContent=current.reels[index]);$("#slotCoins").textContent=current.coins;$("#slotTurns").textContent=current.turn;$("#slotJournal").innerHTML=[...current.journal].reverse().slice(0,8).map(item=>`<span>${escapeHtml(item)}</span>`).join("")||"<small>拉下摇杆开始。</small>";renderGameRoom();}
 function renderStarMerge(){const current=gameState.starMerge;if(!current)return;const self=gameState.starMergeMode==="self",personaName=activePersonaName();$("#starMergeScore").textContent=current.score;$("#starMergeBest").textContent=current.best;$("#starMergeTurns").textContent=current.turn;$("#starMergeStatus").textContent=current.status==="won"?"已经合成 2048":current.status==="over"?"本局结束":"进行中";$("#starMergeBoard").innerHTML=current.board.map(value=>`<span class="star-tile" data-value="${value||0}">${value||""}</span>`).join("");$("#starMergeJournal").innerHTML=[...(current.journal||[])].reverse().slice(0,8).map(item=>`<span>${escapeHtml(item)}</span>`).join("")||"<small>移动一次，星潮就会开始留下记录。</small>";$("#starGoalName").textContent=`${personaName}的目标`;$("#starModeSelf").classList.toggle("active",self);$("#starModeAi").classList.toggle("active",!self);$("#starDirectionPad").hidden=!self;$("#starTurnOwner").textContent=self?"现在由你掌舵":`现在交给 ${personaName}`;$("#undoStarMerge").disabled=!(current.history||[]).length;if(gameState.current==="star_merge")$("#aiGameControls").hidden=self;renderGameRoom();}
@@ -259,10 +264,11 @@ function setStarMergeMode(mode){gameState.starMergeMode=mode==="ai"?"ai":"self";
 
 async function openGame(gameId) {
   gameState.current = gameId;localStorage.setItem("atherloom:last-game",gameId); renderGameCards();
-  $("#gameEmpty").hidden=true;$("#fishingStage").hidden=gameId!=="quiet_fishing";$("#clawStage").hidden=gameId!=="claw_machine";$("#slotsStage").hidden=gameId!=="cloud_slots";$("#starMergeStage").hidden=gameId!=="star_merge";$("#mazeStage").hidden=gameId!=="mist_maze";$("#dungeonStage").hidden=gameId!=="ember_dungeon";
+  $("#gameEmpty").hidden=true;$("#cardRoomStage").hidden=gameId!=="card_room";$("#fishingStage").hidden=gameId!=="quiet_fishing";$("#clawStage").hidden=gameId!=="claw_machine";$("#slotsStage").hidden=gameId!=="cloud_slots";$("#starMergeStage").hidden=gameId!=="star_merge";$("#mazeStage").hidden=gameId!=="mist_maze";$("#dungeonStage").hidden=gameId!=="ember_dungeon";
   $("#aiGameControls").hidden=!Object.keys(gameNames).includes(gameId);$("#gameRoom").hidden=!Object.keys(gameNames).includes(gameId);
   $("#aiGameTitle").textContent=`交给 ${activePersonaName()}`;
   $("#aiGameStatus").textContent=gameId==="star_merge"?"当前人格会读取完整棋盘，只能选择上下左右；每一步都由 Atherloom 验证。":"当前人格会读取局面，只能执行可用动作；单次预算最多 30 云贝。";
+  if(gameId==="card_room"){renderCardRoom();return;}
   if(!Object.keys(gameNames).includes(gameId)){$("#gameEmpty").hidden=false;const game=gameState.catalog.find(item=>item.id===gameId);$("#gameEmpty").innerHTML=`<span>${game.icon}</span><h3>${escapeHtml(game.name)}</h3><p>${escapeHtml(game.description)}</p>`;return;}
   const payload = await api(`/api/games/${gameId}/state${personaQuery()}`);
   storeGameState(gameId,payload.state);if(gameId==="quiet_fishing")gameState.waters=payload.waters;renderCurrentGame(gameId);
@@ -681,9 +687,21 @@ function exportLocalBackup() {
     } else data[key] = localStorage.getItem(key);
   }
   const bundle = { format: "atherloom-backup", version: 1, exported_at: new Date().toISOString(), data };
-  const blob = new Blob([JSON.stringify(bundle, null, 2)], { type: "application/json;charset=utf-8" });
-  const link = document.createElement("a"); link.href = URL.createObjectURL(blob); link.download = `atherloom-backup-${new Date().toISOString().slice(0, 10)}.json`; link.click(); URL.revokeObjectURL(link.href);
-  $("#backupState").textContent = "备份已导出；API Key 未包含。";
+  const content=JSON.stringify(bundle,null,2),fileName=`atherloom-backup-${new Date().toISOString().replace(/[:.]/g,"-")}.json`;
+  if(window.AtherloomNative?.saveBackup){
+    try{
+      const result=JSON.parse(window.AtherloomNative.saveBackup(fileName,content));
+      if(!result.ok)throw new Error(result.error||"系统没有返回保存结果");
+      $("#backupState").textContent=`备份成功：${result.location}（API Key 未包含）`;
+      return;
+    }catch(error){
+      $("#backupState").textContent=`备份失败：${error.message}`;
+      return;
+    }
+  }
+  const blob = new Blob([content], { type: "application/json;charset=utf-8" });
+  const link = document.createElement("a"); link.href = URL.createObjectURL(blob); link.download = fileName; link.click(); setTimeout(()=>URL.revokeObjectURL(link.href),1000);
+  $("#backupState").textContent = `已交给浏览器下载：${fileName}。具体位置请查看浏览器下载记录；API Key 未包含。`;
 }
 
 async function restoreLocalBackup(file) {
@@ -1062,12 +1080,16 @@ $("#quickPhraseButton").onclick=e=>{e.stopPropagation();const phrases=activePers
 document.addEventListener("click", event => { if (!event.target.closest(".popover")) closePopovers(); if(!event.target.closest("#attachmentMenu")&&!event.target.closest("#attachmentButton"))$("#attachmentMenu").hidden=true; });
 document.addEventListener("keydown", event => { if (event.key === "Escape") closePopovers(); });
 function setSidebar(open){$("#sidebar").classList.toggle("open",open);$("#sidebarBackdrop").hidden=!open;}
-$("#mobileMenu").onclick=()=>setSidebar(true);$("#sidebarClose").onclick=()=>setSidebar(false);$("#sidebarToggle").onclick=()=>{if(innerWidth<=760)setSidebar(false);};$("#sidebarBackdrop").onclick=()=>setSidebar(false);document.querySelectorAll("#sidebar .new-chat,#sidebar .profile-row,#sidebar .history-item").forEach(button=>button.addEventListener("click",()=>setSidebar(false)));
+$("#mobileMenu").onclick=()=>setSidebar(true);$("#sidebarClose").onclick=()=>setSidebar(false);$("#sidebarToggle").onclick=()=>{if(innerWidth<=760)setSidebar(false);};$("#sidebarBackdrop").onclick=()=>setSidebar(false);document.querySelectorAll("#sidebar .new-chat:not(.sidebar-hub-toggle),#sidebar .profile-row,#sidebar .history-item").forEach(button=>button.addEventListener("click",()=>setSidebar(false)));
 window.AtherloomHandleBack=()=>{if(!$("#callSpace").hidden){endVoiceCall();$("#callSpace").hidden=true;return true;}if(!$("#roleplaySpace").hidden){$("#roleplaySpace").hidden=true;return true;}if(!$("#mediaSpace").hidden){$("#mediaSpace").hidden=true;$("#moviePlayer").pause();return true;}if(!$("#favoritesSpace").hidden){$("#favoritesSpace").hidden=true;return true;}if(!$("#gameLibrary").hidden){$("#gameLibrary").hidden=true;return true;}if($("#settingsPanel").classList.contains("open")){closeSettings();return true;}if($("#sidebar").classList.contains("open")){setSidebar(false);return true;}if([...document.querySelectorAll(".popover")].some(item=>!item.hidden)){closePopovers();return true;}return false;};
 $("#themeSelect").onchange = e => { document.documentElement.dataset.theme = e.target.value === "system" ? "" : e.target.value; localStorage.setItem("theme", e.target.value); };
 $("#exportBackup").onclick = exportLocalBackup;
 $("#chooseBackup").onclick = () => $("#backupFile").click();
 $("#backupFile").onchange = async event => { const file = event.target.files?.[0]; if (!file) return; try { await restoreLocalBackup(file); } catch (error) { $("#backupState").textContent = `恢复失败：${error.message}`; } finally { event.target.value = ""; } };
+$("#cardRoomDraw").onclick=()=>{if(cardRoomState.turn%2===0&&cardRoomState.hand.length){cardRoomState.played.push(cardRoomState.hand.shift());cardRoomState.turn++;setTimeout(()=>{if(cardRoomState.hand.length){cardRoomState.played.push(cardRoomState.hand.shift());cardRoomState.turn++;renderCardRoom();}},500);renderCardRoom();}};
+$("#cardRoomPass").onclick=()=>{cardRoomState.turn++;renderCardRoom();};
+$("#cardRoomReset").onclick=()=>{Object.assign(cardRoomState,freshCardRoom());renderCardRoom();};
+document.querySelectorAll("[data-card-mode]").forEach(button=>button.onclick=()=>{document.querySelectorAll("[data-card-mode]").forEach(item=>item.classList.toggle("active",item===button));cardRoomState.mode=button.dataset.cardMode;$("#cardRoomStatus").textContent=cardRoomState.mode==="mahjong"?"月亮麻将仍在设计中；当前可玩云朵扑克原型":"轮到你出牌";});
 const theme = localStorage.getItem("theme") || "system"; $("#themeSelect").value = theme; if (theme !== "system") document.documentElement.dataset.theme = theme;
 bootstrap().catch(error => { console.error(error); openSettings("providers"); });
 updateProviderCacheUI();
