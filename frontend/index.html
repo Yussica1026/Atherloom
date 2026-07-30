@@ -603,11 +603,12 @@
   <script src="assets/app.js?v=0520" defer></script>
   <script>
     if ('serviceWorker' in navigator) {
-      navigator.serviceWorker.register('service-worker.js?v=107', { updateViaCache: 'none' }).then(registration => registration.update());
-      // Never reload an active room when a new shell takes control. The fresh
-      // assets are used on the next natural navigation/open instead.
+      navigator.serviceWorker.register('service-worker.js?v=130', { updateViaCache: 'none' }).then(registration => registration.update());
       navigator.serviceWorker.addEventListener('controllerchange', () => {
-        document.documentElement.dataset.shellUpdated = 'true';
+        if (!sessionStorage.getItem('atherloom-shell-reloaded')) {
+          sessionStorage.setItem('atherloom-shell-reloaded', '1');
+          window.location.reload();
+        }
       });
     }
   </script>
