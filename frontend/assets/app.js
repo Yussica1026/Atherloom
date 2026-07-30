@@ -336,6 +336,7 @@ function renderMessages({stickToBottom=true}={}) {
     ${m.role === "assistant" && m.model ? `<div class="message-meta">${escapeHtml(m.model)}</div>` : ""}</article>`; }).join("");
   document.querySelectorAll(".message [data-action]").forEach(button => button.onclick = () => handleMessageAction(button.closest(".message"), button.dataset.action));
   document.querySelectorAll("[data-question-option]").forEach(button=>button.onclick=()=>{const input=$("#prompt"),line=`关于「${decodeURIComponent(button.dataset.questionTitle)}」，我的选择是：${decodeURIComponent(button.dataset.questionOption)}`;input.value=input.value.trim()?`${input.value.trim()}\n${line}`:line;button.closest(".question-card").querySelectorAll("button").forEach(item=>item.classList.toggle("selected",item===button));input.dispatchEvent(new Event("input"));input.focus();});
+  document.querySelectorAll(".message.assistant").forEach(article=>{const message=state.messages[Number(article.dataset.index)],meta=article.querySelector(".message-meta");if(message?.model&&meta){const usage=message.usage?.total_tokens??(message.content?estimateTokens(message.content)+estimateTokens(message.reasoning||""):null);if(usage!=null)meta.textContent=`${message.model} · ≈${Number(usage).toLocaleString()} tokens`;}});
   if(stickToBottom)$("#chatScroll").scrollTop = $("#chatScroll").scrollHeight;
   renderContextUsage();
 }
@@ -373,7 +374,10 @@ function openMessageEditor(message){if(!message)return;const editor=$("#messageE
 
 function renderPickers() {
   const provider = activeProvider(); const persona = activePersona();
-  $("#modelPicker").textContent = provider ? `${provider.name} · ${provider.model}⌄` : "添加 API 线路";
+  let latestUsage=[...state.messages].reverse().find(item=>item.role==="assistant"&&item.usage)?.usage;
+  if(!latestUsage){const last=[...state.messages].reverse().find(item=>item.role==="assistant"&&!item.pending);if(last)latestUsage={total_tokens:estimateTokens(last.content||"")+estimateTokens(last.reasoning||"")};}
+  const tokenLabel=latestUsage?.total_tokens!=null?` · ${Number(latestUsage.total_tokens).toLocaleString()} tokens`:latestUsage?.output_tokens!=null?` · ${Number(latestUsage.output_tokens).toLocaleString()} out`:" · tokens—";
+  $("#modelPicker").textContent = provider ? `${provider.name} · ${provider.model}${tokenLabel}⌄` : "添加 API 线路";
   $("#personaPicker").textContent = persona ? `${persona.name}⌄` : "默认人格⌄";
   const phrases=persona?.config?.quick_phrases||[];$("#quickPhraseButton").hidden=!phrases.length;
 }
@@ -520,7 +524,7 @@ function updateStreamingMessage(message,messages=state.messages,conversationId=s
   if(message.memory_sources?.length){let sources=article.querySelector(".memory-sources");if(!sources){sources=document.createElement("div");sources.className="memory-sources";body.insertBefore(sources,body.firstChild);}sources.innerHTML=`本轮使用记忆：${message.memory_sources.map(source=>`<span>${escapeHtml(source.title)}</span>`).join("")}`;}
   if(message.reasoning){let thinking=article.querySelector(".thinking");if(!thinking){thinking=document.createElement("details");thinking.className="thinking";thinking.open=true;thinking.innerHTML="<summary>思考过程</summary><div></div>";body.insertBefore(thinking,bubble);}const reasoning=thinking.querySelector("div");if(reasoning.textContent!==message.reasoning)reasoning.textContent=message.reasoning;}
   if(bubble){if(message.role==="assistant"&&message.streaming){if(message.content){if(bubble.childNodes.length===1&&bubble.firstChild?.nodeType===Node.TEXT_NODE)bubble.firstChild.nodeValue=message.content;else bubble.replaceChildren(document.createTextNode(message.content));}}else bubble.innerHTML=message.role==="assistant"?renderAssistantContent(message.content):escapeHtml(message.content);}
-  scheduleStreamingScroll();
+  renderPickers();scheduleStreamingScroll();
 }
 
 function createStreamPresenter(message, animated, messages=state.messages, conversationId=state.current) {
