@@ -1140,18 +1140,22 @@ function renderBookNotes(){
 const bookEncodingLabels={utf8:"UTF-8",gb18030:"GB18030 / GBK",big5:"Big5",utf16le:"UTF-16 LE",utf16be:"UTF-16 BE"};
 function bookTextScore(text){const replacements=(text.match(/\uFFFD/g)||[]).length,controls=(text.match(/[\u0000-\u0008\u000B\u000C\u000E-\u001F]/g)||[]).length,mojibake=(text.match(/[ÃÂåäæçéèïð]/g)||[]).length+(text.match(/(?:锟斤拷|烫烫烫|屯屯屯)/g)||[]).length*8,readable=(text.match(/[\u3400-\u9FFF，。！？；：“”‘’（）《》]/g)||[]).length;return replacements*100+controls*25+mojibake*4-Math.min(readable,500)*.02;}
 function decodeBookBytes(buffer){const bytes=new Uint8Array(buffer),bom=bytes.length>=2?(bytes[0]<<8)|bytes[1]:0,preferred=bom===0xFFFE?["utf-16le"]:bom===0xFEFF?["utf-16be"]:bytes[0]===0xEF&&bytes[1]===0xBB&&bytes[2]===0xBF?["utf-8"]:((bytes.filter((value,index)=>index%2===0&&value===0).length>bytes.length/8)?["utf-16be"]:(bytes.filter((value,index)=>index%2===1&&value===0).length>bytes.length/8)?["utf-16le"]:[]);try{if(!preferred.length||preferred[0]==="utf-8"){const text=new TextDecoder("utf-8",{fatal:true}).decode(bytes).replace(/^\uFEFF/,"");return {text,encoding:"utf-8",score:bookTextScore(text)};}}catch{}const candidates=[...new Set([...preferred,"gb18030","big5","utf-8"])],decoded=[];for(const encoding of candidates){try{const text=new TextDecoder(encoding,{fatal:encoding==="utf-8"}).decode(bytes).replace(/^\uFEFF/,"");decoded.push({text,encoding,score:bookTextScore(text)-(preferred[0]===encoding?20:0)});}catch{}}if(!decoded.length)throw new Error("无法识别这本书的文字编码");return decoded.sort((a,b)=>a.score-b.score)[0];}
+function detectBookFormat(buffer,file){const bytes=new Uint8Array(buffer),head=new TextDecoder("latin1").decode(bytes.slice(0,80)),name=String(file?.name||"");if(head.startsWith("%PDF-")||file?.type==="application/pdf"||/\.pdf$/i.test(name))return "pdf";if(bytes[0]===0x50&&bytes[1]===0x4B&&bytes[2]===0x03&&bytes[3]===0x04)return "zip";if(head.includes("BOOKMOBI")||/\.(mobi|azw3?)$/i.test(name))return "mobi";return "text";}
+function validateBookText(text){const sample=String(text||"").slice(0,12000),visible=sample.match(/[^\s\u0000-\u001F]/g)?.length||0,letters=sample.match(/[\p{L}\p{Script=Han}]/gu)?.length||0,numbers=sample.match(/\d/g)?.length||0;if(!sample.trim())throw new Error("文件里没有可读取的正文");if(bookTextScore(sample)>Math.max(80,sample.length*.08)||visible>200&&letters/visible<.08&&numbers/visible>.45)throw new Error("检测到的不是正常正文，可能是 PDF/EPUB/MOBI 等电子书内部数据；请确认文件格式，或先导出为 TXT/Markdown");}
 async function openLocalBook(file) {
   if (!file) return;
   const reader = $("#bookReader");
   const status = $("#bookStatus");
   const key = `atherloom:book:${file.name}:${file.size}`;
-  const isPdf = file.type === "application/pdf" || /\.pdf$/i.test(file.name);
   currentBook=null;setBookControls(false);renderBookNotes();
   status.textContent = `${file.name} · 正在打开…`;
   await new Promise(resolve => requestAnimationFrame(resolve));
   try {
+    const limit = 2 * 1024 * 1024;
+    const buffer=await file.slice(0,limit).arrayBuffer(),format=detectBookFormat(buffer,file),isPdf=format==="pdf";
     if (bookObjectUrl) { URL.revokeObjectURL(bookObjectUrl); bookObjectUrl = undefined; }
     reader.onscroll = null;
+    if(format==="zip"||format==="mobi")throw new Error(format==="zip"?"检测到 EPUB/ZIP 电子书；当前版本不能直接读取，请先导出为 TXT/Markdown":"检测到 MOBI/AZW 电子书；当前版本不能直接读取，请先导出为 TXT/Markdown");
     if (isPdf && window.AtherloomNative) {
       reader.innerHTML = `<div class="game-empty"><span>PDF</span><h3>安卓暂不在应用内打开 PDF</h3><p>部分 Android WebView 打开本地 PDF 会卡死。请先转成 TXT 或 Markdown；后续接入原生 PDF 阅读器。</p></div>`;
       status.textContent = `${file.name} · 已安全拦截`;
@@ -1164,9 +1168,9 @@ async function openLocalBook(file) {
       status.textContent = `${file.name} · 本地 PDF；书签、批注与 AI 共读暂支持 TXT/Markdown`;
       return;
     }
-    const limit = 2 * 1024 * 1024;
-    const decoded = decodeBookBytes(await file.slice(0, limit).arrayBuffer());
+    const decoded = decodeBookBytes(buffer);
     const text = decoded.text;
+    validateBookText(text);
     const pre = document.createElement("pre");
     pre.textContent = text;
     reader.replaceChildren(pre);
@@ -1191,7 +1195,7 @@ function renderHistory() {
   const archived = scoped.filter(c => c.archived);
   $("#history").innerHTML = group("置顶", pinned) + group("星标", starred) + group("最近", recent) + group("已归档", archived) || `<p class="muted" style="padding:8px 11px">还没有对话</p>`;
   document.querySelectorAll(".history-item").forEach(button => button.onclick = () => { setSidebar(false); openConversation(button.dataset.id); });
-  document.querySelectorAll("[data-history-action]").forEach(button => button.onclick = () => updateHistoryState(button.dataset.id, button.dataset.historyAction));
+  document.querySelectorAll("[data-history-action]").forEach(button => button.onclick = event => {event.stopPropagation();updateHistoryState(button.dataset.id, button.dataset.historyAction).catch(error=>alert(`对话操作失败：${error.message}`));});
   renderSidebarPersonas();
 }
 
@@ -1368,7 +1372,7 @@ function renderAssistantContent(content){const parts=assistantContentParts(conte
 function renderMessages({stickToBottom=true}={}) {
   $("#welcome").hidden = state.messages.length > 0;
   $("#messages").innerHTML = visibleMessageVersions().map(m => { const index=state.messages.indexOf(m); return `<article class="message ${m.role}" data-index="${index}">
-    <div class="message-body">${m.memory_sources?.length ? `<div class="memory-sources">本轮使用记忆：${m.memory_sources.map(source => `<span>${escapeHtml(source.title)}</span>`).join("")}</div>` : ""}${m.reasoning ? `<details class="thinking" open><summary>思考过程</summary><div>${escapeHtml(m.reasoning)}</div></details>` : ""}<div class="bubble">${m.pending && !m.content ? `<span class="response-waiting"><i></i>正在生成</span>` : m.role === "assistant" && !m.streaming ? renderAssistantContent(m.content) : escapeHtml(m.content)}</div></div>
+    <div class="message-body">${m.memory_sources?.length ? `<div class="memory-sources">本轮使用记忆：${m.memory_sources.map(source => `<span>${escapeHtml(source.title)}</span>`).join("")}</div>` : ""}${m.reasoning ? `<details class="thinking"><summary>思考过程（点开查看）</summary><div>${escapeHtml(m.reasoning)}</div></details>` : ""}<div class="bubble">${m.pending && !m.content ? `<span class="response-waiting"><i></i>正在生成</span>` : m.role === "assistant" && !m.streaming ? renderAssistantContent(m.content) : escapeHtml(m.content)}</div></div>
     ${m.pending ? "" : `<div class="message-actions"><button data-action="copy">复制</button>${m.id ? `<button data-action="favorite">${state.favorites.some(f => f.source_message_id === m.id && f.owners?.includes("user")) ? "★ 已珍藏" : "☆ 珍藏"}</button>` : ""}<button data-action="edit">修改</button>${m.role === "user" || m.parent_message_id || m.retry_content ? `<button data-action="regenerate">重新 Roll</button>` : ""}${m.id ? `<button data-action="more" aria-label="更多消息操作">•••</button>` : ""}</div>`}
     ${m.role === "assistant" && m._version_count > 1 ? `<div class="version-switcher"><button data-action="version-prev" ${m._version_index === 0 ? "disabled" : ""}>‹</button><span>${m._version_index + 1} / ${m._version_count}</span><button data-action="version-next" ${m._version_index === m._version_count - 1 ? "disabled" : ""}>›</button></div>` : ""}
     ${m.role === "assistant" && m.model ? `<div class="message-meta">${escapeHtml(m.model)}</div>` : ""}</article>`; }).join("");
@@ -1560,7 +1564,7 @@ function updateStreamingMessage(message,messages=state.messages,conversationId=s
   if(!article){renderMessages({stickToBottom:streamFollow});return;}
   const body=article.querySelector(".message-body"),bubble=article.querySelector(".bubble");
   if(message.memory_sources?.length){let sources=article.querySelector(".memory-sources");if(!sources){sources=document.createElement("div");sources.className="memory-sources";body.insertBefore(sources,body.firstChild);}sources.innerHTML=`本轮使用记忆：${message.memory_sources.map(source=>`<span>${escapeHtml(source.title)}</span>`).join("")}`;}
-  if(message.reasoning){let thinking=article.querySelector(".thinking");if(!thinking){thinking=document.createElement("details");thinking.className="thinking";thinking.open=true;thinking.innerHTML="<summary>思考过程</summary><div></div>";body.insertBefore(thinking,bubble);}const reasoning=thinking.querySelector("div");if(reasoning.textContent!==message.reasoning)reasoning.textContent=message.reasoning;}
+  if(message.reasoning){let thinking=article.querySelector(".thinking");if(!thinking){thinking=document.createElement("details");thinking.className="thinking";thinking.innerHTML="<summary>思考过程（点开查看）</summary><div></div>";body.insertBefore(thinking,bubble);}const reasoning=thinking.querySelector("div");if(reasoning.textContent!==message.reasoning)reasoning.textContent=message.reasoning;}
   if(bubble){if(message.role==="assistant"&&message.streaming){if(message.content){if(bubble.childNodes.length===1&&bubble.firstChild?.nodeType===Node.TEXT_NODE)bubble.firstChild.nodeValue=message.content;else bubble.replaceChildren(document.createTextNode(message.content));}}else bubble.innerHTML=message.role==="assistant"?renderAssistantContent(message.content):escapeHtml(message.content);}
   renderPickers();scheduleStreamingScroll();
 }
