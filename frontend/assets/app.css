@@ -90,3 +90,4 @@ html,body{width:100%;min-width:0;overflow:hidden}.app-shell{height:100vh;height:
 #bookAiChat{min-height:130px;max-height:34dvh}
 .avatar{background:color-mix(in srgb,var(--accent) 28%,var(--surface));color:var(--accent-dark);border:1px solid color-mix(in srgb,var(--accent) 36%,var(--border))}
 .sidebar-persona-avatar{background:color-mix(in srgb,var(--accent) 14%,var(--surface));color:var(--accent-dark);border-color:color-mix(in srgb,var(--accent) 36%,var(--border))}
+.flower-pot img.pixel-flower{display:block;object-fit:contain;background:none}.seed-menu img.pixel-flower.tiny{display:inline-block;object-fit:contain;background:none}
