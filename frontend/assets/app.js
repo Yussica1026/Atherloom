@@ -794,9 +794,10 @@ function exportLocalBackup() {
     } else data[key] = localStorage.getItem(key);
   }
   const bundle = { format: "atherloom-backup", version: 1, exported_at: new Date().toISOString(), data };
-  const blob = new Blob([JSON.stringify(bundle, null, 2)], { type: "application/json;charset=utf-8" });
-  const link = document.createElement("a"); link.href = URL.createObjectURL(blob); link.download = `atherloom-backup-${new Date().toISOString().slice(0, 10)}.json`; link.click(); URL.revokeObjectURL(link.href);
-  $("#backupState").textContent = "备份已导出；API Key 未包含。";
+  const content=JSON.stringify(bundle,null,2),fileName=`atherloom-backup-${new Date().toISOString().replace(/[:.]/g,"-")}.json`;
+  const blob = new Blob([content], { type: "application/json;charset=utf-8" });
+  const link = document.createElement("a"); link.href = URL.createObjectURL(blob); link.download = fileName; link.click(); setTimeout(()=>URL.revokeObjectURL(link.href),1000);
+  $("#backupState").textContent = `已交给浏览器下载：${fileName}。具体位置请查看浏览器下载记录；API Key 未包含。`;
 }
 
 async function restoreLocalBackup(file) {
@@ -1193,7 +1194,7 @@ $("#quickPhraseButton").onclick=e=>{e.stopPropagation();const phrases=activePers
 document.addEventListener("click", event => { if (!event.target.closest(".popover")) closePopovers(); if(!event.target.closest("#attachmentMenu")&&!event.target.closest("#attachmentButton"))$("#attachmentMenu").hidden=true; });
 document.addEventListener("keydown", event => { if (event.key === "Escape") closePopovers(); });
 function setSidebar(open){$("#sidebar").classList.toggle("open",open);$("#sidebarBackdrop").hidden=!open;}
-$("#mobileMenu").onclick=()=>setSidebar(true);$("#sidebarClose").onclick=()=>setSidebar(false);$("#sidebarToggle").onclick=()=>{if(innerWidth<=760)setSidebar(false);};$("#sidebarBackdrop").onclick=()=>setSidebar(false);document.querySelectorAll("#sidebar .new-chat,#sidebar .profile-row,#sidebar .history-item").forEach(button=>button.addEventListener("click",()=>setSidebar(false)));
+$("#mobileMenu").onclick=()=>setSidebar(true);$("#sidebarClose").onclick=()=>setSidebar(false);$("#sidebarToggle").onclick=()=>{if(innerWidth<=760)setSidebar(false);};$("#sidebarBackdrop").onclick=()=>setSidebar(false);document.querySelectorAll("#sidebar .new-chat:not(.sidebar-hub-toggle),#sidebar .profile-row,#sidebar .history-item").forEach(button=>button.addEventListener("click",()=>setSidebar(false)));
 window.AtherloomHandleBack=()=>{if(!$("#callSpace").hidden){endVoiceCall();$("#callSpace").hidden=true;return true;}if(!$("#roleplaySpace").hidden){$("#roleplaySpace").hidden=true;return true;}if(!$("#mediaSpace").hidden){$("#mediaSpace").hidden=true;$("#moviePlayer").pause();return true;}if(!$("#favoritesSpace").hidden){$("#favoritesSpace").hidden=true;return true;}if(!$("#gameLibrary").hidden){$("#gameLibrary").hidden=true;return true;}if($("#settingsPanel").classList.contains("open")){closeSettings();return true;}if($("#sidebar").classList.contains("open")){setSidebar(false);return true;}if([...document.querySelectorAll(".popover")].some(item=>!item.hidden)){closePopovers();return true;}return false;};
 $("#themeSelect").onchange = e => { document.documentElement.dataset.theme = e.target.value === "system" ? "" : e.target.value; localStorage.setItem("theme", e.target.value); };
 $("#exportBackup").onclick = exportLocalBackup;
@@ -1204,4 +1205,4 @@ bootstrap().catch(error => { console.error(error); openSettings("providers"); })
 updateProviderCacheUI();
 setInterval(renderTimeGreeting, 60_000);
 const _atherloomOpenGame=openGame;openGame=async function(gameId){if(gameId==="card_room"){gameState.current=gameId;document.querySelectorAll("#homesteadStage,#cardRoomStage,#fishingStage,#clawStage,#slotsStage,#starMergeStage,#mazeStage,#dungeonStage").forEach(stage=>stage.hidden=stage.id!=="cardRoomStage");$("#gameEmpty").hidden=true;$("#aiGameControls").hidden=true;$("#gameRoom").hidden=true;renderCardRoom();return;}return _atherloomOpenGame(gameId);};
-$("#cardRoomDraw").onclick=()=>{if(cardRoomState.turn%2===0&&cardRoomState.hand.length){cardRoomState.played.push(cardRoomState.hand.shift());cardRoomState.turn++;setTimeout(()=>{if(cardRoomState.hand.length){cardRoomState.played.push(cardRoomState.hand.shift());cardRoomState.turn++;renderCardRoom();}},500);renderCardRoom();}};$("#cardRoomPass").onclick=()=>{cardRoomState.turn++;renderCardRoom();};$("#cardRoomReset").onclick=()=>{cardRoomState.hand=["☁ 3","✦ 7","◇ 9","☾ J","✿ A"];cardRoomState.played=[];cardRoomState.turn=0;renderCardRoom();};document.querySelectorAll("[data-card-mode]").forEach(button=>button.onclick=()=>{document.querySelectorAll("[data-card-mode]").forEach(item=>item.classList.toggle("active",item===button));cardRoomState.mode=button.dataset.cardMode;$("#cardRoomStatus").textContent=cardRoomState.mode==="mahjong"?"月亮麻将牌面准备中，先试试轮流出牌":"轮到你出牌";});
+$("#cardRoomDraw").onclick=()=>{if(cardRoomState.turn%2===0&&cardRoomState.hand.length){cardRoomState.played.push(cardRoomState.hand.shift());cardRoomState.turn++;setTimeout(()=>{if(cardRoomState.hand.length){cardRoomState.played.push(cardRoomState.hand.shift());cardRoomState.turn++;renderCardRoom();}},500);renderCardRoom();}};$("#cardRoomPass").onclick=()=>{cardRoomState.turn++;renderCardRoom();};$("#cardRoomReset").onclick=()=>{Object.assign(cardRoomState,freshCardRoom());renderCardRoom();};document.querySelectorAll("[data-card-mode]").forEach(button=>button.onclick=()=>{document.querySelectorAll("[data-card-mode]").forEach(item=>item.classList.toggle("active",item===button));cardRoomState.mode=button.dataset.cardMode;$("#cardRoomStatus").textContent=cardRoomState.mode==="mahjong"?"月亮麻将牌面准备中，先试试轮流出牌":"轮到你出牌";});
