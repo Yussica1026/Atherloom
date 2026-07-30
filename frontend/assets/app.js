@@ -414,6 +414,7 @@ function renderMessages({stickToBottom=true}={}) {
     ${m.role === "assistant" && m.model ? `<div class="message-meta">${escapeHtml(m.model)}</div>` : ""}</article>`; }).join("");
   document.querySelectorAll(".message [data-action]").forEach(button => button.onclick = () => handleMessageAction(button.closest(".message"), button.dataset.action));
   document.querySelectorAll("[data-question-option]").forEach(button=>button.onclick=()=>{const input=$("#prompt"),line=`关于「${decodeURIComponent(button.dataset.questionTitle)}」，我的选择是：${decodeURIComponent(button.dataset.questionOption)}`;input.value=input.value.trim()?`${input.value.trim()}\n${line}`:line;button.closest(".question-card").querySelectorAll("button").forEach(item=>item.classList.toggle("selected",item===button));input.dispatchEvent(new Event("input"));input.focus();});
+  document.querySelectorAll(".message.assistant").forEach(article=>{const message=state.messages[Number(article.dataset.index)],meta=article.querySelector(".message-meta");if(message?.model&&meta){const usage=message.usage?.total_tokens??(message.content?estimateTokens(message.content)+estimateTokens(message.reasoning||""):null);if(usage!=null)meta.textContent=`${message.model} · ≈${Number(usage).toLocaleString()} tokens`;}});
   if(stickToBottom)$("#chatScroll").scrollTop = $("#chatScroll").scrollHeight;
   renderContextUsage();
 }
