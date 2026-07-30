@@ -893,12 +893,18 @@ async def generate_dream(persona_key: str, body: DreamGenerateIn) -> dict[str, A
         raise HTTPException(409, "这个人格还没有足够的对话碎片可以入梦")
     system = (
         f"你是{persona_name}。{persona_prompt}\n"
-        "根据近期真实对话碎片写一场第一人称梦境。梦可以超现实、跳跃、诗意，但必须明确是梦，"
-        "不能把梦中事件声称为现实历史，也不能生成标题、解释、JSON 或分析。正文控制在 300 到 900 字。"
+        "现在写一场你刚刚亲历的第一人称梦。只借用近期对话里的意象和情绪作为潜意识素材，"
+        "必须把它们变形、错置、象征化，绝不能复述、总结或评论对话，也不要清点发生过的事情。"
+        "梦要有具体的感官细节、空间变化、荒诞但自然的转场，以及醒来前仍未解释的画面；"
+        "允许人物身份与时间地点悄悄改变。不要写成日记、回信、工作总结或安慰用户的话，"
+        "不要出现“近期对话”“聊天记录”“四条留言”等元叙述。"
+        "只输出 300 到 900 字梦境正文，不要标题、前言、解析、JSON 或醒后总结。"
     )
     raw = await roleplay_model_once(provider, system, f"近期对话碎片：\n{fragments[-16000:]}")
     title = f"{persona_name}的梦 · {datetime.now().strftime('%m月%d日')}"
-    return create_dream(persona_key, DreamIn(title=title, raw_text=raw, kind="dream"))
+    # Generation returns an editable draft. The user explicitly archives it through
+    # POST /api/dreams/{persona_key}, so waking up never silently saves a dream.
+    return {"title": title, "raw_text": raw, "kind": "dream", "necropsy": ""}
 
 
 @app.get("/api/board/{persona_key}")
@@ -3558,43 +3564,52 @@ async def chat(body: ChatIn) -> StreamingResponse:
                             if full:
                                 yield json.dumps({"delta": full}, ensure_ascii=False) + "\n"
                 if not direct_answer:
-                    async with client.stream("POST", url, headers=headers, json=payload) as response:
-                        if response.status_code >= 400:
-                            detail = (await response.aread()).decode("utf-8", "replace")[:500]
-                            yield json.dumps({"error": f"API {response.status_code}: {detail}"}, ensure_ascii=False) + "\n"
-                            return
-                        if not provider["stream_enabled"]:
-                            data = json.loads((await response.aread()).decode("utf-8", "replace"))
-                            if provider["protocol"] == "anthropic":
-                                full = "".join(block.get("text", "") for block in data.get("content", []) if block.get("type") == "text")
-                                reasoning = "".join(block.get("thinking", "") for block in data.get("content", []) if block.get("type") == "thinking")
-                            else:
-                                message = data.get("choices", [{}])[0].get("message", {})
-                                full = message.get("content") or ""
-                                reasoning = message.get("reasoning_content") or message.get("reasoning") or ""
-                            if reasoning:
-                                yield json.dumps({"reasoning_delta": reasoning}, ensure_ascii=False) + "\n"
-                            if full:
-                                yield json.dumps({"delta": full}, ensure_ascii=False) + "\n"
-                        else:
-                            async for event in iter_sse_json(response.aiter_lines()):
-                                try:
+                    for upstream_attempt in range(2):
+                        attempt_full, attempt_reasoning = len(full), len(reasoning)
+                        try:
+                            async with client.stream("POST", url, headers=headers, json=payload) as response:
+                                if response.status_code >= 400:
+                                    detail = (await response.aread()).decode("utf-8", "replace")[:500]
+                                    yield json.dumps({"error": f"API {response.status_code}: {detail}"}, ensure_ascii=False) + "\n"
+                                    return
+                                if not provider["stream_enabled"]:
+                                    data = json.loads((await response.aread()).decode("utf-8", "replace"))
                                     if provider["protocol"] == "anthropic":
-                                        event_delta = event.get("delta", {})
-                                        delta = event_delta.get("text", "") if event.get("type") == "content_block_delta" else ""
-                                        reasoning_delta = event_delta.get("thinking", "")
+                                        full = "".join(block.get("text", "") for block in data.get("content", []) if block.get("type") == "text")
+                                        reasoning = "".join(block.get("thinking", "") for block in data.get("content", []) if block.get("type") == "thinking")
                                     else:
-                                        choice_delta = event.get("choices", [{}])[0].get("delta", {})
-                                        delta = choice_delta.get("content") or ""
-                                        reasoning_delta = choice_delta.get("reasoning_content") or choice_delta.get("reasoning") or ""
-                                except (json.JSONDecodeError, IndexError, TypeError):
-                                    continue
-                                if delta:
-                                    full += delta
-                                    yield json.dumps({"delta": delta}, ensure_ascii=False) + "\n"
-                                if reasoning_delta:
-                                    reasoning += reasoning_delta
-                                    yield json.dumps({"reasoning_delta": reasoning_delta}, ensure_ascii=False) + "\n"
+                                        message = data.get("choices", [{}])[0].get("message", {})
+                                        full = message.get("content") or ""
+                                        reasoning = message.get("reasoning_content") or message.get("reasoning") or ""
+                                    if reasoning:
+                                        yield json.dumps({"reasoning_delta": reasoning}, ensure_ascii=False) + "\n"
+                                    if full:
+                                        yield json.dumps({"delta": full}, ensure_ascii=False) + "\n"
+                                else:
+                                    async for event in iter_sse_json(response.aiter_lines()):
+                                        try:
+                                            if provider["protocol"] == "anthropic":
+                                                event_delta = event.get("delta", {})
+                                                delta = event_delta.get("text", "") if event.get("type") == "content_block_delta" else ""
+                                                reasoning_delta = event_delta.get("thinking", "")
+                                            else:
+                                                choice_delta = event.get("choices", [{}])[0].get("delta", {})
+                                                delta = choice_delta.get("content") or ""
+                                                reasoning_delta = choice_delta.get("reasoning_content") or choice_delta.get("reasoning") or ""
+                                        except (json.JSONDecodeError, IndexError, TypeError):
+                                            continue
+                                        if delta:
+                                            full += delta
+                                            yield json.dumps({"delta": delta}, ensure_ascii=False) + "\n"
+                                        if reasoning_delta:
+                                            reasoning += reasoning_delta
+                                            yield json.dumps({"reasoning_delta": reasoning_delta}, ensure_ascii=False) + "\n"
+                            break
+                        except (httpx.RemoteProtocolError, httpx.ReadError):
+                            received_output = len(full) > attempt_full or len(reasoning) > attempt_reasoning
+                            if upstream_attempt or received_output:
+                                raise
+                            await asyncio.sleep(0.35)
             if full:
                 assistant_id = str(uuid.uuid4())
                 generated_title = None
