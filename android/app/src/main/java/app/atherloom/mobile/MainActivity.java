@@ -15,6 +15,7 @@ import android.os.Environment;
 import android.os.Handler;
 import android.os.Looper;
 import android.provider.MediaStore;
+import android.util.Base64;
 import android.view.ViewGroup;
 import android.webkit.GeolocationPermissions;
 import android.webkit.JavascriptInterface;
@@ -34,6 +35,7 @@ import org.json.JSONArray;
 import org.json.JSONObject;
 import org.json.JSONTokener;
 import java.io.BufferedReader;
+import java.io.ByteArrayInputStream;
 import java.io.File;
 import java.io.FileOutputStream;
 import java.io.InputStream;
@@ -46,6 +48,8 @@ import java.nio.charset.StandardCharsets;
 import java.util.Iterator;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+import com.tom_roush.pdfbox.pdmodel.PDDocument;
+import com.tom_roush.pdfbox.text.PDFTextStripper;
 
 public class MainActivity extends Activity {
     private static final int FILE_CHOOSER = 41, AUDIO_PERMISSION = 42;
@@ -411,6 +415,21 @@ public class MainActivity extends Activity {
             new Thread(() -> {
                 String result = chat(raw);
                 webView.post(() -> webView.evaluateJavascript("window.AtherloomNativeResolve(" + JSONObject.quote(callbackId) + "," + JSONObject.quote(result) + ")", null));
+            }).start();
+        }
+
+        @JavascriptInterface public void extractPdfTextAsync(String encoded, String callbackId) {
+            new Thread(() -> {
+                String result;
+                try {
+                    byte[] bytes = Base64.decode(encoded, Base64.DEFAULT);
+                    try (PDDocument document = PDDocument.load(new ByteArrayInputStream(bytes))) {
+                        String text = new PDFTextStripper().getText(document);
+                        result = new JSONObject().put("ok", true).put("text", text).put("pages", document.getNumberOfPages()).toString();
+                    }
+                } catch (Exception error) { result = failure(error); }
+                String callback = "window.AtherloomNativeResolve(" + JSONObject.quote(callbackId) + "," + JSONObject.quote(result) + ")";
+                webView.post(() -> webView.evaluateJavascript(callback, null));
             }).start();
         }
 

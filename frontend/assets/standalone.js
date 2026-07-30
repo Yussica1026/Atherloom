@@ -29,6 +29,7 @@
   let nativeChatSequence=0;const nativeChatPending=new Map();
   window.AtherloomNativeResolve=(id,raw)=>{const pending=nativeChatPending.get(id);if(!pending)return;nativeChatPending.delete(id);try{const result=JSON.parse(raw);if(!result.ok)throw new Error(result.error||"原生请求失败");pending.resolve(result);}catch(error){pending.reject(error);}};
   const nativeChat=request=>new Promise((resolve,reject)=>{const id=`chat-${++nativeChatSequence}`;nativeChatPending.set(id,{resolve,reject});window.AtherloomNative.chatAsync(JSON.stringify(request),id);});
+  window.nativeExtractPdf=encoded=>new Promise((resolve,reject)=>{const id=`pdf-${++nativeChatSequence}`;nativeChatPending.set(id,{resolve,reject});window.AtherloomNative.extractPdfTextAsync(encoded,id);});
   const publicProvider = item => { const copy={...item,has_api_key:!!item.api_key||!!item.has_api_key}; delete copy.api_key; return copy; };
   const webModels = async provider => {
     const base=provider.base_url.replace(/\/+$/,""),anthropic=provider.protocol==="anthropic",endpoint=`${base}/models`;
