@@ -90,7 +90,10 @@ class AndroidFrontendRegressionContracts(unittest.TestCase):
         self.assertIn("setTimeout(()=>", APP)
         self.assertIn('classList.add("delete-revealed")', APP)
         self.assertIn('addEventListener("contextmenu",event=>event.preventDefault())', APP)
-        self.assertIn('Math.hypot(event.clientX-startX,event.clientY-startY)>12', APP)
+        self.assertIn('addEventListener("touchstart"', APP)
+        self.assertIn('timer=setTimeout(reveal,320)', APP)
+        self.assertIn('Math.hypot(x-startX,y-startY)>12', APP)
+        self.assertIn('width:100%;min-height:38px', CSS)
         self.assertIn('.conversation-switch-row.delete-revealed .conversation-switch-delete{display:grid}', CSS)
 
 
