@@ -112,13 +112,6 @@ function detectBookFormat(buffer,file){const bytes=new Uint8Array(buffer),head=n
 function validateBookText(text){const sample=String(text||"").slice(0,12000),visible=sample.match(/[^\s\u0000-\u001F]/g)?.length||0,letters=sample.match(/[\p{L}\p{Script=Han}]/gu)?.length||0,numbers=sample.match(/\d/g)?.length||0;if(!sample.trim())throw new Error("文件里没有可读取的正文");if(bookTextScore(sample)>Math.max(80,sample.length*.08)||visible>200&&letters/visible<.08&&numbers/visible>.45)throw new Error("检测到的不是正常正文，可能是 PDF/EPUB/MOBI 等电子书内部数据；请确认文件格式，或先导出为 TXT/Markdown");}
 async function openLocalBook(file) {
   if (!file) return;
-  if((file.type==="application/pdf"||/\.pdf$/i.test(file.name||""))&&window.AtherloomNative){
-    const reader=$("#bookReader"),status=$("#bookStatus");
-    reader.innerHTML=`<div class="game-empty"><span>PDF</span><h3>这份 PDF 没有载入</h3><p>Android 已在读取文件字节前拦截，避免大 PDF 占满内存导致应用闪退。请先转成 TXT 或 Markdown 后共读。</p></div>`;
-    status.textContent=`${file.name} · 已在读取前安全拦截`;
-    window.AtherloomNative.showNotice?.("PDF 已安全拦截，没有读取文件内容");
-    return;
-  }
   const reader = $("#bookReader");
   const status = $("#bookStatus");
   const key = `atherloom:book:${file.name}:${file.size}`;
@@ -131,15 +124,6 @@ async function openLocalBook(file) {
     if (bookObjectUrl) { URL.revokeObjectURL(bookObjectUrl); bookObjectUrl = undefined; }
     reader.onscroll = null;
     if(format==="zip"||format==="mobi")throw new Error(format==="zip"?"检测到 EPUB/ZIP 电子书；当前版本不能直接读取，请先导出为 TXT/Markdown":"检测到 MOBI/AZW 电子书；当前版本不能直接读取，请先导出为 TXT/Markdown");
-    if (isPdf && window.AtherloomNative && window.nativeExtractPdf) {
-      if (file.size > 16 * 1024 * 1024) throw new Error("PDF 文件超过 16 MB；为避免手机内存溢出，请先压缩 PDF 或导出为 TXT/Markdown");
-      status.textContent = `${file.name} · 正在本机提取文字…`;
-      const bytes=new Uint8Array(await file.arrayBuffer());
-      let binary="";for(let offset=0;offset<bytes.length;offset+=0x8000)binary+=String.fromCharCode(...bytes.subarray(offset,Math.min(offset+0x8000,bytes.length)));
-      const result=await window.nativeExtractPdf(btoa(binary));
-      validateBookText(result.text);const pre=document.createElement("pre");pre.textContent=result.text;reader.replaceChildren(pre);currentBook={title:file.name,key,text:result.text};loadBookAiChat();setBookControls(true);renderBookNotes();status.textContent=`${file.name} · 已在本机提取 ${result.pages||""} 页文字`;
-      reader.scrollTop=Number(localStorage.getItem(key)||0);reader.onscroll=()=>localStorage.setItem(key,String(reader.scrollTop));return;
-    }
     if (isPdf) {
       bookObjectUrl = URL.createObjectURL(file);
       reader.innerHTML = `<iframe title="${escapeHtml(file.name)}" src="${bookObjectUrl}#page=${Number(localStorage.getItem(key) || 1)}"></iframe>`;
@@ -250,6 +234,11 @@ function renderGameCards() {
   $("#gameCards").innerHTML = catalog.map(game => `<button class="game-card ${game.id === gameState.current ? "active" : ""}" data-game-id="${game.id}"><span class="game-card-icon">${game.icon}</span><span><strong>${escapeHtml(game.name)}</strong><small>${escapeHtml(game.description)}</small></span></button>`).join("");
   document.querySelectorAll("[data-game-id]").forEach(button => button.onclick = () => openGame(button.dataset.gameId));
 }
+
+window.AtherloomNativePdfReady=()=>{
+  const reader=$("#bookReader"),status=$("#bookStatus");
+  try{const result=JSON.parse(window.AtherloomNative.takePdfResult());if(!result.ok)throw new Error(result.error||"PDF 解析失败");validateBookText(result.text);const key=`atherloom:book:${result.name}:${result.text.length}`,pre=document.createElement("pre");pre.textContent=result.text;reader.replaceChildren(pre);currentBook={title:result.name,key,text:result.text};loadBookAiChat();setBookControls(true);renderBookNotes();reader.scrollTop=Number(localStorage.getItem(key)||0);reader.onscroll=()=>localStorage.setItem(key,String(reader.scrollTop));status.textContent=`${result.name} · 已解析 ${result.pages} 页文字${result.truncated?"（正文过长，已安全截取）":""}`;}catch(error){currentBook=null;setBookControls(false);reader.innerHTML=`<div class="game-empty"><span>!</span><h3>PDF 没有打开</h3><p>${escapeHtml(error.message)}</p></div>`;status.textContent=`PDF 解析失败：${error.message}`;}
+};
 
 function formatHttpError(status,detail=""){
   const explanations={400:"请求格式或参数不符合接口要求",401:"API Key 无效、过期或没有提供",402:"账户余额、额度或付费状态不足",403:"当前 Key 没有访问该模型或接口的权限",404:"请求的资源、模型或接口不存在",408:"上游等待请求超时",409:"当前数据状态与操作冲突",413:"发送的文件或上下文超过接口允许大小",422:"请求内容校验未通过",429:"请求过于频繁，或账户已达到速率/额度限制",500:"上游服务内部错误",502:"本地服务收到无效的上游响应",503:"上游服务暂时不可用",504:"上游服务响应超时"};
@@ -677,13 +666,18 @@ async function renameCurrentConversation() {
 function openConversationSwitcher(event) {
   event.stopPropagation();
   const recent = state.conversations.filter(item => !item.archived).slice(0, 30);
-  const items = `<button data-value="__new__"><strong>＋ 新对话</strong></button>${recent.map(item => `<div class="conversation-switch-row"><button data-value="${item.id}" class="${item.id === state.current ? "active" : ""}"><strong><span>${escapeHtml(item.title)}</span>${generationDot(item.id)}</strong><small>${item.id === state.current ? "当前对话" : new Date(item.updated_at || item.created_at).toLocaleString("zh-CN")}</small></button><button type="button" class="conversation-switch-delete" data-delete-switch="${item.id}" aria-label="删除 ${escapeHtml(item.title)}">×</button></div>`).join("")}<button data-value="__rename__" ${state.current ? "" : "disabled"}>重命名当前对话</button>`;
+  const items = `<button data-value="__new__"><strong>＋ 新对话</strong></button><p class="conversation-longpress-hint">长按任意对话约 0.7 秒可删除</p>${recent.map(item => `<div class="conversation-switch-row"><button data-value="${item.id}" class="${item.id === state.current ? "active" : ""}"><strong><span>${escapeHtml(item.title)}</span>${generationDot(item.id)}</strong><small>${item.id === state.current ? "当前对话 · 长按删除" : `${new Date(item.updated_at || item.created_at).toLocaleString("zh-CN")} · 长按删除`}</small></button><button type="button" class="conversation-switch-delete" data-delete-switch="${item.id}" aria-label="删除 ${escapeHtml(item.title)}">×</button></div>`).join("")}<button data-value="__rename__" ${state.current ? "" : "disabled"}>重命名当前对话</button>`;
   showPopover(event.currentTarget, $("#conversationPopover"), items, async value => {
     if (value === "__new__") await newConversation();
     else if (value === "__rename__") await renameCurrentConversation();
     else await openConversation(value);
   });
   $("#conversationPopover").querySelectorAll("[data-delete-switch]").forEach(button=>button.onclick=async event=>{event.preventDefault();event.stopPropagation();button.disabled=true;await updateHistoryState(button.dataset.deleteSwitch,"delete",{skipConfirm:true});});
+  bindConversationLongPress($("#conversationPopover"));
+}
+
+function bindConversationLongPress(popover){
+  popover.querySelectorAll('.conversation-switch-row button[data-value]').forEach(button=>{let timer=null;const cancel=()=>{clearTimeout(timer);timer=null;button.classList.remove("longpress-armed");};button.addEventListener("pointerdown",event=>{if(event.button!==undefined&&event.button!==0)return;cancel();button.classList.add("longpress-armed");timer=setTimeout(async()=>{timer=null;button.dataset.longPressFired="1";button.classList.remove("longpress-armed");navigator.vibrate?.(35);await updateHistoryState(button.dataset.value,"delete",{skipConfirm:true});},700);});for(const type of ["pointerup","pointercancel"])button.addEventListener(type,cancel);button.addEventListener("click",event=>{if(button.dataset.longPressFired==="1"){event.preventDefault();event.stopImmediatePropagation();delete button.dataset.longPressFired;}},true);});
 }
 
 function shareConversation() {
