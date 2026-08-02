@@ -192,15 +192,14 @@ async function updateHistoryState(id, action, {skipConfirm=false}={}) {
   const conversation = state.conversations.find(c => c.id === id); if (!conversation) return;
   if(action==="delete"){
     if(!skipConfirm&&!confirm(`删除对话“${conversation.title}”？这会删除其中的消息，其他人格和其他对话不受影响。`))return;
-    const previous=[...state.conversations],wasCurrent=state.current===id;
-    $("#conversationPopover").hidden=true;
+    const previous=[...state.conversations],previousMessages=[...state.messages],wasCurrent=state.current===id;
     state.conversations=state.conversations.filter(item=>item.id!==id);state.message_cache.delete(id);
     if(wasCurrent){state.current=null;state.messages=[];renderCurrentTitle();renderMessages();}
     renderHistory();
     try{await api(`/api/conversations/${id}`,{method:"DELETE"});const fresh=await api("/api/bootstrap");state.conversations=(fresh.conversations||[]).filter(item=>item.id!==id);}
-    catch(error){state.conversations=previous;if(wasCurrent)state.current=id;renderHistory();throw error;}
+    catch(error){state.conversations=previous;if(wasCurrent){state.current=id;state.messages=previousMessages;renderCurrentTitle();renderMessages();}renderHistory();throw error;}
     const currentWasRemoved=wasCurrent||!state.current||!state.conversations.some(item=>item.id===state.current);
-    if(currentWasRemoved){state.current=null;state.messages=[];state.version_selection={};renderCurrentTitle();renderMessages();const next=state.conversations.find(item=>(item.persona_id||null)===(state.persona||null));if(next)await openConversation(next.id);else await newConversation();}
+    if(currentWasRemoved){state.current=null;state.messages=[];state.version_selection={};renderCurrentTitle();renderMessages();const next=state.conversations.find(item=>(item.persona_id||null)===(state.persona||null));if(next)await openConversation(next.id);}
     renderHistory();return;
   }
   const key = action === "pin" ? "pinned" : action === "star" ? "starred" : "archived";
@@ -672,7 +671,7 @@ function openConversationSwitcher(event) {
     else if (value === "__rename__") await renameCurrentConversation();
     else await openConversation(value);
   });
-  $("#conversationPopover").querySelectorAll("[data-delete-switch]").forEach(button=>button.onclick=async event=>{event.preventDefault();event.stopPropagation();button.disabled=true;await updateHistoryState(button.dataset.deleteSwitch,"delete",{skipConfirm:true});});
+  $("#conversationPopover").querySelectorAll("[data-delete-switch]").forEach(button=>button.onclick=async event=>{event.preventDefault();event.stopPropagation();const row=button.closest(".conversation-switch-row"),id=button.dataset.deleteSwitch;button.disabled=true;row?.remove();try{await updateHistoryState(id,"delete",{skipConfirm:true});window.AtherloomNative?.showNotice?.("对话已删除");}catch(error){renderHistory();$("#conversationPopover").hidden=true;window.AtherloomNative?.showNotice?.(`删除失败：${error.message}`);}});
   bindConversationLongPress($("#conversationPopover"));
 }
 

@@ -26,7 +26,7 @@ class AndroidFrontendRegressionContracts(unittest.TestCase):
         self.assertIn("event.stopPropagation();updateHistoryState", APP)
 
     def test_title_dropdown_delete_bypasses_unreliable_webview_confirm(self):
-        self.assertIn('updateHistoryState(button.dataset.deleteSwitch,"delete",{skipConfirm:true})', APP)
+        self.assertIn('updateHistoryState(id,"delete",{skipConfirm:true})', APP)
         self.assertIn('if(!skipConfirm&&!confirm(', APP)
 
     def test_reasoning_is_folded_by_default(self):
@@ -95,6 +95,8 @@ class AndroidFrontendRegressionContracts(unittest.TestCase):
         self.assertIn('Math.hypot(x-startX,y-startY)>12', APP)
         self.assertIn('width:100%;min-height:38px', CSS)
         self.assertIn('.conversation-switch-row.delete-revealed .conversation-switch-delete{display:grid}', CSS)
+        self.assertIn('row?.remove();try{await updateHistoryState', APP)
+        self.assertNotIn('if(next)await openConversation(next.id);else await newConversation();', APP)
 
 
 if __name__ == "__main__":
