@@ -129,6 +129,15 @@ function validateBookText(text){
   if(!sample.trim())throw new Error("文件里没有可读取的正文");
   if(bookTextScore(sample)>Math.max(80,sample.length*.08)||visible>200&&letters/visible<.08&&numbers/visible>.45)throw new Error("检测到的不是正常正文，可能是 PDF/EPUB/MOBI 等电子书内部数据；请确认文件格式，或先导出为 TXT/Markdown");
 }
+async function extractBrowserPdfText(file){
+  if(file.size>24*1024*1024)throw new Error("PDF 超过 24 MB，请先压缩后再打开");
+  const pdfjs=await import("./vendor/pdfjs/pdf.mjs?v=6.2.108");pdfjs.GlobalWorkerOptions.workerSrc="/assets/vendor/pdfjs/pdf.worker.mjs?v=6.2.108";
+  const task=pdfjs.getDocument({data:new Uint8Array(await file.arrayBuffer())}),pdf=await task.promise;
+  if(pdf.numPages>400){await task.destroy();throw new Error("PDF 超过 400 页，请拆分后再打开");}
+  const parts=[];let length=0,truncated=false;
+  for(let pageNumber=1;pageNumber<=pdf.numPages;pageNumber++){const page=await pdf.getPage(pageNumber),content=await page.getTextContent(),text=content.items.map(item=>item.str||"").join(" ").trim();parts.push(text);length+=text.length+2;if(length>600000){truncated=true;break;}}
+  const pages=pdf.numPages;await task.destroy();const text=parts.join("\n\n").slice(0,600000);if(!text.trim())throw new Error("PDF 没有可提取文字，可能是扫描图片版");return {text,pages,truncated};
+}
 async function openLocalBook(file) {
   if (!file) return;
   const reader = $("#bookReader");
@@ -150,9 +159,7 @@ async function openLocalBook(file) {
     if (bookObjectUrl) { URL.revokeObjectURL(bookObjectUrl); bookObjectUrl = undefined; }
     reader.onscroll = null;
     if (isPdf) {
-      bookObjectUrl = URL.createObjectURL(file);
-      reader.innerHTML = `<iframe title="${escapeHtml(file.name)}" src="${bookObjectUrl}#page=${Number(localStorage.getItem(key) || 1)}"></iframe>`;
-      status.textContent = `${file.name} · 本地 PDF；书签、批注与 AI 共读暂支持 TXT/Markdown`;
+      status.textContent=`${file.name} · 正在本地解析 PDF 文字…`;const result=await extractBrowserPdfText(file);validateBookText(result.text);const pre=document.createElement("pre");pre.textContent=result.text;reader.replaceChildren(pre);currentBook={title:file.name,key,text:result.text};loadBookAiChat();setBookControls(true);renderBookNotes();reader.scrollTop=Number(localStorage.getItem(key)||0);reader.onscroll=()=>localStorage.setItem(key,String(reader.scrollTop));status.textContent=`${file.name} · 已解析 ${result.pages} 页文字${result.truncated?"（正文过长，已安全截取）":""}`;
       return;
     }
     if(format==="zip")throw new Error("检测到 EPUB/ZIP 电子书；当前版本请先导出为 TXT 或 Markdown 后再共读");
@@ -768,7 +775,7 @@ function openConversationSwitcher(event) {
   event.stopPropagation();
   const recent = state.conversations.filter(item => !item.archived && (item.persona_id || null) === (state.persona || null)).slice(0, 30);
   const scopedCount = state.conversations.filter(item => (item.persona_id || null) === (state.persona || null)).length;
-  const items = `<button data-value="__new__"><strong>＋ 新对话</strong></button>${recent.map(item => `<div class="conversation-switch-row"><button data-value="${item.id}" class="${item.id === state.current ? "active" : ""}"><strong><span>${escapeHtml(item.title)}</span>${generationDot(item.id)}</strong><small>${item.id === state.current ? "当前对话" : new Date(item.updated_at || item.created_at).toLocaleString("zh-CN")}</small></button><button type="button" class="conversation-switch-delete" data-delete-switch="${item.id}" aria-label="删除 ${escapeHtml(item.title)}">×</button></div>`).join("")}<button data-value="__rename__" ${state.current ? "" : "disabled"}>重命名当前对话</button><button data-value="__clear__" class="conversation-clear-all" ${scopedCount ? "" : "disabled"}>清空当前人格全部对话（${scopedCount}）</button>`;
+  const items = `<button data-value="__new__"><strong>＋ 新对话</strong></button><p class="conversation-longpress-hint">长按任意对话约 0.7 秒可删除</p>${recent.map(item => `<div class="conversation-switch-row"><button data-value="${item.id}" class="${item.id === state.current ? "active" : ""}"><strong><span>${escapeHtml(item.title)}</span>${generationDot(item.id)}</strong><small>${item.id === state.current ? "当前对话 · 长按删除" : `${new Date(item.updated_at || item.created_at).toLocaleString("zh-CN")} · 长按删除`}</small></button><button type="button" class="conversation-switch-delete" data-delete-switch="${item.id}" aria-label="删除 ${escapeHtml(item.title)}">×</button></div>`).join("")}<button data-value="__rename__" ${state.current ? "" : "disabled"}>重命名当前对话</button><button data-value="__clear__" class="conversation-clear-all" ${scopedCount ? "" : "disabled"}>清空当前人格全部对话（${scopedCount}）</button>`;
   showPopover(event.currentTarget, $("#conversationPopover"), items, async value => {
     if (value === "__new__") await newConversation();
     else if (value === "__rename__") await renameCurrentConversation();
@@ -776,6 +783,11 @@ function openConversationSwitcher(event) {
     else await openConversation(value);
   });
   $("#conversationPopover").querySelectorAll("[data-delete-switch]").forEach(button=>button.onclick=async event=>{event.preventDefault();event.stopPropagation();button.disabled=true;await updateHistoryState(button.dataset.deleteSwitch,"delete",{skipConfirm:true});});
+  bindConversationLongPress($("#conversationPopover"));
+}
+
+function bindConversationLongPress(popover){
+  popover.querySelectorAll('.conversation-switch-row button[data-value]').forEach(button=>{let timer=null;const cancel=()=>{clearTimeout(timer);timer=null;button.classList.remove("longpress-armed");};button.addEventListener("pointerdown",event=>{if(event.button!==undefined&&event.button!==0)return;cancel();button.classList.add("longpress-armed");timer=setTimeout(async()=>{timer=null;button.dataset.longPressFired="1";button.classList.remove("longpress-armed");navigator.vibrate?.(35);await updateHistoryState(button.dataset.value,"delete",{skipConfirm:true});},700);});for(const type of ["pointerup","pointercancel"])button.addEventListener(type,cancel);button.addEventListener("click",event=>{if(button.dataset.longPressFired==="1"){event.preventDefault();event.stopImmediatePropagation();delete button.dataset.longPressFired;}},true);});
 }
 
 function shareConversation() {
