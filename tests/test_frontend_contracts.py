@@ -25,7 +25,7 @@ class FrontendRegressionContracts(unittest.TestCase):
         self.assertIn("event.stopPropagation();updateHistoryState", APP)
 
     def test_title_dropdown_delete_does_not_depend_on_confirm(self):
-        self.assertIn('updateHistoryState(button.dataset.deleteSwitch,"delete",{skipConfirm:true})', APP)
+        self.assertIn('updateHistoryState(id,"delete",{skipConfirm:true})', APP)
         self.assertIn('if(!skipConfirm&&!confirm(', APP)
 
     def test_conversation_rows_support_long_press_delete(self):
@@ -37,6 +37,8 @@ class FrontendRegressionContracts(unittest.TestCase):
         self.assertIn('Math.hypot(x-startX,y-startY)>12', APP)
         self.assertIn('width:100%;min-height:38px', CSS)
         self.assertIn('.conversation-switch-row.delete-revealed .conversation-switch-delete{display:grid}', CSS)
+        self.assertIn('row?.remove();try{await updateHistoryState', APP)
+        self.assertNotIn('if(next)await openConversation(next.id);else await newConversation();', APP)
 
     def test_reasoning_is_folded_by_default(self):
         self.assertIn("<details class=\"thinking\"><summary>思考过程（点开查看）", APP)
@@ -46,7 +48,7 @@ class FrontendRegressionContracts(unittest.TestCase):
         self.assertIn("具体位置请查看浏览器下载记录", APP)
 
     def test_versioned_script_is_current(self):
-        self.assertIn('assets/app.js?v=0536', INDEX)
+        self.assertIn('assets/app.js?v=0537', INDEX)
 
     def test_chat_enter_is_newline_only(self):
         self.assertNotIn('$("#prompt").addEventListener("keydown"', APP)
