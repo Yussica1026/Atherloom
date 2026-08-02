@@ -204,10 +204,10 @@ function openPersonaEditor(id){
   requestAnimationFrame(()=>form.scrollIntoView({behavior:"smooth",block:"start"}));
 }
 
-async function updateHistoryState(id, action) {
+async function updateHistoryState(id, action, {skipConfirm=false}={}) {
   const conversation = state.conversations.find(c => c.id === id); if (!conversation) return;
   if(action==="delete"){
-    if(!confirm(`删除对话“${conversation.title}”？这会删除其中的消息，其他人格和其他对话不受影响。`))return;
+    if(!skipConfirm&&!confirm(`删除对话“${conversation.title}”？这会删除其中的消息，其他人格和其他对话不受影响。`))return;
     const previous=[...state.conversations],wasCurrent=state.current===id;
     $("#conversationPopover").hidden=true;
     state.conversations=state.conversations.filter(item=>item.id!==id);state.message_cache.delete(id);
@@ -683,7 +683,7 @@ function openConversationSwitcher(event) {
     else if (value === "__rename__") await renameCurrentConversation();
     else await openConversation(value);
   });
-  $("#conversationPopover").querySelectorAll("[data-delete-switch]").forEach(button=>button.onclick=async event=>{event.stopPropagation();await updateHistoryState(button.dataset.deleteSwitch,"delete");});
+  $("#conversationPopover").querySelectorAll("[data-delete-switch]").forEach(button=>button.onclick=async event=>{event.preventDefault();event.stopPropagation();button.disabled=true;await updateHistoryState(button.dataset.deleteSwitch,"delete",{skipConfirm:true});});
 }
 
 function shareConversation() {
