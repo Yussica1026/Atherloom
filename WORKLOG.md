@@ -1,5 +1,15 @@
 # Atherloom 开发工作日志
 
+## 2026-08-02 · Android v0.5.48
+
+- 撤销“拦截 PDF、要求转 TXT”的临时方案，改为 Android 原生后台线程通过 PDFBox 读取 `content://` 输入流并提取正文，再交给 WebView 共读界面。
+- 初始化 `PDFBoxResourceLoader`；PDF 限制为 24 MB、400 页和 600,000 字。文字型 PDF 可正常共读，扫描图片型 PDF 给出明确错误且不闪退。
+- 对话切换器改为两步删除：长按约 0.7 秒只显示当前行的红色“删除”按钮，再点击按钮才执行持久化删除；不再长按即删。
+- Android 87 项测试与网页真实交互回归纳入三轮验证；最终三轮连续全部通过。
+- 发布提交 `e4ead8d`，versionCode `54`，版本 `0.5.48-standalone`，标签 `v0.5.48`。
+- v0.5.48 实机发现 WebView 在 0.7 秒前触发 `pointercancel`，删除按钮未显露；修正版把触发提前到 0.48 秒、拦截系统上下文菜单，并加入移动阈值和 Android 式取消事件回归，版本升级为 `v0.5.49`（versionCode 55）。
+- APK：<https://github.com/Yussica1026/Atherloom/releases/download/v0.5.48/Atherloom-Android.apk>
+
 ## 2026-07-29 · v0.5.36
 
 ### 用户反馈与处理
