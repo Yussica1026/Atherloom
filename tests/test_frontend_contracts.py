@@ -4,6 +4,7 @@ import unittest
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 APP = (ROOT / "frontend/assets/app.js").read_text(encoding="utf-8")
+STANDALONE = (ROOT / "frontend/assets/standalone.js").read_text(encoding="utf-8")
 JAVA = (ROOT / "android/app/src/main/java/app/atherloom/mobile/MainActivity.java").read_text(encoding="utf-8")
 
 
@@ -31,6 +32,23 @@ class AndroidFrontendRegressionContracts(unittest.TestCase):
         self.assertIn('@JavascriptInterface public String saveBackup', JAVA)
         self.assertIn('Environment.DIRECTORY_DOWNLOADS + "/Atherloom"', JAVA)
         self.assertIn('"location"', JAVA)
+
+    def test_android_continuity_archives_before_trimming_and_keeps_threads(self):
+        self.assertIn("const syncContinuity=", STANDALONE)
+        self.assertIn('kind:"timeline"', STANDALONE)
+        self.assertLess(STANDALONE.index('write("memories",[memory'), STANDALONE.index('write(`timeline-archived:${conversationId}`'))
+        self.assertIn("<open_threads>", STANDALONE)
+        self.assertIn("hotMessages(body.conversation_id,history)", STANDALONE)
+
+    def test_android_memory_recall_has_honesty_boundary_and_use_weight(self):
+        self.assertIn("semantic>=.42", STANDALONE)
+        self.assertIn("item.recall_count=Number(item.recall_count||0)+1", STANDALONE)
+        self.assertIn("greeting?rows.sort", STANDALONE)
+        self.assertNotIn("semantic>=.2", STANDALONE)
+
+    def test_android_message_changes_invalidate_timeline(self):
+        self.assertIn("const invalidateContinuity=", STANDALONE)
+        self.assertGreaterEqual(STANDALONE.count("invalidateContinuity(conversation.id)"), 3)
 
 
 if __name__ == "__main__":
