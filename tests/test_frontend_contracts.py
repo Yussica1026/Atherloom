@@ -5,6 +5,7 @@ import unittest
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 APP = (ROOT / "frontend/assets/app.js").read_text(encoding="utf-8")
 INDEX = (ROOT / "frontend/index.html").read_text(encoding="utf-8")
+CSS = (ROOT / "frontend/assets/app.css").read_text(encoding="utf-8")
 
 
 class FrontendRegressionContracts(unittest.TestCase):
@@ -29,7 +30,8 @@ class FrontendRegressionContracts(unittest.TestCase):
 
     def test_conversation_rows_support_long_press_delete(self):
         self.assertIn("bindConversationLongPress", APP)
-        self.assertIn('updateHistoryState(button.dataset.value,"delete",{skipConfirm:true})', APP)
+        self.assertIn('classList.add("delete-revealed")', APP)
+        self.assertIn('.conversation-switch-row.delete-revealed .conversation-switch-delete{display:grid}', CSS)
 
     def test_reasoning_is_folded_by_default(self):
         self.assertIn("<details class=\"thinking\"><summary>思考过程（点开查看）", APP)
@@ -39,7 +41,7 @@ class FrontendRegressionContracts(unittest.TestCase):
         self.assertIn("具体位置请查看浏览器下载记录", APP)
 
     def test_versioned_script_is_current(self):
-        self.assertIn('assets/app.js?v=0533', INDEX)
+        self.assertIn('assets/app.js?v=0534', INDEX)
 
     def test_chat_enter_is_newline_only(self):
         self.assertNotIn('$("#prompt").addEventListener("keydown"', APP)
