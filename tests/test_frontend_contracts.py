@@ -32,7 +32,10 @@ class FrontendRegressionContracts(unittest.TestCase):
         self.assertIn("bindConversationLongPress", APP)
         self.assertIn('classList.add("delete-revealed")', APP)
         self.assertIn('addEventListener("contextmenu",event=>event.preventDefault())', APP)
-        self.assertIn('Math.hypot(event.clientX-startX,event.clientY-startY)>12', APP)
+        self.assertIn('addEventListener("touchstart"', APP)
+        self.assertIn('timer=setTimeout(reveal,320)', APP)
+        self.assertIn('Math.hypot(x-startX,y-startY)>12', APP)
+        self.assertIn('width:100%;min-height:38px', CSS)
         self.assertIn('.conversation-switch-row.delete-revealed .conversation-switch-delete{display:grid}', CSS)
 
     def test_reasoning_is_folded_by_default(self):
@@ -43,7 +46,7 @@ class FrontendRegressionContracts(unittest.TestCase):
         self.assertIn("具体位置请查看浏览器下载记录", APP)
 
     def test_versioned_script_is_current(self):
-        self.assertIn('assets/app.js?v=0535', INDEX)
+        self.assertIn('assets/app.js?v=0536', INDEX)
 
     def test_chat_enter_is_newline_only(self):
         self.assertNotIn('$("#prompt").addEventListener("keydown"', APP)
