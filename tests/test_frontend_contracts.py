@@ -25,6 +25,10 @@ class AndroidFrontendRegressionContracts(unittest.TestCase):
     def test_conversation_action_stops_row_click(self):
         self.assertIn("event.stopPropagation();updateHistoryState", APP)
 
+    def test_title_dropdown_delete_bypasses_unreliable_webview_confirm(self):
+        self.assertIn('updateHistoryState(button.dataset.deleteSwitch,"delete",{skipConfirm:true})', APP)
+        self.assertIn('if(!skipConfirm&&!confirm(', APP)
+
     def test_reasoning_is_folded_by_default(self):
         self.assertIn("<details class=\"thinking\"><summary>思考过程（点开查看）", APP)
         self.assertNotIn('<details class="thinking" open>', APP)
@@ -65,6 +69,20 @@ class AndroidFrontendRegressionContracts(unittest.TestCase):
     def test_openai_compatible_requests_do_not_impose_output_cap(self):
         self.assertIn('if(anthropic)payload.max_tokens=', STANDALONE)
         self.assertIn('if (protocol.equals("anthropic")) payload.put("max_tokens"', JAVA)
+
+    def test_pdf_uri_is_rejected_before_webview_receives_it(self):
+        reject = JAVA.index("if (resultUris != null) for (Uri uri : resultUris) if (isPdfUri(uri))")
+        deliver = JAVA.index("else fileCallback.onReceiveValue(resultUris)")
+        self.assertLess(reject, deliver)
+        self.assertIn('"application/pdf".equalsIgnoreCase(type)', JAVA)
+        self.assertIn("OpenableColumns.DISPLAY_NAME", JAVA)
+
+    def test_pdf_uri_is_rejected_before_webview_receives_it(self):
+        reject = JAVA.index("if (resultUris != null) for (Uri uri : resultUris) if (isPdfUri(uri))")
+        deliver = JAVA.index("else fileCallback.onReceiveValue(resultUris)")
+        self.assertLess(reject, deliver)
+        self.assertIn('"application/pdf".equalsIgnoreCase(type)', JAVA)
+        self.assertIn('OpenableColumns.DISPLAY_NAME', JAVA)
 
 
 if __name__ == "__main__":

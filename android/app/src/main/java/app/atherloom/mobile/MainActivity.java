@@ -8,6 +8,7 @@ import android.content.ContentValues;
 import android.content.ClipboardManager;
 import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
+import android.database.Cursor;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
@@ -15,6 +16,7 @@ import android.os.Environment;
 import android.os.Handler;
 import android.os.Looper;
 import android.provider.MediaStore;
+import android.provider.OpenableColumns;
 import android.util.Base64;
 import android.view.ViewGroup;
 import android.webkit.GeolocationPermissions;
@@ -536,10 +538,25 @@ public class MainActivity extends Activity {
         if (request == FILE_CHOOSER && fileCallback != null) {
             Uri[] resultUris = result == RESULT_OK && pendingCameraUri != null ? new Uri[]{pendingCameraUri} : WebChromeClient.FileChooserParams.parseResult(result, data);
             if (result != RESULT_OK && pendingCameraUri != null) getContentResolver().delete(pendingCameraUri, null, null);
-            fileCallback.onReceiveValue(resultUris);
+            boolean rejectedPdf = false;
+            if (resultUris != null) for (Uri uri : resultUris) if (isPdfUri(uri)) { rejectedPdf = true; break; }
+            if (rejectedPdf) {
+                fileCallback.onReceiveValue(null);
+                Toast.makeText(this, "PDF 已在 Android 原生层拦截，没有交给 WebView 读取", Toast.LENGTH_LONG).show();
+            } else fileCallback.onReceiveValue(resultUris);
             fileCallback = null;
             pendingCameraUri = null;
         }
+    }
+    private boolean isPdfUri(Uri uri) {
+        if (uri == null) return false;
+        String type = getContentResolver().getType(uri);
+        if ("application/pdf".equalsIgnoreCase(type)) return true;
+        String name = uri.getLastPathSegment();
+        try (Cursor cursor = getContentResolver().query(uri, new String[]{OpenableColumns.DISPLAY_NAME}, null, null, null)) {
+            if (cursor != null && cursor.moveToFirst()) name = cursor.getString(0);
+        } catch (Exception ignored) {}
+        return name != null && name.toLowerCase(java.util.Locale.ROOT).endsWith(".pdf");
     }
     @Override public void onRequestPermissionsResult(int request, String[] permissions, int[] results) {
         super.onRequestPermissionsResult(request, permissions, results);
