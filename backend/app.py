@@ -117,9 +117,20 @@ def init_db() -> None:
             );
             CREATE INDEX IF NOT EXISTS memory_embeddings_route
               ON memory_embeddings(provider_id, model);
+            CREATE TABLE IF NOT EXISTS memory_usage (
+              memory_id TEXT PRIMARY KEY, recall_count INTEGER NOT NULL DEFAULT 0,
+              last_recalled_at TEXT
+            );
             CREATE TABLE IF NOT EXISTS summary_versions (
               id TEXT PRIMARY KEY, conversation_id TEXT NOT NULL, content TEXT NOT NULL,
               source TEXT NOT NULL DEFAULT 'manual', created_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS conversation_continuity (
+              conversation_id TEXT PRIMARY KEY, open_threads TEXT NOT NULL DEFAULT '',
+              archived_message_count INTEGER NOT NULL DEFAULT 0, updated_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS timeline_archived_messages (
+              message_id TEXT PRIMARY KEY, conversation_id TEXT NOT NULL, archived_at TEXT NOT NULL
             );
             CREATE TABLE IF NOT EXISTS motivation_states (
               persona_key TEXT PRIMARY KEY, enabled INTEGER NOT NULL DEFAULT 0,
@@ -1945,6 +1956,9 @@ def delete_conversation(conversation_id: str) -> dict[str, bool]:
             connection.execute(f"DELETE FROM message_trash WHERE message_id IN ({placeholders})", message_ids)
         connection.execute("DELETE FROM message_selections WHERE conversation_id=?", (conversation_id,))
         connection.execute("DELETE FROM summary_versions WHERE conversation_id=?", (conversation_id,))
+        connection.execute("DELETE FROM conversation_continuity WHERE conversation_id=?", (conversation_id,))
+        connection.execute("DELETE FROM timeline_archived_messages WHERE conversation_id=?", (conversation_id,))
+        connection.execute("DELETE FROM memories WHERE source_conversation_id=? AND kind='timeline'", (conversation_id,))
         connection.execute("DELETE FROM messages WHERE conversation_id=?", (conversation_id,))
         connection.execute("UPDATE memories SET source_conversation_id=NULL WHERE source_conversation_id=?", (conversation_id,))
         connection.execute("UPDATE mcp_audit SET conversation_id=NULL WHERE conversation_id=?", (conversation_id,))
@@ -2057,6 +2071,9 @@ def delete_message_version(message_id: str) -> dict[str, Any]:
         connection.execute(f"DELETE FROM message_selections WHERE assistant_message_id IN ({placeholders})", targets)
         connection.execute("UPDATE conversations SET summary='',updated_at=? WHERE id=?", (now_iso(), message["conversation_id"]))
         connection.execute("DELETE FROM summary_versions WHERE conversation_id=?", (message["conversation_id"],))
+        connection.execute("DELETE FROM conversation_continuity WHERE conversation_id=?", (message["conversation_id"],))
+        connection.execute("DELETE FROM timeline_archived_messages WHERE conversation_id=?", (message["conversation_id"],))
+        connection.execute("DELETE FROM memories WHERE source_conversation_id=? AND kind='timeline'", (message["conversation_id"],))
         connection.commit()
     return {"ok": True, "deleted": targets}
 
@@ -2088,6 +2105,9 @@ def delete_all_message_versions(message_id: str) -> dict[str, Any]:
         connection.execute("DELETE FROM message_selections WHERE conversation_id=? AND parent_message_id=?", (message["conversation_id"], parent_id))
         connection.execute("UPDATE conversations SET summary='',updated_at=? WHERE id=?", (now_iso(), message["conversation_id"]))
         connection.execute("DELETE FROM summary_versions WHERE conversation_id=?", (message["conversation_id"],))
+        connection.execute("DELETE FROM conversation_continuity WHERE conversation_id=?", (message["conversation_id"],))
+        connection.execute("DELETE FROM timeline_archived_messages WHERE conversation_id=?", (message["conversation_id"],))
+        connection.execute("DELETE FROM memories WHERE source_conversation_id=? AND kind='timeline'", (message["conversation_id"],))
         connection.commit()
     return {"ok": True, "deleted": targets, "parent_message_id": parent_id}
 
@@ -2911,6 +2931,7 @@ def load_chat_context(connection: sqlite3.Connection, body: ChatIn, cutoff: str 
     query = """SELECT messages.role, messages.content FROM messages
       WHERE messages.conversation_id=?
       AND NOT EXISTS (SELECT 1 FROM message_trash t WHERE t.message_id=messages.id)
+      AND NOT EXISTS (SELECT 1 FROM timeline_archived_messages a WHERE a.message_id=messages.id)
       AND (messages.role!='assistant' OR messages.parent_message_id IS NULL OR messages.id=COALESCE(
         (SELECT s.assistant_message_id FROM message_selections s WHERE s.conversation_id=messages.conversation_id AND s.parent_message_id=messages.parent_message_id),
         (SELECT m2.id FROM messages m2 WHERE m2.conversation_id=messages.conversation_id AND m2.parent_message_id=messages.parent_message_id AND NOT EXISTS (SELECT 1 FROM message_trash t2 WHERE t2.message_id=m2.id) ORDER BY m2.created_at DESC LIMIT 1)
@@ -2944,7 +2965,9 @@ def load_chat_context(connection: sqlite3.Connection, body: ChatIn, cutoff: str 
     for entry in [item for item in entries if item.get("position")=="history_after" and item.get("role")!="system"]: messages.append({"role":entry.get("role","user"),"content":entry["content"]})
     worldbook_before="<worldbook_instructions>\n"+"\n\n".join(before)+"\n</worldbook_instructions>" if before else "";worldbook_after="<worldbook_instructions>\n"+"\n\n".join(after)+"\n</worldbook_instructions>" if after else ""
     roleplay_context = relevant_roleplay_archive(connection, body.content)
-    stable_parts = [part for part in (worldbook_before,persona_prompt,worldbook_after,conversation["summary"] if persona_config["history_enabled"] else "",question_context,formatting_context,tool_context,game_tool_context) if part]
+    continuity = connection.execute("SELECT open_threads FROM conversation_continuity WHERE conversation_id=?", (body.conversation_id,)).fetchone()
+    thread_context = f"<open_threads>\n{continuity['open_threads']}\n</open_threads>\n这是上一段对话仍在延续的原文线头；只用于自然接续，不得扩写成用户没有表达过的事实。" if continuity and continuity["open_threads"].strip() else ""
+    stable_parts = [part for part in (worldbook_before,persona_prompt,worldbook_after,conversation["summary"] if persona_config["history_enabled"] else "",thread_context if persona_config["history_enabled"] else "",question_context,formatting_context,tool_context,game_tool_context) if part]
     typing_context = f"<typing_presence>{body.typing_context}</typing_presence>\n这是用户主动开启的输入状态元数据，不含未发送正文；只在语气确实相关时轻微参考，不要声称看见了用户没发出的文字。" if body.typing_context else ""
     runtime_parts = [part for part in (time_context,typing_context,game_context,media_context,roleplay_context) if part]
     system_parts = [*stable_parts, "\n\n<runtime_context>\n" + "\n\n".join(runtime_parts) + "\n</runtime_context>" if runtime_parts else ""]
@@ -3319,7 +3342,7 @@ def retrieve_memories(
     frequencies = Counter(term for terms in documents for term in terms)
     average_length = sum(sum(terms.values()) for terms in documents) / len(documents)
     type_hints = memory_type_hints(query)
-    now = datetime.now(timezone.utc)
+    usage_rows = {row["memory_id"]: row for row in connection.execute("SELECT * FROM memory_usage")}
     ranked = []
     for row, terms in zip(rows, documents):
         length = max(1, sum(terms.values()))
@@ -3340,25 +3363,22 @@ def retrieve_memories(
                 semantic_score = sum(left * right for left, right in zip(query_vector or [], vector))
             except (json.JSONDecodeError, TypeError, ValueError):
                 semantic_score = None
-        if not lexical_score and (semantic_score is None or semantic_score < .2):
+        if not lexical_score and (semantic_score is None or semantic_score < .42):
             continue
-        score = lexical_score + (max(0.0, semantic_score) * 1.35 if semantic_score is not None and semantic_score >= .2 else 0.0)
+        score = lexical_score + (max(0.0, semantic_score) * 1.35 if semantic_score is not None and semantic_score >= .42 else 0.0)
         if row["kind"] in type_hints:
             score += .35
         if row["starred"]:
             score += .2
-        try:
-            age_days = max(0, (now - datetime.fromisoformat(row["updated_at"])).days)
-            score += .12 / (1 + age_days / 90)
-        except (TypeError, ValueError):
-            pass
+        score += min(.5, math.log1p((usage_rows.get(row["id"])["recall_count"] if usage_rows.get(row["id"]) else 0)) * .08)
         ranked.append({"score": score, "lexical_score": lexical_score, "semantic_score": semantic_score, "row": row, "terms": set(terms), "matched": matched})
     ranked.sort(key=lambda item: item["score"], reverse=True)
     ranked_ids = {item["row"]["id"] for item in ranked}
     for row, terms in zip(rows, documents):
         if row["starred"] and row["id"] not in ranked_ids:
             ranked.append({"score": .32, "lexical_score": 0.0, "semantic_score": None, "row": row, "terms": set(terms), "matched": []})
-    if not ranked:
+    low_information = query.strip().lower() in {"你好", "您好", "嗨", "hi", "hello", "早安", "早上好", "晚安"}
+    if not ranked and low_information:
         recent = sorted(zip(rows, documents), key=lambda item: item[0]["updated_at"], reverse=True)[:min(3, limit)]
         ranked = [{"score": .08, "lexical_score": 0.0, "semantic_score": None, "row": row, "terms": set(terms), "matched": []} for row, terms in recent]
 
@@ -3375,6 +3395,12 @@ def retrieve_memories(
             continue
         selected.append(best)
         used_chars += len(content)
+    if selected:
+        recalled_at = now_iso()
+        connection.executemany("""INSERT INTO memory_usage(memory_id,recall_count,last_recalled_at) VALUES (?,1,?)
+          ON CONFLICT(memory_id) DO UPDATE SET recall_count=recall_count+1,last_recalled_at=excluded.last_recalled_at""",
+          [(item["row"]["id"], recalled_at) for item in selected])
+        connection.commit()
     return [{
         "id": item["row"]["id"], "title": item["row"]["title"], "kind": item["row"]["kind"],
         "content": item["row"]["content"], "score": round(item["score"], 4),
@@ -3396,6 +3422,51 @@ async def model_title(client: httpx.AsyncClient, provider: sqlite3.Row, content:
     else:
         title = data.get("choices", [{}])[0].get("message", {}).get("content", "")
     return title.strip().strip('"“”')[:30] or local_title(content)
+
+
+def sync_conversation_continuity(conversation_id: str, persona_id: str | None) -> dict[str, Any]:
+    """Persist exact timeline chunks before removing them from the active context."""
+    with closing(db()) as connection:
+        conversation = connection.execute("SELECT title FROM conversations WHERE id=?", (conversation_id,)).fetchone()
+        if not conversation:
+            return {"archived": 0, "open_threads": ""}
+        config_row = connection.execute("SELECT config_json FROM persona_configs WHERE persona_id=?", (persona_id,)).fetchone() if persona_id else None
+        frequency = normalize_persona_config(config_row["config_json"] if config_row else {})["summary_frequency"]
+        rows = list(connection.execute("""SELECT messages.id,messages.role,messages.content,messages.created_at FROM messages
+          WHERE messages.conversation_id=?
+          AND NOT EXISTS (SELECT 1 FROM message_trash t WHERE t.message_id=messages.id)
+          AND NOT EXISTS (SELECT 1 FROM timeline_archived_messages a WHERE a.message_id=messages.id)
+          AND (messages.role!='assistant' OR messages.parent_message_id IS NULL OR messages.id=COALESCE(
+            (SELECT s.assistant_message_id FROM message_selections s WHERE s.conversation_id=messages.conversation_id AND s.parent_message_id=messages.parent_message_id),
+            (SELECT m2.id FROM messages m2 WHERE m2.conversation_id=messages.conversation_id AND m2.parent_message_id=messages.parent_message_id AND NOT EXISTS (SELECT 1 FROM message_trash t2 WHERE t2.message_id=m2.id) ORDER BY m2.created_at DESC LIMIT 1)
+          )) ORDER BY messages.created_at""", (conversation_id,)))
+        recent = rows[-2:]
+        open_threads = "\n".join(f"{('用户' if row['role']=='user' else '助手')}：{row['content']}" for row in recent)
+        archived = 0
+        if len(rows) >= frequency * 2:
+            batch = rows[:-frequency]
+            transcript = "\n\n".join(f"{('用户' if row['role']=='user' else '助手')}：{row['content']}" for row in batch)
+            memory_id, created = str(uuid.uuid4()), now_iso()
+            connection.execute("""INSERT INTO memories
+              (id,title,content,kind,source_conversation_id,source_message_id,starred,archived,deleted_at,created_at,updated_at,persona_key)
+              VALUES (?,?,?,?,?,?,0,0,NULL,?,?,?)""", (
+                memory_id, f"Timeline · {conversation['title']}", transcript, "timeline",
+                conversation_id, batch[-1]["id"], created, created, motivation_key(persona_id),
+            ))
+            connection.execute("INSERT INTO memory_audit VALUES (?,?,'timeline','',?)", (str(uuid.uuid4()), memory_id, created))
+            connection.executemany(
+                "INSERT OR IGNORE INTO timeline_archived_messages VALUES (?,?,?)",
+                [(row["id"], conversation_id, created) for row in batch],
+            )
+            archived = len(batch)
+        previous = connection.execute("SELECT archived_message_count FROM conversation_continuity WHERE conversation_id=?", (conversation_id,)).fetchone()
+        total = (previous["archived_message_count"] if previous else 0) + archived
+        connection.execute("""INSERT INTO conversation_continuity VALUES (?,?,?,?)
+          ON CONFLICT(conversation_id) DO UPDATE SET open_threads=excluded.open_threads,
+          archived_message_count=excluded.archived_message_count,updated_at=excluded.updated_at""",
+          (conversation_id, open_threads, total, now_iso()))
+        connection.commit()
+    return {"archived": archived, "open_threads": open_threads}
 
 
 @app.post("/api/chat")
@@ -3510,7 +3581,7 @@ async def chat(body: ChatIn) -> StreamingResponse:
                     headers = {"x-api-key": provider["api_key"], "anthropic-version": "2023-06-01", "content-type": "application/json"}
                     url = provider_endpoint(provider["base_url"], "anthropic")
                 else:
-                    payload = {"model": provider["model"], "max_tokens": provider["max_tokens"], "temperature": provider["temperature"], "top_p": provider["top_p"], "stream": bool(provider["stream_enabled"]), "messages": provider_messages}
+                    payload = {"model": provider["model"], "temperature": provider["temperature"], "top_p": provider["top_p"], "stream": bool(provider["stream_enabled"]), "messages": provider_messages}
                     if provider["cache_mode"] == "openai" and provider["prompt_cache_key"]:
                         payload["prompt_cache_key"] = provider["prompt_cache_key"]
                     if provider["protocol"] in ("deepseek", "glm") and provider["thinking_enabled"]:
@@ -3707,7 +3778,13 @@ async def chat(body: ChatIn) -> StreamingResponse:
                     with closing(db()) as connection:
                         connection.execute("UPDATE conversations SET title=? WHERE id=?", (generated_title, body.conversation_id))
                         connection.commit()
-                yield json.dumps({"done": True, "assistant_id": assistant_id, "user_id": user_id, "title": generated_title, "usage": usage}, ensure_ascii=False) + "\n"
+                if usage:
+                    input_tokens = usage.get("input_tokens", usage.get("prompt_tokens", 0)) or 0
+                    output_tokens = usage.get("output_tokens", usage.get("completion_tokens", 0)) or 0
+                    usage = {**usage, "input_tokens": input_tokens, "output_tokens": output_tokens,
+                             "total_tokens": usage.get("total_tokens") or input_tokens + output_tokens}
+                continuity = sync_conversation_continuity(body.conversation_id, body.persona_id)
+                yield json.dumps({"done": True, "assistant_id": assistant_id, "user_id": user_id, "title": generated_title, "usage": usage, "continuity": continuity}, ensure_ascii=False) + "\n"
         except asyncio.CancelledError:
             raise
         except Exception as exc:
@@ -3768,7 +3845,7 @@ async def roleplay_model_once(provider: sqlite3.Row, system: str, prompt: str) -
         }
     else:
         payload = {
-            "model": provider["model"], "max_tokens": provider["max_tokens"],
+            "model": provider["model"],
             "temperature": provider["temperature"], "top_p": provider["top_p"],
             "messages": [{"role": "system", "content": system}, *messages],
         }
