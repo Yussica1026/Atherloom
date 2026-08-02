@@ -8,6 +8,7 @@ import android.content.ContentValues;
 import android.content.ClipboardManager;
 import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
+import android.content.res.AssetFileDescriptor;
 import android.database.Cursor;
 import android.net.Uri;
 import android.os.Build;
@@ -52,16 +53,19 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import com.tom_roush.pdfbox.pdmodel.PDDocument;
 import com.tom_roush.pdfbox.text.PDFTextStripper;
+import com.tom_roush.pdfbox.android.PDFBoxResourceLoader;
 
 public class MainActivity extends Activity {
     private static final int FILE_CHOOSER = 41, AUDIO_PERMISSION = 42;
     private WebView webView;
+    private NativeBridge nativeBridge;
     private ValueCallback<Uri[]> fileCallback;
     private Uri pendingCameraUri;
     private PermissionRequest pendingPermission;
 
     @Override public void onCreate(Bundle state) {
         super.onCreate(state);
+        PDFBoxResourceLoader.init(getApplicationContext());
         webView = new WebView(this);
         webView.setLayoutParams(new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
         setContentView(webView);
@@ -74,7 +78,8 @@ public class MainActivity extends Activity {
         webView.getSettings().setJavaScriptEnabled(true);
         webView.getSettings().setDomStorageEnabled(true);
         webView.getSettings().setMediaPlaybackRequiresUserGesture(false);
-        webView.addJavascriptInterface(new NativeBridge(this, webView), "AtherloomNative");
+        nativeBridge = new NativeBridge(this, webView);
+        webView.addJavascriptInterface(nativeBridge, "AtherloomNative");
         webView.setWebViewClient(new WebViewClient() {
             @Override public WebResourceResponse shouldInterceptRequest(WebView view, WebResourceRequest request) { return loader.shouldInterceptRequest(request.getUrl()); }
             @Override public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest request) {
@@ -117,6 +122,7 @@ public class MainActivity extends Activity {
         private final SharedPreferences secrets;
         private final Context context;
         private final WebView webView;
+        private volatile String pendingPdfResult = "";
         NativeBridge(Context context, WebView webView) {
             this.context = context;
             this.webView = webView;
@@ -207,6 +213,9 @@ public class MainActivity extends Activity {
         @JavascriptInterface public void showNotice(String message) {
             new Handler(Looper.getMainLooper()).post(() -> Toast.makeText(context, message, Toast.LENGTH_LONG).show());
         }
+
+        void setPendingPdfResult(JSONObject result) { pendingPdfResult = result.toString(); }
+        @JavascriptInterface public String takePdfResult() { String result=pendingPdfResult; pendingPdfResult=""; return result; }
 
         @JavascriptInterface public String saveBackup(String requestedName, String content) {
             String fileName = (requestedName == null ? "" : requestedName).replaceAll("[\\\\/:*?\"<>|]", "-");
@@ -420,21 +429,6 @@ public class MainActivity extends Activity {
             }).start();
         }
 
-        @JavascriptInterface public void extractPdfTextAsync(String encoded, String callbackId) {
-            new Thread(() -> {
-                String result;
-                try {
-                    byte[] bytes = Base64.decode(encoded, Base64.DEFAULT);
-                    try (PDDocument document = PDDocument.load(new ByteArrayInputStream(bytes))) {
-                        String text = new PDFTextStripper().getText(document);
-                        result = new JSONObject().put("ok", true).put("text", text).put("pages", document.getNumberOfPages()).toString();
-                    }
-                } catch (Exception error) { result = failure(error); }
-                String callback = "window.AtherloomNativeResolve(" + JSONObject.quote(callbackId) + "," + JSONObject.quote(result) + ")";
-                webView.post(() -> webView.evaluateJavascript(callback, null));
-            }).start();
-        }
-
         @JavascriptInterface public void chatStream(String raw, String callbackId) {
             new Thread(() -> {
                 HttpURLConnection connection = null;
@@ -538,15 +532,49 @@ public class MainActivity extends Activity {
         if (request == FILE_CHOOSER && fileCallback != null) {
             Uri[] resultUris = result == RESULT_OK && pendingCameraUri != null ? new Uri[]{pendingCameraUri} : WebChromeClient.FileChooserParams.parseResult(result, data);
             if (result != RESULT_OK && pendingCameraUri != null) getContentResolver().delete(pendingCameraUri, null, null);
-            boolean rejectedPdf = false;
-            if (resultUris != null) for (Uri uri : resultUris) if (isPdfUri(uri)) { rejectedPdf = true; break; }
-            if (rejectedPdf) {
+            Uri pdfUri = null;
+            if (resultUris != null) for (Uri uri : resultUris) if (isPdfUri(uri)) { pdfUri = uri; break; }
+            if (pdfUri != null) {
                 fileCallback.onReceiveValue(null);
-                Toast.makeText(this, "PDF 已在 Android 原生层拦截，没有交给 WebView 读取", Toast.LENGTH_LONG).show();
+                Toast.makeText(this, "正在 Android 原生后台解析 PDF…", Toast.LENGTH_SHORT).show();
+                parsePdfUri(pdfUri);
             } else fileCallback.onReceiveValue(resultUris);
             fileCallback = null;
             pendingCameraUri = null;
         }
+    }
+    private void parsePdfUri(Uri uri) {
+        new Thread(() -> {
+            JSONObject result = new JSONObject();
+            try {
+                String name = pdfDisplayName(uri);
+                try (AssetFileDescriptor descriptor = getContentResolver().openAssetFileDescriptor(uri, "r")) {
+                    long length = descriptor == null ? -1 : descriptor.getLength();
+                    if (length > 24L * 1024L * 1024L) throw new Exception("PDF 超过 24 MB，请先压缩后再打开");
+                }
+                try (InputStream input = getContentResolver().openInputStream(uri); PDDocument document = PDDocument.load(input)) {
+                    int pages = document.getNumberOfPages();
+                    if (pages > 400) throw new Exception("PDF 超过 400 页，请拆分后再打开");
+                    PDFTextStripper stripper = new PDFTextStripper();
+                    String text = stripper.getText(document);
+                    if (text == null || text.trim().isEmpty()) throw new Exception("PDF 没有可提取文字，可能是扫描图片版");
+                    boolean truncated = text.length() > 600000;
+                    if (truncated) text = text.substring(0, 600000);
+                    result.put("ok", true).put("name", name).put("pages", pages).put("text", text).put("truncated", truncated);
+                }
+            } catch (Exception error) {
+                try { result.put("ok", false).put("error", error.getMessage()); } catch (Exception ignored) {}
+            }
+            nativeBridge.setPendingPdfResult(result);
+            webView.post(() -> webView.evaluateJavascript("window.AtherloomNativePdfReady&&window.AtherloomNativePdfReady()", null));
+        }).start();
+    }
+    private String pdfDisplayName(Uri uri) {
+        String name = uri.getLastPathSegment();
+        try (Cursor cursor = getContentResolver().query(uri, new String[]{OpenableColumns.DISPLAY_NAME}, null, null, null)) {
+            if (cursor != null && cursor.moveToFirst()) name = cursor.getString(0);
+        } catch (Exception ignored) {}
+        return name == null ? "本地 PDF" : name;
     }
     private boolean isPdfUri(Uri uri) {
         if (uri == null) return false;

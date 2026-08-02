@@ -57,7 +57,7 @@ class AndroidFrontendRegressionContracts(unittest.TestCase):
 
     def test_all_requested_android_regressions_are_covered(self):
         self.assertNotIn('$("#prompt").addEventListener("keydown"', APP)
-        self.assertLess(APP.index("file.type===\"application/pdf\""), APP.index("file.slice(0,limit).arrayBuffer()"))
+        self.assertIn("window.AtherloomNativePdfReady", APP)
         self.assertIn('resetRoleplaySetup();\n  $(".roleplay-desk").scrollTop=0;', APP)
         self.assertNotIn('const active=roleplayState.stories.find', APP)
         self.assertIn("touch-action:pan-y", CSS)
@@ -70,19 +70,25 @@ class AndroidFrontendRegressionContracts(unittest.TestCase):
         self.assertIn('if(anthropic)payload.max_tokens=', STANDALONE)
         self.assertIn('if (protocol.equals("anthropic")) payload.put("max_tokens"', JAVA)
 
-    def test_pdf_uri_is_rejected_before_webview_receives_it(self):
+    def test_pdf_uri_is_parsed_natively_before_webview_receives_it(self):
         reject = JAVA.index("if (resultUris != null) for (Uri uri : resultUris) if (isPdfUri(uri))")
         deliver = JAVA.index("else fileCallback.onReceiveValue(resultUris)")
         self.assertLess(reject, deliver)
         self.assertIn('"application/pdf".equalsIgnoreCase(type)', JAVA)
-        self.assertIn("OpenableColumns.DISPLAY_NAME", JAVA)
+        self.assertIn("parsePdfUri(pdfUri)", JAVA)
+        self.assertIn("getContentResolver().openInputStream(uri)", JAVA)
+        self.assertIn("PDFTextStripper", JAVA)
+        self.assertIn("PDFBoxResourceLoader.init(getApplicationContext())", JAVA)
+        self.assertIn("24L * 1024L * 1024L", JAVA)
+        self.assertIn("pages > 400", JAVA)
+        self.assertIn("takePdfResult()", JAVA)
+        self.assertNotIn("extractPdfTextAsync", JAVA)
+        self.assertNotIn("btoa(binary)", APP)
 
-    def test_pdf_uri_is_rejected_before_webview_receives_it(self):
-        reject = JAVA.index("if (resultUris != null) for (Uri uri : resultUris) if (isPdfUri(uri))")
-        deliver = JAVA.index("else fileCallback.onReceiveValue(resultUris)")
-        self.assertLess(reject, deliver)
-        self.assertIn('"application/pdf".equalsIgnoreCase(type)', JAVA)
-        self.assertIn('OpenableColumns.DISPLAY_NAME', JAVA)
+    def test_conversation_rows_support_long_press_delete(self):
+        self.assertIn("bindConversationLongPress", APP)
+        self.assertIn("setTimeout(async()=>", APP)
+        self.assertIn('updateHistoryState(button.dataset.value,"delete",{skipConfirm:true})', APP)
 
 
 if __name__ == "__main__":
