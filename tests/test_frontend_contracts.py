@@ -87,8 +87,9 @@ class AndroidFrontendRegressionContracts(unittest.TestCase):
 
     def test_conversation_rows_support_long_press_delete(self):
         self.assertIn("bindConversationLongPress", APP)
-        self.assertIn("setTimeout(async()=>", APP)
-        self.assertIn('updateHistoryState(button.dataset.value,"delete",{skipConfirm:true})', APP)
+        self.assertIn("setTimeout(()=>", APP)
+        self.assertIn('classList.add("delete-revealed")', APP)
+        self.assertIn('.conversation-switch-row.delete-revealed .conversation-switch-delete{display:grid}', CSS)
 
 
 if __name__ == "__main__":
