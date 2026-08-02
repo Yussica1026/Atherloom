@@ -89,6 +89,8 @@ class AndroidFrontendRegressionContracts(unittest.TestCase):
         self.assertIn("bindConversationLongPress", APP)
         self.assertIn("setTimeout(()=>", APP)
         self.assertIn('classList.add("delete-revealed")', APP)
+        self.assertIn('addEventListener("contextmenu",event=>event.preventDefault())', APP)
+        self.assertIn('Math.hypot(event.clientX-startX,event.clientY-startY)>12', APP)
         self.assertIn('.conversation-switch-row.delete-revealed .conversation-switch-delete{display:grid}', CSS)
 
 
