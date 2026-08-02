@@ -579,6 +579,29 @@ class LocalClientTests(unittest.TestCase):
             results = app_module.retrieve_memories(connection, "你好")
         self.assertEqual(results[0]["id"], memory["id"])
 
+    def test_memory_recall_has_an_absolute_honesty_boundary_and_use_weight(self):
+        memory = self.client.post("/api/memories", json={
+            "title": "河边散步", "content": "傍晚沿着河边散步后平静下来", "kind": "event"
+        }).json()
+        with app_module.closing(app_module.db()) as connection:
+            connection.execute(
+                "INSERT INTO memory_embeddings VALUES (?,?,?,?,?,?,?)",
+                (memory["id"], "route", "embed", app_module.memory_content_hash(memory["title"], memory["content"]), 2, "[1,0]", app_module.now_iso()),
+            )
+            connection.commit()
+            absent = app_module.retrieve_memories(
+                connection, "完全没有记录的陌生问题", query_vector=[0.3, 0.0],
+                embedding_provider_id="route", embedding_model="embed",
+            )
+            self.assertEqual(absent, [])
+            recalled = app_module.retrieve_memories(
+                connection, "想起平静的散步", query_vector=[1.0, 0.0],
+                embedding_provider_id="route", embedding_model="embed",
+            )
+            self.assertEqual(recalled[0]["id"], memory["id"])
+            usage = connection.execute("SELECT recall_count FROM memory_usage WHERE memory_id=?", (memory["id"],)).fetchone()
+            self.assertEqual(usage["recall_count"], 1)
+
     def test_vector_recall_finds_semantic_match_and_ignores_stale_content(self):
         semantic = self.client.post("/api/memories", json={
             "title": "rain walk", "content": "walked by the river and finally felt calm", "kind": "event",
@@ -718,6 +741,52 @@ class LocalClientTests(unittest.TestCase):
         with app_module.closing(app_module.db()) as connection:
             self.assertIsNone(connection.execute("SELECT 1 FROM conversations WHERE id=?", (first["id"],)).fetchone())
             self.assertIsNotNone(connection.execute("SELECT 1 FROM conversations WHERE id=?", (second["id"],)).fetchone())
+
+    def test_timeline_is_persisted_before_old_messages_leave_hot_context(self):
+        persona = self.client.post("/api/personas", json={
+            "name": "连续人格", "prompt": "记得已经确认的事",
+            "config": {"summary_frequency": 2, "memory_enabled": True, "history_enabled": True},
+        }).json()
+        conversation = self.client.post("/api/conversations", json={"title": "连续测试", "persona_id": persona["id"]}).json()
+        created = app_module.now_iso()
+        with app_module.closing(app_module.db()) as connection:
+            for index, (role, content) in enumerate([
+                ("user", "第一件旧事"), ("assistant", "我记下第一件旧事"),
+                ("user", "第二件旧事"), ("assistant", "我记下第二件旧事"),
+                ("user", "现在继续说"), ("assistant", "我们继续"),
+            ]):
+                connection.execute(
+                    "INSERT INTO messages VALUES (?,?,?,?,?,?,?,'',NULL)",
+                    (f"timeline-{index}", conversation["id"], role, content, None, None, f"{created}-{index}"),
+                )
+            connection.commit()
+        result = app_module.sync_conversation_continuity(conversation["id"], persona["id"])
+        self.assertEqual(result["archived"], 4)
+        with app_module.closing(app_module.db()) as connection:
+            memory = connection.execute(
+                "SELECT * FROM memories WHERE source_conversation_id=? AND kind='timeline'", (conversation["id"],)
+            ).fetchone()
+            self.assertIn("第一件旧事", memory["content"])
+            self.assertIn("第二件旧事", memory["content"])
+            self.assertNotIn("现在继续说", memory["content"])
+            hot = list(connection.execute("""SELECT content FROM messages WHERE conversation_id=?
+              AND NOT EXISTS (SELECT 1 FROM timeline_archived_messages a WHERE a.message_id=messages.id)
+              ORDER BY created_at""", (conversation["id"],)))
+            self.assertEqual([row["content"] for row in hot], ["现在继续说", "我们继续"])
+            thread = connection.execute(
+                "SELECT open_threads FROM conversation_continuity WHERE conversation_id=?", (conversation["id"],)
+            ).fetchone()["open_threads"]
+            self.assertIn("用户：现在继续说", thread)
+            self.assertIn("助手：我们继续", thread)
+
+        self.client.delete("/api/messages/timeline-4")
+        with app_module.closing(app_module.db()) as connection:
+            self.assertIsNone(connection.execute(
+                "SELECT 1 FROM memories WHERE source_conversation_id=? AND kind='timeline'", (conversation["id"],)
+            ).fetchone())
+            self.assertIsNone(connection.execute(
+                "SELECT 1 FROM conversation_continuity WHERE conversation_id=?", (conversation["id"],)
+            ).fetchone())
 
     def test_homestead_is_persona_scoped_and_exposes_separate_api(self):
         first = self.client.post("/api/homestead/action?persona_id=flora-a", json={"action": "plant", "target": 0, "species": "sunbell"}).json()
