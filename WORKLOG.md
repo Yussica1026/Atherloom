@@ -8,6 +8,7 @@
 - Android 87 项测试与网页真实交互回归纳入三轮验证；最终三轮连续全部通过。
 - 发布提交 `e4ead8d`，versionCode `54`，版本 `0.5.48-standalone`，标签 `v0.5.48`。
 - v0.5.48 实机发现 WebView 在 0.7 秒前触发 `pointercancel`，删除按钮未显露；修正版把触发提前到 0.48 秒、拦截系统上下文菜单，并加入移动阈值和 Android 式取消事件回归，版本升级为 `v0.5.49`（versionCode 55）。
+- 华为 Mate 30 Pro 曲面屏在 v0.5.49 仍未显露右侧按钮；v0.5.50 使用原生触摸事件在 0.32 秒触发，并在对话下方展开全宽删除键，避开曲面右缘。测试新增 `touchstart` 后 `touchcancel` 场景及按钮宽度检查，versionCode `56`。
 - APK：<https://github.com/Yussica1026/Atherloom/releases/download/v0.5.48/Atherloom-Android.apk>
 
 ## 2026-07-29 · v0.5.36
