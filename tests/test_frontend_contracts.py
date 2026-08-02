@@ -6,6 +6,7 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 APP = (ROOT / "frontend/assets/app.js").read_text(encoding="utf-8")
 STANDALONE = (ROOT / "frontend/assets/standalone.js").read_text(encoding="utf-8")
 JAVA = (ROOT / "android/app/src/main/java/app/atherloom/mobile/MainActivity.java").read_text(encoding="utf-8")
+CSS = (ROOT / "frontend/assets/app.css").read_text(encoding="utf-8")
 
 
 class AndroidFrontendRegressionContracts(unittest.TestCase):
@@ -49,6 +50,21 @@ class AndroidFrontendRegressionContracts(unittest.TestCase):
     def test_android_message_changes_invalidate_timeline(self):
         self.assertIn("const invalidateContinuity=", STANDALONE)
         self.assertGreaterEqual(STANDALONE.count("invalidateContinuity(conversation.id)"), 3)
+
+    def test_all_requested_android_regressions_are_covered(self):
+        self.assertNotIn('$("#prompt").addEventListener("keydown"', APP)
+        self.assertLess(APP.index("file.type===\"application/pdf\""), APP.index("file.slice(0,limit).arrayBuffer()"))
+        self.assertIn('resetRoleplaySetup();\n  $(".roleplay-desk").scrollTop=0;', APP)
+        self.assertNotIn('const active=roleplayState.stories.find', APP)
+        self.assertIn("touch-action:pan-y", CSS)
+        for status in (400, 401, 402, 403, 429, 500): self.assertIn(f'{status}:', APP)
+        self.assertNotIn('assistant.content=`连接失败：', APP)
+        self.assertIn("全部 tokens", APP)
+        self.assertIn("state.memories=await api", APP)
+
+    def test_openai_compatible_requests_do_not_impose_output_cap(self):
+        self.assertIn('if(anthropic)payload.max_tokens=', STANDALONE)
+        self.assertIn('if (protocol.equals("anthropic")) payload.put("max_tokens"', JAVA)
 
 
 if __name__ == "__main__":
