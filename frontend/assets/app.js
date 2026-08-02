@@ -20,9 +20,9 @@ async function api(path, options = {}) {
   const timer = controller ? setTimeout(() => controller.abort(), timeout) : null;
   let response;
   try { response = await fetch(path, { headers: { "Content-Type": "application/json", ...(fetchOptions.headers || {}) }, ...fetchOptions, signal: fetchOptions.signal || controller?.signal }); }
-  catch (error) { if (error.name === "AbortError") throw new Error("等待 AI 超时，请检查线路后重试"); throw error; }
+  catch (error) { if (error.name === "AbortError") throw new Error("请求超时：上游在规定时间内没有响应，请检查服务状态、模型名称与网络后重试"); throw new Error(`网络请求未发出：${error.message||"浏览器无法访问本地服务或上游接口"}`); }
   finally { if (timer) clearTimeout(timer); }
-  if (!response.ok) throw new Error((await response.json().catch(() => ({}))).detail || `请求失败 ${response.status}`);
+  if (!response.ok) { const detail=(await response.json().catch(() => ({}))).detail; throw new Error(formatHttpError(response.status,detail)); }
   return response.json();
 }
 
@@ -112,6 +112,13 @@ function detectBookFormat(buffer,file){const bytes=new Uint8Array(buffer),head=n
 function validateBookText(text){const sample=String(text||"").slice(0,12000),visible=sample.match(/[^\s\u0000-\u001F]/g)?.length||0,letters=sample.match(/[\p{L}\p{Script=Han}]/gu)?.length||0,numbers=sample.match(/\d/g)?.length||0;if(!sample.trim())throw new Error("文件里没有可读取的正文");if(bookTextScore(sample)>Math.max(80,sample.length*.08)||visible>200&&letters/visible<.08&&numbers/visible>.45)throw new Error("检测到的不是正常正文，可能是 PDF/EPUB/MOBI 等电子书内部数据；请确认文件格式，或先导出为 TXT/Markdown");}
 async function openLocalBook(file) {
   if (!file) return;
+  if((file.type==="application/pdf"||/\.pdf$/i.test(file.name||""))&&window.AtherloomNative){
+    const reader=$("#bookReader"),status=$("#bookStatus");
+    reader.innerHTML=`<div class="game-empty"><span>PDF</span><h3>这份 PDF 没有载入</h3><p>Android 已在读取文件字节前拦截，避免大 PDF 占满内存导致应用闪退。请先转成 TXT 或 Markdown 后共读。</p></div>`;
+    status.textContent=`${file.name} · 已在读取前安全拦截`;
+    window.AtherloomNative.showNotice?.("PDF 已安全拦截，没有读取文件内容");
+    return;
+  }
   const reader = $("#bookReader");
   const status = $("#bookStatus");
   const key = `atherloom:book:${file.name}:${file.size}`;
@@ -244,6 +251,11 @@ function renderGameCards() {
   document.querySelectorAll("[data-game-id]").forEach(button => button.onclick = () => openGame(button.dataset.gameId));
 }
 
+function formatHttpError(status,detail=""){
+  const explanations={400:"请求格式或参数不符合接口要求",401:"API Key 无效、过期或没有提供",402:"账户余额、额度或付费状态不足",403:"当前 Key 没有访问该模型或接口的权限",404:"请求的资源、模型或接口不存在",408:"上游等待请求超时",409:"当前数据状态与操作冲突",413:"发送的文件或上下文超过接口允许大小",422:"请求内容校验未通过",429:"请求过于频繁，或账户已达到速率/额度限制",500:"上游服务内部错误",502:"本地服务收到无效的上游响应",503:"上游服务暂时不可用",504:"上游服务响应超时"};
+  const reason=explanations[Number(status)]||"接口返回了未成功状态";return `HTTP ${status}：${reason}${detail?`；${String(detail).slice(0,800)}`:""}`;
+}
+
 function renderFishing() {
   const current = gameState.fishing; if (!current) return;
   const water = gameState.waters[current.water];
@@ -349,7 +361,7 @@ function renderMessages({stickToBottom=true}={}) {
     ${m.role === "assistant" && m.model ? `<div class="message-meta">${escapeHtml(m.model)}</div>` : ""}</article>`; }).join("");
   document.querySelectorAll(".message [data-action]").forEach(button => button.onclick = () => handleMessageAction(button.closest(".message"), button.dataset.action));
   document.querySelectorAll("[data-question-option]").forEach(button=>button.onclick=()=>{const input=$("#prompt"),line=`关于「${decodeURIComponent(button.dataset.questionTitle)}」，我的选择是：${decodeURIComponent(button.dataset.questionOption)}`;input.value=input.value.trim()?`${input.value.trim()}\n${line}`:line;button.closest(".question-card").querySelectorAll("button").forEach(item=>item.classList.toggle("selected",item===button));input.dispatchEvent(new Event("input"));input.focus();});
-  document.querySelectorAll(".message.assistant").forEach(article=>{const message=state.messages[Number(article.dataset.index)],meta=article.querySelector(".message-meta");if(message?.model&&meta){const usage=message.usage?.total_tokens??(message.content?estimateTokens(message.content)+estimateTokens(message.reasoning||""):null);if(usage!=null)meta.textContent=`${message.model} · ≈${Number(usage).toLocaleString()} tokens`;}});
+  document.querySelectorAll(".message.assistant").forEach(article=>{const message=state.messages[Number(article.dataset.index)],meta=article.querySelector(".message-meta");if(message?.model&&meta&&message.usage?.total_tokens!=null)meta.textContent=`${message.model} · ${Number(message.usage.total_tokens).toLocaleString()} 全部 tokens`;});
   if(stickToBottom)$("#chatScroll").scrollTop = $("#chatScroll").scrollHeight;
   renderContextUsage();
 }
@@ -387,9 +399,8 @@ function openMessageEditor(message){if(!message)return;const editor=$("#messageE
 
 function renderPickers() {
   const provider = activeProvider(); const persona = activePersona();
-  let latestUsage=[...state.messages].reverse().find(item=>item.role==="assistant"&&item.usage)?.usage;
-  if(!latestUsage){const last=[...state.messages].reverse().find(item=>item.role==="assistant"&&!item.pending);if(last)latestUsage={total_tokens:estimateTokens(last.content||"")+estimateTokens(last.reasoning||"")};}
-  const tokenLabel=latestUsage?.total_tokens!=null?` · ${Number(latestUsage.total_tokens).toLocaleString()} tokens`:latestUsage?.output_tokens!=null?` · ${Number(latestUsage.output_tokens).toLocaleString()} out`:" · tokens—";
+  const latestUsage=[...state.messages].reverse().find(item=>item.role==="assistant"&&item.usage)?.usage;
+  const tokenLabel=latestUsage?.total_tokens!=null?` · ${Number(latestUsage.total_tokens).toLocaleString()} 全部 tokens`:" · tokens—";
   $("#modelPicker").textContent = provider ? `${provider.name} · ${provider.model}${tokenLabel}⌄` : "添加 API 线路";
   $("#personaPicker").textContent = persona ? `${persona.name}⌄` : "默认人格⌄";
   const phrases=persona?.config?.quick_phrases||[];$("#quickPhraseButton").hidden=!phrases.length;
@@ -568,11 +579,11 @@ async function generateReply(content, reuseUserMessageId = null, attachments = [
   try {
     const gameContext=reuseUserMessageId?"":await prepareChatGameContext(content);
     const response = await fetch("/api/chat", { method: "POST",headers: { "Content-Type": "application/json" },signal:controller.signal,body: JSON.stringify({ conversation_id:conversationId,content: content || "重新生成",attachments,provider_id: provider.id,vision_provider_id:state.settings.vision_provider_id||"",persona_id:personaId,reuse_user_message_id:reuseUserMessageId,local_time: localTimeContext(),typing_context:reuseUserMessageId?"":consumeTypingContext(),game_context:gameContext,media_context:mediaContext,worldbook_ids:worldbookIds }) });
-    if (!response.ok) throw new Error(`请求失败 ${response.status}`);
+    if (!response.ok) {const detail=(await response.json().catch(()=>({}))).detail;throw new Error(formatHttpError(response.status,detail));}
     const reader=response.body.getReader(),decoder=new TextDecoder();presenter=createStreamPresenter(assistant,assistant.streaming,messages,conversationId);let pending="";
     while(true){const {value,done}=await reader.read();if(done)break;pending+=decoder.decode(value,{stream:true});const lines=pending.split("\n");pending=lines.pop();for(const line of lines){if(!line)continue;const event=JSON.parse(line);if(event.error)throw new Error(event.error);let structureUpdated=false;if(event.memory_sources){assistant.memory_sources=event.memory_sources;structureUpdated=true;}if(typeof event.delta==="string"&&event.delta!=="null")presenter.push(event.delta);if(typeof event.reasoning_delta==="string"&&event.reasoning_delta!=="null"){assistant.reasoning+=event.reasoning_delta;structureUpdated=true;}if(structureUpdated)updateStreamingMessage(assistant,messages,conversationId);if(event.done){await presenter.finish();assistant.pending=false;assistant.streaming=false;assistant.id=event.assistant_id;assistant.parent_message_id=event.user_id;const pendingUser=[...messages].reverse().find(m=>m.role==="user"&&!m.id);if(pendingUser)pendingUser.id=event.user_id;if(event.title){const conversation=state.conversations.find(c=>c.id===conversationId);if(conversation)conversation.title=event.title;}if(state.current===conversationId){renderCurrentTitle();renderMessages({stickToBottom:streamFollow});}renderHistory();}}}
-  } catch (error) {presenter?.cancel();assistant.pending=false;assistant.streaming=false;if(error.name==="AbortError"){if(!assistant.content)assistant.content="已停止生成";}else{assistant.retry_content=content;assistant.retry_media_context=mediaContext;assistant.content=`连接失败：${error.message}`;if(!reuseUserMessageId){try{const fresh=await api(`/api/conversations/${conversationId}/messages`),persisted=[...fresh].reverse().find(item=>item.role==="user"&&item.content===content);if(persisted)persisted.attachments=attachments;messages.splice(0,messages.length,...fresh,assistant);}catch{}}}if(state.current===conversationId)renderMessages({stickToBottom:streamFollow});}
-  finally{state.generating.delete(conversationId);state.generation_controllers.delete(conversationId);renderHistory();if(state.current===conversationId){renderCurrentTitle();updateComposerState();}}
+  } catch (error) {presenter?.cancel();assistant.pending=false;assistant.streaming=false;if(error.name==="AbortError"){if(!assistant.content)assistant.content="已停止生成";}else{assistant.retry_content=content;assistant.retry_media_context=mediaContext;assistant.content=`生成未完成：${error.message}`;if(!reuseUserMessageId){try{const fresh=await api(`/api/conversations/${conversationId}/messages`),persisted=[...fresh].reverse().find(item=>item.role==="user"&&item.content===content);if(persisted)persisted.attachments=attachments;messages.splice(0,messages.length,...fresh,assistant);}catch{}}}if(state.current===conversationId)renderMessages({stickToBottom:streamFollow});}
+  finally{state.generating.delete(conversationId);state.generation_controllers.delete(conversationId);renderHistory();if(state.current===conversationId){renderCurrentTitle();updateComposerState();state.memories=await api(`/api/memories?persona_key=${encodeURIComponent(memoryPersonaKey())}`).catch(()=>state.memories);renderSettings();}}
 }
 
 function motivationPersonaKey(){return state.persona||"__default__";}
@@ -813,7 +824,7 @@ function renderRoleplayStage(){
   document.querySelectorAll("[data-roleplay-favorite]").forEach(button=>button.onclick=()=>toggleRoleplayFavorite(Number(button.dataset.roleplayFavorite)));
   document.querySelectorAll("[data-roleplay-reroll]").forEach(button=>button.onclick=()=>rerollRoleplayTurn(Number(button.dataset.roleplayReroll)));
   document.querySelectorAll("[data-roleplay-delete]").forEach(button=>button.onclick=()=>deleteRoleplayTurn(Number(button.dataset.roleplayDelete)));
-  renderRoleplayStories();requestAnimationFrame(()=>{$(".roleplay-desk").scrollTop=$(".roleplay-desk").scrollHeight;});
+  renderRoleplayStories();
 }
 async function loadRoleplayStory(id){roleplayState.current=await api(`/api/roleplay/stories/${id}`);renderRoleplayStage();renderRoleplayBackstage();}
 async function requestRoleplayOpening(mode="ai",prose=""){const story=roleplayState.current;if(!story||roleplayState.busy)return;roleplayState.busy=true;roleplayState.phase=mode==="manual"?"正在保存你的开场…":"旁白正在写开场…";$("#roleplayStatus").textContent=roleplayState.phase;renderRoleplayStage();try{const opening=await api(`/api/roleplay/stories/${story.id}/opening${mode==="manual"?"/manual":""}`,{method:"POST",body:JSON.stringify(mode==="manual"?{prose}:{}),timeout:150000});if(!story.turns.some(turn=>turn.turn_number===0))story.turns.push(opening);story.state={...story.state,scene:opening.checkpoint.scene,rolling_summary:`开场：${opening.prose}`};$("#roleplayStatus").textContent="开场已经保存";}catch(error){$("#roleplayStatus").textContent=`开场失败：${error.message}`;}finally{roleplayState.busy=false;roleplayState.phase="";renderRoleplayStage();}}
@@ -825,8 +836,8 @@ async function openRoleplay(){
   if(!state.providers.length){openSettings("providers");return;}
   $("#roleplaySpace").hidden=false;setSidebar(false);
   roleplayState.stories=await api("/api/roleplay/stories");renderRoleplayStories();
-  const active=roleplayState.stories.find(story=>story.status==="active");
-  if(active)await loadRoleplayStory(active.id);else resetRoleplaySetup();
+  resetRoleplaySetup();
+  $(".roleplay-desk").scrollTop=0;
 }
 $("#roleplaySetup").onsubmit=async event=>{
   event.preventDefault();const form=event.target,button=form.querySelector(".roleplay-open-curtain"),status=$("#roleplaySetupStatus"),cast=[...$("#roleplayCastRows").children].map(row=>({name:row.querySelector("[data-cast-name]").value.trim(),provider_id:row.querySelector("[data-cast-provider]").value,persona_id:row.querySelector("[data-cast-persona]").value||null,description:row.querySelector("[data-cast-description]").value.trim()})),worldbook_ids=[...$("#roleplayWorldbooks input:checked")].map(input=>input.value),preset=form.elements.preset.value,editing=form.dataset.editing;
@@ -877,7 +888,7 @@ $("#cancelMcpEdit").onclick=resetMcpForm;
 $("#mcpTransport").onchange=updateMcpTransportFields;
 $("#exportMcpServers").onclick=()=>{const clean=state.mcp_servers.map(({id,has_token,last_status,last_detail,last_tested_at,created_at,updated_at,env_keys,tools,...server})=>({...server,token:"",env:{}})),blob=new Blob([JSON.stringify({format:"atherloom-mcp",version:1,servers:clean},null,2)],{type:"application/json"}),link=document.createElement("a");link.href=URL.createObjectURL(blob);link.download=`atherloom-mcp-${new Date().toISOString().slice(0,10)}.json`;link.click();URL.revokeObjectURL(link.href);};
 $("#importMcpServers").onclick=()=>$("#mcpImportFile").click();$("#mcpImportFile").onchange=async event=>{const file=event.target.files?.[0];event.target.value="";if(!file)return;try{const bundle=JSON.parse(await file.text());if(bundle?.format!=="atherloom-mcp"||!Array.isArray(bundle.servers))throw new Error("不是有效的 Atherloom MCP 配置");for(const server of bundle.servers){const saved=await api("/api/mcp-servers",{method:"POST",body:JSON.stringify({...server,token:"",enabled:server.enabled!==false})});state.mcp_servers.unshift(saved);}renderMcpServers();}catch(error){alert(`导入失败：${error.message}`);}};
-$("#prompt").addEventListener("keydown", e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendMessage(); } });
+// 聊天输入框中的 Enter 始终换行；只有可见的发送按钮会发送消息。
 $("#send").onclick = ()=>currentBusy()?stopCurrentGeneration():sendMessage(); $("#newChat").onclick = newConversation;
 $("#titleButton").onclick = openConversationSwitcher;
 let searchTimer;
@@ -1074,7 +1085,7 @@ $("#saveProviderCopy").onclick=async()=>{const form=$("#providerForm"),source=fo
 $("#personaForm").onsubmit = async e => {e.preventDefault();const form=e.target,button=$("#savePersona"),status=$("#personaSaveState"),name=form.elements.name.value.trim();status.textContent="";status.classList.remove("error");if(!name){document.querySelectorAll("[data-persona-tab]").forEach(item=>item.classList.toggle("active",item.dataset.personaTab==="basic"));document.querySelectorAll("[data-persona-pane]").forEach(pane=>pane.classList.toggle("active",pane.dataset.personaPane==="basic"));status.textContent="请先填写助手名称";status.classList.add("error");form.elements.name.focus();return;}button.disabled=true;button.textContent="正在保存…";try{const data={name,prompt:form.elements.prompt.value,config:personaConfigFromForm(form)},editing=form.dataset.editing,saved=await api(editing?`/api/personas/${editing}`:"/api/personas",{method:editing?"PUT":"POST",body:JSON.stringify(data)});if(editing)Object.assign(state.personas.find(item=>item.id===editing),saved);else{state.personas.push(saved);form.dataset.editing=saved.id;state.persona=saved.id;localStorage.setItem("atherloom:last-persona",saved.id);}$("#cancelPersonaEdit").hidden=false;renderSettings();renderPickers();renderHistory();status.textContent=`已保存「${saved.name}」`;button.textContent="保存修改";}catch(error){status.textContent=error.message;status.classList.add("error");button.textContent=form.dataset.editing?"保存修改":"保存人格";}finally{button.disabled=false;}};
 $("#cancelPersonaEdit").onclick=resetPersonaForm;
 document.querySelectorAll("[data-persona-tab]").forEach(button=>button.onclick=()=>{document.querySelectorAll("[data-persona-tab]").forEach(item=>item.classList.toggle("active",item===button));document.querySelectorAll("[data-persona-pane]").forEach(pane=>pane.classList.toggle("active",pane.dataset.personaPane===button.dataset.personaTab));});
-$("#memoryForm").onsubmit = async e => { e.preventDefault(); const form = e.target; const data = {...Object.fromEntries(new FormData(form)),persona_key:memoryPersonaKey()}; const editing = form.dataset.editing; const saved = await api(editing ? `/api/memories/${editing}` : "/api/memories", { method: editing ? "PUT" : "POST", body: JSON.stringify(data) }); if (editing) state.memories=state.memories.filter(item=>item.id!==editing||saved.persona_key===memoryListKey()); else if(saved.persona_key===memoryListKey())state.memories.unshift(saved); form.reset(); delete form.dataset.editing; $("#saveMemory").textContent = "添加到当前人格"; $("#cancelMemoryEdit").hidden = true; renderSettings(); };
+$("#memoryForm").onsubmit = async e => { e.preventDefault(); const form = e.target; const data = {...Object.fromEntries(new FormData(form)),persona_key:memoryPersonaKey()}; const editing = form.dataset.editing; await api(editing ? `/api/memories/${editing}` : "/api/memories", { method: editing ? "PUT" : "POST", body: JSON.stringify(data) }); state.memories=await api(`/api/memories?persona_key=${encodeURIComponent(memoryListKey())}`); form.reset(); delete form.dataset.editing; $("#saveMemory").textContent = "添加到当前人格"; $("#cancelMemoryEdit").hidden = true; renderSettings(); };
 $("#cancelMemoryEdit").onclick = () => { const form = $("#memoryForm"); form.reset(); delete form.dataset.editing; $("#saveMemory").textContent = "添加到当前人格"; $("#cancelMemoryEdit").hidden = true; };
 let memorySearchTimer;
 $("#memorySearch").oninput = event => { clearTimeout(memorySearchTimer); memorySearchTimer = setTimeout(async () => { state.memories = await api(`/api/memories?persona_key=${encodeURIComponent(memoryListKey())}&q=${encodeURIComponent(event.target.value.trim())}`); renderSettings(); }, 180); };

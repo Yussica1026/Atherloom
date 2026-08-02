@@ -373,7 +373,7 @@ public class MainActivity extends Activity {
                 String endpoint = protocol.equals("anthropic") ? (base.endsWith("/v1") ? base + "/messages" : base + "/v1/messages") : (base.endsWith("/chat/completions") ? base : base + "/chat/completions");
                 JSONArray requestMessages = request.getJSONArray("messages");
                 if (!protocol.equals("anthropic") && !request.optString("system").isEmpty()) { JSONArray withSystem = new JSONArray(); withSystem.put(new JSONObject().put("role", "system").put("content", request.getString("system"))); for (int i=0;i<requestMessages.length();i++) withSystem.put(requestMessages.get(i)); requestMessages=withSystem; }
-                JSONObject payload = new JSONObject(); payload.put("model", provider.getString("model")); payload.put("max_tokens", request.optInt("max_tokens", provider.optInt("max_tokens", 4096))); payload.put("temperature", request.optDouble("temperature", provider.optDouble("temperature", 0.7))); payload.put("top_p", request.optDouble("top_p", provider.optDouble("top_p", 1.0))); payload.put("messages", requestMessages);
+                JSONObject payload = new JSONObject(); payload.put("model", provider.getString("model")); if (protocol.equals("anthropic")) payload.put("max_tokens", request.optInt("max_tokens", provider.optInt("max_tokens", 4096))); payload.put("temperature", request.optDouble("temperature", provider.optDouble("temperature", 0.7))); payload.put("top_p", request.optDouble("top_p", provider.optDouble("top_p", 1.0))); payload.put("messages", requestMessages);
                 if (protocol.equals("anthropic") && request.has("system")) {
                     String cacheMode=provider.optString("cache_mode","auto");
                     String system=request.getString("system"), marker="\n\n<runtime_context>\n"; int markerIndex=system.indexOf(marker);
@@ -407,7 +407,7 @@ public class MainActivity extends Activity {
                 if(toolCalls.length()==0)toolCalls=parseDsmlToolCalls(content);
                 JSONObject responseMessage = protocol.equals("anthropic") ? null : data.getJSONArray("choices").getJSONObject(0).getJSONObject("message");
                 String reasoning = protocol.equals("anthropic") ? "" : nullableString(responseMessage, "reasoning_content"); if (reasoning.isEmpty()) reasoning=nullableString(responseMessage, "reasoning");
-                return new JSONObject().put("ok", true).put("content", content).put("reasoning", reasoning).put("model", provider.optString("model")).put("tool_calls",toolCalls).put("raw_assistant",rawAssistant).toString();
+                return new JSONObject().put("ok", true).put("content", content).put("reasoning", reasoning).put("model", provider.optString("model")).put("tool_calls",toolCalls).put("raw_assistant",rawAssistant).put("usage",data.optJSONObject("usage")).toString();
             } catch (Exception error) { return failure(error); } finally { if (connection != null) connection.disconnect(); }
         }
 
@@ -445,7 +445,7 @@ public class MainActivity extends Activity {
                     String endpoint = protocol.equals("anthropic") ? (base.endsWith("/v1") ? base + "/messages" : base + "/v1/messages") : (base.endsWith("/chat/completions") ? base : base + "/chat/completions");
                     JSONArray requestMessages = request.getJSONArray("messages");
                     if (!protocol.equals("anthropic") && !request.optString("system").isEmpty()) { JSONArray withSystem = new JSONArray(); withSystem.put(new JSONObject().put("role", "system").put("content", request.getString("system"))); for (int i=0;i<requestMessages.length();i++) withSystem.put(requestMessages.get(i)); requestMessages=withSystem; }
-                    JSONObject payload = new JSONObject(); payload.put("model", provider.getString("model")); payload.put("max_tokens", provider.optInt("max_tokens", 4096)); payload.put("temperature", provider.optDouble("temperature", 0.7)); payload.put("top_p", provider.optDouble("top_p", 1.0)); payload.put("stream", true); payload.put("messages", requestMessages);
+                    JSONObject payload = new JSONObject(); payload.put("model", provider.getString("model")); if (protocol.equals("anthropic")) payload.put("max_tokens", provider.optInt("max_tokens", 4096)); payload.put("temperature", provider.optDouble("temperature", 0.7)); payload.put("top_p", provider.optDouble("top_p", 1.0)); payload.put("stream", true); payload.put("messages", requestMessages);
                     if (protocol.equals("anthropic") && request.has("system")) payload.put("system", request.getString("system"));
                     if ((protocol.equals("deepseek") || protocol.equals("glm")) && provider.optBoolean("thinking_enabled", true)) payload.put("thinking", new JSONObject().put("type", "enabled"));
                     connection = (HttpURLConnection)new URL(endpoint).openConnection(); connection.setRequestMethod("POST"); connection.setConnectTimeout(25000); connection.setReadTimeout(180000); connection.setDoOutput(true); connection.setRequestProperty("Content-Type", "application/json");
