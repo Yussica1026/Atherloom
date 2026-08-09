@@ -21,6 +21,7 @@
     return { cur_date: now.toLocaleDateString("zh-CN"), cur_time: now.toLocaleTimeString("zh-CN", { hour12: false }), cur_datetime: local, model_id: provider?.model || "未提供", model_name: provider?.model || "未提供", locale: navigator.language || "zh-CN", timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || "未提供", system_version: "Atherloom", device_info: navigator.userAgent || "未提供", battery_level: battery ? `${Math.round(battery.level * 100)}%` : "未提供", nickname: settings().display_name || "未提供", assistant_name: persona?.name || "当前人格" };
   };
   const native = window.AtherloomNative;
+  if(native){ document.querySelector("#openHomestead")?.remove(); document.querySelector("#homesteadStage")?.remove(); document.querySelector("#homesteadStandalone")?.remove(); }
   const nativeStreams = new Map();
   window.AtherloomNativeStream = (id, raw) => { const callback=nativeStreams.get(id); if(callback)callback(JSON.parse(raw)); };
   const nativeStreamResponse = (request, transform) => {
@@ -37,6 +38,14 @@
   window.AtherloomNativeResolve=(id,raw)=>{const pending=nativeChatPending.get(id);if(!pending)return;nativeChatPending.delete(id);try{const result=JSON.parse(raw);if(!result.ok)throw new Error(result.error||"原生请求失败");pending.resolve(result);}catch(error){pending.reject(error);}};
   const nativeChat=request=>new Promise((resolve,reject)=>{const id=`chat-${++nativeChatSequence}`;nativeChatPending.set(id,{resolve,reject});window.AtherloomNative.chatAsync(JSON.stringify(request),id);});
   const publicProvider = item => { const copy={...item,has_api_key:!!item.api_key||!!item.has_api_key}; delete copy.api_key; return copy; };
+  const splitInlineReasoning = assistant => {
+    const source=String(assistant.content||""), parts=[];
+    for(const pattern of [/<think>([\s\S]*?)<\/think>/gi, /<analysis>([\s\S]*?)<\/analysis>/gi]) {
+      let match; while((match=pattern.exec(source))) if(match[1].trim()) parts.push(match[1].trim());
+    }
+    if(parts.length){ assistant.reasoning=[assistant.reasoning,...parts].filter(Boolean).join("\n\n"); assistant.content=source.replace(/<think>[\s\S]*?<\/think>/gi,"").replace(/<analysis>[\s\S]*?<\/analysis>/gi,"").trim(); }
+    return assistant;
+  };
   const webModels = async provider => {
     const base=provider.base_url.replace(/\/+$/,""),anthropic=provider.protocol==="anthropic",endpoint=`${base}/models`;
     const headers={...(JSON.parse(provider.custom_headers||"{}"))};if(anthropic){headers["x-api-key"]=provider.api_key||"";headers["anthropic-version"]="2023-06-01";}else headers.Authorization=`Bearer ${provider.api_key||""}`;
@@ -85,7 +94,7 @@
   };
   const formatMessages=(items,protocol,visionMode="auto")=>items.map(item=>{if(item.role!=="user"||!item.attachments?.length)return {role:item.role,content:item.content};if(visionMode==="text"&&item.attachments.some(file=>file.kind==="image"))throw new Error("当前线路设置为仅文本，不能发送图片。请删除图片或切换到支持看图的线路。");const anthropic=visionMode==="anthropic"||(visionMode==="auto"&&protocol==="anthropic");if(anthropic){const blocks=[{type:"text",text:item.content}];for(const file of item.attachments){if(file.kind==="image")blocks.push({type:"image",source:{type:"base64",media_type:file.mime,data:file.data.split(",")[1]}});else if(file.kind==="pdf")blocks.push({type:"document",source:{type:"base64",media_type:"application/pdf",data:file.data.split(",")[1]}});else if(file.text)blocks.push({type:"text",text:`文件：${file.name}\n${file.text}`});}return {role:item.role,content:blocks};}const parts=[{type:"text",text:item.content}];for(const file of item.attachments){if(file.kind==="image")parts.push({type:"image_url",image_url:{url:file.data}});else if(file.text)parts.push({type:"text",text:`文件：${file.name}\n${file.text}`});else parts.push({type:"text",text:`[已选择文件 ${file.name}，当前兼容线路不支持直接传输此格式]`});}return {role:item.role,content:parts};});
   const messages = conversationId => read(`messages:${conversationId}`, []);
-  const saveMessages = (conversationId, items) => write(`messages:${conversationId}`, items);
+  const saveMessages = (conversationId, items) => { items.filter(item=>item.role==="assistant").forEach(splitInlineReasoning); write(`messages:${conversationId}`, items); };
   const effectiveMessages = (conversationId,all=messages(conversationId)) => {const chosen=read(`versions:${conversationId}`,{}),seen=new Set();return all.filter(item=>{if(item.role!=="assistant"||!item.parent_message_id)return true;if(seen.has(item.parent_message_id))return false;seen.add(item.parent_message_id);const versions=all.filter(row=>row.role==="assistant"&&row.parent_message_id===item.parent_message_id),selected=versions.find(row=>row.id===chosen[item.parent_message_id])||versions.at(-1);return item===selected;});};
   const relevantMemories = (query,queryVector=null,personaKey="__unassigned__") => {
     if((settings().tool_permissions||{}).memory_read==="deny")return [];
@@ -400,7 +409,7 @@
         return ndjson([...(memorySources.length?[{memory_sources:memorySources.map(item=>({id:item.id,title:item.title,kind:item.kind}))}]:[]),{reasoning_delta:result.reasoning||"",delta:assistant.content},{done:true,assistant_id:assistant.id,user_id:user.id,title}]);
       } catch(error) { saveMessages(body.conversation_id,history); return ndjson([{error:error.message}]); }
     }
-    if (url.pathname === "/api/games") return json([{id:"homestead",name:"云芽庭院",icon:"▧",status:"playable",description:"种花、养宠物，也可以授权当前人格照料。"},{id:"quiet_fishing",name:"云汀钓记",icon:"◌",status:"playable",description:"离线也能保存进度的原创钓鱼游戏。"},{id:"claw_machine",name:"抓娃娃机",icon:"◇",status:"playable",description:"移动爪子、选择目标并收集娃娃。"},{id:"cloud_slots",name:"云纹老虎机",icon:"✦",status:"playable",description:"只使用本地云贝的确定性三轴小游戏。"},{id:"star_merge",name:"星潮合成",icon:"▦",status:"playable",description:"你亲手合成星块，或把棋盘交给当前人格。"},{id:"mist_maze",name:"雾径迷宫",icon:"⌁",status:"playable",description:"你与人格轮流探路，在有限视野里找到出口。"},{id:"ember_dungeon",name:"余烬地牢",icon:"⚔",status:"playable",description:"探索、迎战与休整都由Atherloom判定的轻量冒险。"}]);
+    if (url.pathname === "/api/games") return json([{id:"homestead",name:"云芽庭院",icon:"▧",status:"playable",description:"种花、养宠物，也可以授权当前人格照料。"},{id:"quiet_fishing",name:"云汀钓记",icon:"◌",status:"playable",description:"离线也能保存进度的原创钓鱼游戏。"},{id:"claw_machine",name:"抓娃娃机",icon:"◇",status:"playable",description:"移动爪子、选择目标并收集娃娃。"},{id:"cloud_slots",name:"云纹老虎机",icon:"✦",status:"playable",description:"只使用本地云贝的确定性三轴小游戏。"},{id:"star_merge",name:"星潮合成",icon:"▦",status:"playable",description:"你亲手合成星块，或把棋盘交给当前人格。"},{id:"mist_maze",name:"雾径迷宫",icon:"⌁",status:"playable",description:"你与人格轮流探路，在有限视野里找到出口。"},{id:"ember_dungeon",name:"余烬地牢",icon:"⚔",status:"playable",description:"探索、迎战与休整都由Atherloom判定的轻量冒险。"}].filter(item=>!native||item.id!=="homestead"));
     const roomChat=url.pathname.match(/^\/api\/games\/([^/]+)\/room-chat$/);
     if(roomChat&&method==="POST"){
       const gameId=roomChat[1],fallback=gameId==="quiet_fishing"?defaultGame():gameId==="claw_machine"?defaultClaw():gameId==="cloud_slots"?defaultSlots():gameId==="star_merge"?defaultStarMerge():gameId==="mist_maze"?defaultMaze():gameId==="ember_dungeon"?defaultDungeon():null;if(!fallback)return json({detail:"游戏尚未开放共玩对话"},404);
