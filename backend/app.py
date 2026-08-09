@@ -89,6 +89,9 @@ def init_db() -> None:
               content TEXT NOT NULL, provider_id TEXT, model TEXT, created_at TEXT NOT NULL,
               reasoning TEXT NOT NULL DEFAULT '', parent_message_id TEXT
             );
+            CREATE TABLE IF NOT EXISTS message_tool_events (
+              message_id TEXT PRIMARY KEY, events_json TEXT NOT NULL DEFAULT '[]'
+            );
             CREATE TABLE IF NOT EXISTS message_trash (
               message_id TEXT PRIMARY KEY, deleted_at TEXT NOT NULL
             );
@@ -104,7 +107,11 @@ def init_db() -> None:
               source_message_id TEXT, starred INTEGER NOT NULL DEFAULT 0,
               archived INTEGER NOT NULL DEFAULT 0, deleted_at TEXT,
               created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
-              persona_key TEXT NOT NULL DEFAULT '__unassigned__'
+              persona_key TEXT NOT NULL DEFAULT '__unassigned__',
+              strength REAL NOT NULL DEFAULT 0.65, importance REAL NOT NULL DEFAULT 0.5,
+              confidence REAL NOT NULL DEFAULT 1.0, memory_status TEXT NOT NULL DEFAULT 'active',
+              source_type TEXT NOT NULL DEFAULT 'explicit', valid_from TEXT, valid_until TEXT,
+              last_confirmed_at TEXT, superseded_by TEXT
             );
             CREATE TABLE IF NOT EXISTS memory_audit (
               id TEXT PRIMARY KEY, memory_id TEXT NOT NULL, action TEXT NOT NULL,
@@ -120,6 +127,12 @@ def init_db() -> None:
             CREATE TABLE IF NOT EXISTS memory_usage (
               memory_id TEXT PRIMARY KEY, recall_count INTEGER NOT NULL DEFAULT 0,
               last_recalled_at TEXT
+            );
+            CREATE TABLE IF NOT EXISTS memory_links (
+              source_memory_id TEXT NOT NULL, target_memory_id TEXT NOT NULL,
+              relation TEXT NOT NULL DEFAULT 'associated', weight REAL NOT NULL DEFAULT 0.25,
+              created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+              PRIMARY KEY(source_memory_id,target_memory_id,relation)
             );
             CREATE TABLE IF NOT EXISTS summary_versions (
               id TEXT PRIMARY KEY, conversation_id TEXT NOT NULL, content TEXT NOT NULL,
@@ -247,9 +260,31 @@ def init_db() -> None:
         if "prompt_cache_key" not in columns:
             connection.execute("ALTER TABLE providers ADD COLUMN prompt_cache_key TEXT NOT NULL DEFAULT ''")
         memory_columns = {row["name"] for row in connection.execute("PRAGMA table_info(memories)")}
+        if "strength" not in memory_columns and DB_PATH.exists():
+            backup_path = DB_PATH.with_name(f"{DB_PATH.stem}.pre-memory-lifecycle-{datetime.now().strftime('%Y%m%d')}.bak")
+            if not backup_path.exists():
+                with closing(sqlite3.connect(backup_path)) as backup_connection:
+                    connection.backup(backup_connection)
         if "persona_key" not in memory_columns:
             connection.execute("ALTER TABLE memories ADD COLUMN persona_key TEXT NOT NULL DEFAULT '__unassigned__'")
+        memory_lifecycle_columns = {
+            "strength": "REAL NOT NULL DEFAULT 0.65",
+            "importance": "REAL NOT NULL DEFAULT 0.5",
+            "confidence": "REAL NOT NULL DEFAULT 1.0",
+            "memory_status": "TEXT NOT NULL DEFAULT 'active'",
+            "source_type": "TEXT NOT NULL DEFAULT 'explicit'",
+            "valid_from": "TEXT",
+            "valid_until": "TEXT",
+            "last_confirmed_at": "TEXT",
+            "superseded_by": "TEXT",
+        }
+        for column, declaration in memory_lifecycle_columns.items():
+            if column not in memory_columns:
+                connection.execute(f"ALTER TABLE memories ADD COLUMN {column} {declaration}")
+        connection.execute("UPDATE memories SET last_confirmed_at=COALESCE(last_confirmed_at,updated_at)")
         connection.execute("CREATE INDEX IF NOT EXISTS memories_persona_updated ON memories(persona_key, updated_at DESC)")
+        connection.execute("CREATE INDEX IF NOT EXISTS memories_lifecycle ON memories(persona_key,memory_status,archived,deleted_at)")
+        connection.execute("CREATE INDEX IF NOT EXISTS memory_links_target ON memory_links(target_memory_id)")
         motivation_columns = {row["name"] for row in connection.execute("PRAGMA table_info(motivation_states)")}
         if "offline_mode" not in motivation_columns:
             connection.execute("ALTER TABLE motivation_states ADD COLUMN offline_mode TEXT NOT NULL DEFAULT 'limited'")
@@ -383,7 +418,7 @@ class AppSettingsIn(BaseModel):
     proactive_questions: bool = False
     typing_presence_enabled: bool = True
     tool_permissions: dict[str, str] = Field(default_factory=lambda: {
-        "web_search": "allow", "file_read": "allow", "memory_read": "allow", "memory_write": "ask",
+        "web_search": "allow", "file_read": "allow", "memory_read": "allow", "memory_write": "allow",
         "diary_write": "ask", "delete": "ask"
     })
     font_scale: int = Field(default=100, ge=85, le=130)
@@ -413,6 +448,12 @@ class MemoryIn(BaseModel):
     source_conversation_id: str | None = None
     source_message_id: str | None = None
     persona_key: str = Field(default="__unassigned__", min_length=1, max_length=120)
+    importance: float = Field(default=0.5, ge=0, le=1)
+    confidence: float = Field(default=1.0, ge=0, le=1)
+    source_type: str = Field(default="explicit", pattern="^(explicit|inferred|manual|imported|timeline)$")
+    valid_from: str | None = None
+    valid_until: str | None = None
+    supersedes_memory_id: str | None = None
 
 
 class MemoryState(BaseModel):
@@ -485,6 +526,9 @@ class ChatIn(BaseModel):
     game_context: str = Field(default="", max_length=2400)
     media_context: str = Field(default="", max_length=16000)
     worldbook_ids: list[str] = Field(default_factory=list, max_length=50)
+    approved_tool_permissions: list[str] = Field(default_factory=list, max_length=10)
+    # 允许前端按本次请求覆盖线路默认值；未传时继续使用线路设置。
+    thinking_enabled: bool | None = None
 
 
 class MotivationEventIn(BaseModel):
@@ -653,12 +697,28 @@ def format_provider_chat_messages(messages: list[dict[str, Any]], template: str)
 @app.get("/api/bootstrap")
 def bootstrap() -> dict[str, Any]:
     with closing(db()) as connection:
+        today = datetime.now().astimezone().date().isoformat()
+        lifecycle_row = connection.execute("SELECT value FROM app_settings WHERE key='memory_lifecycle_date'").fetchone()
+        if not lifecycle_row or lifecycle_row["value"] != today:
+            for memory in connection.execute("SELECT * FROM memories WHERE memory_status='active' AND deleted_at IS NULL"):
+                effective = memory_effective_strength(memory)
+                if effective < .06 and not memory["starred"] and float(memory["importance"] or 0) < .75:
+                    connection.execute("UPDATE memories SET memory_status='forgotten',updated_at=? WHERE id=?", (now_iso(), memory["id"]))
+            connection.execute("INSERT INTO app_settings(key,value) VALUES ('memory_lifecycle_date',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", (today,))
+            connection.commit()
         providers = [masked_provider(row) for row in connection.execute("SELECT * FROM providers ORDER BY created_at")]
         personas = [{**dict(row), "config": normalize_persona_config(row["config_json"])} for row in connection.execute("SELECT p.*,c.config_json FROM personas p LEFT JOIN persona_configs c ON c.persona_id=p.id ORDER BY p.created_at")]
         conversations = [dict(row) for row in connection.execute("SELECT * FROM conversations ORDER BY updated_at DESC")]
         worldbooks = [worldbook_dict(row) for row in connection.execute("SELECT * FROM worldbooks ORDER BY updated_at DESC")]
         mcp_servers = [masked_mcp_server(row) for row in connection.execute("SELECT * FROM mcp_servers ORDER BY updated_at DESC")]
         settings_rows = {row["key"]: row["value"] for row in connection.execute("SELECT * FROM app_settings")}
+    week_key = datetime.now().astimezone().strftime("%G-W%V")
+    if settings_rows.get("memory_consolidation_week") != week_key:
+        with closing(db()) as connection:
+            persona_keys = [row["persona_key"] for row in connection.execute("SELECT DISTINCT persona_key FROM memories WHERE memory_status='active'")]
+            connection.execute("INSERT INTO app_settings(key,value) VALUES ('memory_consolidation_week',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", (week_key,));connection.commit()
+        for persona_key in persona_keys:
+            consolidate_memories(persona_key)
     return {"providers": providers, "personas": personas, "conversations": conversations, "worldbooks": worldbooks, "mcp_servers": mcp_servers, "settings": {
         "auto_title_mode": settings_rows.get("auto_title_mode", "local"),
         "title_provider_id": settings_rows.get("title_provider_id", ""),
@@ -669,7 +729,7 @@ def bootstrap() -> dict[str, Any]:
         "display_name": settings_rows.get("display_name", ""),
         "proactive_questions": settings_rows.get("proactive_questions", "false") == "true",
         "typing_presence_enabled": settings_rows.get("typing_presence_enabled", "true") == "true",
-        "tool_permissions": json.loads(settings_rows.get("tool_permissions", '{"web_search":"allow","file_read":"allow","memory_read":"allow","memory_write":"ask","diary_write":"ask","delete":"ask"}')),
+        "tool_permissions": json.loads(settings_rows.get("tool_permissions", '{"web_search":"allow","file_read":"allow","memory_read":"allow","memory_write":"allow","diary_write":"ask","delete":"ask"}')),
         "font_scale": int(settings_rows.get("font_scale", "100")),
         "message_density": settings_rows.get("message_density", "comfortable"),
         "code_theme": settings_rows.get("code_theme", "auto"),
@@ -719,11 +779,55 @@ def save_settings(body: AppSettingsIn) -> dict[str, Any]:
     return body.model_dump()
 
 
+MEMORY_HALF_LIFE_DAYS = {"emotion": 14, "event": 30, "diary": 45, "summary": 90, "preference": 120, "promise": 180, "relationship": 240, "fact": 365, "timeline": 60, "other": 90}
+
+
+def parse_memory_time(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone(timezone.utc)
+    except ValueError:
+        return None
+
+
+def memory_effective_strength(row: sqlite3.Row | dict[str, Any], now: datetime | None = None) -> float:
+    now = now or datetime.now(timezone.utc)
+    base = float(row["strength"] if row["strength"] is not None else .65)
+    if row["starred"]:
+        return max(base, .92)
+    anchor = parse_memory_time(row["last_confirmed_at"] or row["updated_at"]) or now
+    age_days = max(0.0, (now - anchor).total_seconds() / 86400)
+    half_life = MEMORY_HALF_LIFE_DAYS.get(str(row["kind"]), 90) * (.55 + float(row["importance"] or .5) * 1.5)
+    decayed = base * math.pow(.5, age_days / max(1.0, half_life))
+    core_floor = math.pow(float(row["importance"] or 0), 2) * .18
+    return max(0.0, min(1.0, max(decayed, core_floor)))
+
+
+def memory_similarity(left: str, right: str) -> float:
+    a, b = text_bigrams(left), text_bigrams(right)
+    return len(a & b) / max(1, len(a | b))
+
+
+def refresh_memory_links(connection: sqlite3.Connection, memory_id: str, persona_key: str) -> None:
+    source = connection.execute("SELECT * FROM memories WHERE id=?", (memory_id,)).fetchone()
+    if not source:
+        return
+    connection.execute("DELETE FROM memory_links WHERE source_memory_id=? OR target_memory_id=?", (memory_id, memory_id))
+    stamp = now_iso()
+    for target in connection.execute("SELECT * FROM memories WHERE persona_key IN (?,'__shared__') AND id<>? AND memory_status='active' AND archived=0 AND deleted_at IS NULL ORDER BY updated_at DESC LIMIT 800", (persona_key, memory_id)):
+        weight = memory_similarity(f"{source['title']} {source['content']}", f"{target['title']} {target['content']}")
+        if weight >= .12:
+            for left, right in ((memory_id, target["id"]), (target["id"], memory_id)):
+                connection.execute("INSERT OR REPLACE INTO memory_links VALUES (?,?, 'associated', ?,?,?)", (left, right, round(min(.95, weight), 4), stamp, stamp))
+
+
 def memory_dict(row: sqlite3.Row) -> dict[str, Any]:
     item = dict(row)
     item["starred"] = bool(item["starred"])
     item["archived"] = bool(item["archived"])
     item["trashed"] = bool(item["deleted_at"])
+    item["effective_strength"] = round(memory_effective_strength(row), 4)
     return item
 
 
@@ -733,6 +837,7 @@ def list_memories(persona_key: str = "__unassigned__", q: str = "", include_arch
     params: list[Any] = [persona_key]
     if not include_archived:
         clauses.append("archived=0")
+        clauses.append("memory_status IN ('active','candidate')")
     clauses.append("deleted_at IS NOT NULL" if include_trash else "deleted_at IS NULL")
     if q.strip():
         clauses.append("(title LIKE ? OR content LIKE ?)")
@@ -743,18 +848,148 @@ def list_memories(persona_key: str = "__unassigned__", q: str = "", include_arch
     return [memory_dict(row) for row in rows]
 
 
+@app.get("/api/memory-stats")
+def memory_stats(persona_key: str = "__unassigned__") -> dict[str, int]:
+    with closing(db()) as connection:
+        rows = connection.execute("SELECT memory_status,archived,deleted_at,COUNT(*) count FROM memories WHERE persona_key=? GROUP BY memory_status,archived,deleted_at", (persona_key,)).fetchall()
+    result = {"total": 0, "candidate": 0, "forgotten": 0, "superseded": 0, "archived": 0, "trash": 0}
+    for row in rows:
+        count = int(row["count"]);result["total"] += count
+        if row["deleted_at"]: result["trash"] += count
+        elif row["archived"]: result["archived"] += count
+        elif row["memory_status"] in result: result[row["memory_status"]] += count
+    return result
+
+
+@app.post("/api/memories/lifecycle")
+def run_memory_lifecycle(persona_key: str = "__unassigned__") -> dict[str, Any]:
+    faded = forgotten = 0
+    with closing(db()) as connection:
+        rows = connection.execute("SELECT * FROM memories WHERE persona_key=? AND memory_status='active' AND deleted_at IS NULL", (persona_key,)).fetchall()
+        for row in rows:
+            effective = memory_effective_strength(row)
+            if effective < float(row["strength"] or .65) - .01:
+                faded += 1
+            if effective < .06 and not row["starred"] and float(row["importance"] or 0) < .75:
+                forgotten += 1
+                connection.execute("UPDATE memories SET memory_status='forgotten',updated_at=? WHERE id=?", (now_iso(), row["id"]))
+                connection.execute("INSERT INTO memory_audit VALUES (?,?,'forget',?,?)", (str(uuid.uuid4()), row["id"], json.dumps({"strength": effective}), now_iso()))
+        connection.commit()
+    return {"processed": len(rows), "faded": faded, "forgotten": forgotten}
+
+
+@app.post("/api/memories/consolidate")
+def consolidate_memories(persona_key: str = "__unassigned__") -> dict[str, Any]:
+    with closing(db()) as connection:
+        rows = {row["id"]: row for row in connection.execute("SELECT * FROM memories WHERE persona_key=? AND memory_status='active' AND kind IN ('event','emotion','diary') AND deleted_at IS NULL ORDER BY updated_at DESC LIMIT 400", (persona_key,))}
+        links = connection.execute("SELECT * FROM memory_links WHERE source_memory_id IN (SELECT id FROM memories WHERE persona_key=?) AND weight>=.22 ORDER BY weight DESC LIMIT 1200", (persona_key,)).fetchall()
+    adjacency: dict[str,set[str]] = {memory_id:set() for memory_id in rows}
+    for link in links:
+        if link["source_memory_id"] in rows and link["target_memory_id"] in rows:
+            adjacency[link["source_memory_id"]].add(link["target_memory_id"])
+    clusters=[];seen=set()
+    for memory_id in rows:
+        if memory_id in seen: continue
+        cluster={memory_id,*adjacency[memory_id]}
+        if len(cluster)>=3:
+            cluster=set(sorted(cluster,key=lambda item:rows[item]["updated_at"],reverse=True)[:8]);seen|=cluster;clusters.append(cluster)
+    created=[]
+    for cluster in clusters[:3]:
+        members=[rows[item] for item in cluster]
+        content="\n\n".join(f"- {item['title']}：{item['content']}" for item in members)
+        summary=create_memory(MemoryIn(title=f"待确认 · {members[0]['title']} 等阶段片段",content=content,kind="summary",persona_key=persona_key,importance=max(float(item["importance"] or .5) for item in members),confidence=.6,source_type="inferred"))
+        created.append(summary["id"])
+        with closing(db()) as connection:
+            stamp=now_iso()
+            for item in members:
+                connection.execute("INSERT OR REPLACE INTO memory_links VALUES (?,?,'consolidated_from',1,?,?)",(summary["id"],item["id"],stamp,stamp))
+            connection.commit()
+    return {"clusters":len(clusters),"candidates_created":len(created),"memory_ids":created}
+
+
+@app.get("/api/memories/{memory_id}/associations")
+def memory_associations(memory_id: str) -> list[dict[str, Any]]:
+    with closing(db()) as connection:
+        return [dict(row) for row in connection.execute("""SELECT l.relation,l.weight,m.id,m.title,m.kind,m.memory_status
+          FROM memory_links l JOIN memories m ON m.id=l.target_memory_id
+          WHERE l.source_memory_id=? AND m.deleted_at IS NULL ORDER BY l.weight DESC LIMIT 20""", (memory_id,))]
+
+
+@app.get("/api/memories/{memory_id}/detail")
+def memory_detail(memory_id: str) -> dict[str, Any]:
+    with closing(db()) as connection:
+        row = connection.execute("SELECT * FROM memories WHERE id=?", (memory_id,)).fetchone()
+        if not row:
+            raise HTTPException(404, "记忆不存在")
+        audit = []
+        for item in connection.execute("SELECT * FROM memory_audit WHERE memory_id=? ORDER BY created_at DESC LIMIT 100", (memory_id,)):
+            entry = dict(item)
+            try: entry["detail_data"] = json.loads(entry["detail"]) if entry["detail"] else {}
+            except json.JSONDecodeError: entry["detail_data"] = {"text": entry["detail"]}
+            audit.append(entry)
+    return {"memory": memory_dict(row), "associations": memory_associations(memory_id), "audit": audit}
+
+
+@app.post("/api/memories/{memory_id}/confirm")
+def confirm_memory(memory_id: str, accept: bool = True) -> dict[str, Any]:
+    stamp = now_iso()
+    with closing(db()) as connection:
+        status = "active" if accept else "forgotten"
+        cursor = connection.execute("UPDATE memories SET memory_status=?,confidence=?,last_confirmed_at=?,updated_at=? WHERE id=? AND deleted_at IS NULL", (status, 1.0 if accept else 0.0, stamp, stamp, memory_id))
+        if not cursor.rowcount: raise HTTPException(404, "记忆不存在")
+        connection.execute("INSERT INTO memory_audit VALUES (?,?, 'confirm', ?,?)", (str(uuid.uuid4()), memory_id, json.dumps({"accepted":accept}), stamp))
+        connection.commit();row=connection.execute("SELECT * FROM memories WHERE id=?", (memory_id,)).fetchone()
+    return memory_dict(row)
+
+
+@app.post("/api/memories/{memory_id}/restore/{audit_id}")
+def restore_memory_version(memory_id: str, audit_id: str) -> dict[str, Any]:
+    stamp=now_iso()
+    with closing(db()) as connection:
+        audit=connection.execute("SELECT * FROM memory_audit WHERE id=? AND memory_id=?",(audit_id,memory_id)).fetchone()
+        if not audit: raise HTTPException(404,"历史版本不存在")
+        try: snapshot=json.loads(audit["detail"]).get("before")
+        except (json.JSONDecodeError,AttributeError): snapshot=None
+        if not snapshot: raise HTTPException(409,"这条审计记录没有可恢复快照")
+        current=connection.execute("SELECT * FROM memories WHERE id=?",(memory_id,)).fetchone()
+        connection.execute("UPDATE memories SET title=?,content=?,kind=?,importance=?,confidence=?,source_type=?,valid_from=?,valid_until=?,memory_status=?,updated_at=? WHERE id=?",(snapshot["title"],snapshot["content"],snapshot["kind"],snapshot.get("importance",.5),snapshot.get("confidence",1),snapshot.get("source_type","explicit"),snapshot.get("valid_from"),snapshot.get("valid_until"),snapshot.get("memory_status","active"),stamp,memory_id))
+        connection.execute("INSERT INTO memory_audit VALUES (?,?, 'restore', ?,?)",(str(uuid.uuid4()),memory_id,json.dumps({"before":dict(current),"restored_from":audit_id},ensure_ascii=False),stamp));connection.execute("DELETE FROM memory_embeddings WHERE memory_id=?",(memory_id,));connection.commit();row=connection.execute("SELECT * FROM memories WHERE id=?",(memory_id,)).fetchone()
+    return memory_dict(row)
+
+
 @app.post("/api/memories")
 def create_memory(body: MemoryIn) -> dict[str, Any]:
     memory_id = str(uuid.uuid4())
     created = now_iso()
+    initial_status = "candidate" if body.source_type == "inferred" and body.confidence < .7 else "active"
     with closing(db()) as connection:
+        duplicate = None
+        automatic_supersedes = None
+        for candidate in connection.execute("SELECT * FROM memories WHERE persona_key=? AND memory_status='active' AND deleted_at IS NULL", (body.persona_key,)):
+            similarity = memory_similarity(f"{body.title} {body.content}", f"{candidate['title']} {candidate['content']}")
+            if similarity >= .88:
+                duplicate = candidate
+                break
+            if body.kind in {"fact","preference","relationship","promise","emotion"} and candidate["kind"] == body.kind and memory_similarity(body.title, candidate["title"]) >= .72 and body.confidence >= .8:
+                automatic_supersedes = candidate["id"]
+        if duplicate:
+            strengthened = min(1.0, float(duplicate["strength"] or .65) + .1)
+            connection.execute("UPDATE memories SET strength=?,confidence=MAX(confidence,?),importance=MAX(importance,?),last_confirmed_at=?,updated_at=? WHERE id=?", (strengthened, body.confidence, body.importance, created, created, duplicate["id"]))
+            connection.execute("INSERT INTO memory_audit VALUES (?,?,'reinforce',?,?)", (str(uuid.uuid4()), duplicate["id"], json.dumps({"reason":"duplicate","similarity":round(similarity,4)}, ensure_ascii=False), created))
+            connection.commit()
+            return {**memory_dict(connection.execute("SELECT * FROM memories WHERE id=?", (duplicate["id"],)).fetchone()), "merged": True}
         connection.execute(
             """INSERT INTO memories
-               (id,title,content,kind,source_conversation_id,source_message_id,starred,archived,deleted_at,created_at,updated_at,persona_key)
-               VALUES (?, ?, ?, ?, ?, ?, 0, 0, NULL, ?, ?, ?)""",
-            (memory_id, body.title, body.content, body.kind, body.source_conversation_id, body.source_message_id, created, created, body.persona_key),
+               (id,title,content,kind,source_conversation_id,source_message_id,starred,archived,deleted_at,created_at,updated_at,persona_key,strength,importance,confidence,memory_status,source_type,valid_from,valid_until,last_confirmed_at,superseded_by)
+               VALUES (?, ?, ?, ?, ?, ?, 0, 0, NULL, ?, ?, ?, .65, ?, ?, ?, ?, ?, ?, ?, NULL)""",
+            (memory_id, body.title, body.content, body.kind, body.source_conversation_id, body.source_message_id, created, created, body.persona_key, body.importance, body.confidence, initial_status, body.source_type, body.valid_from, body.valid_until, created),
         )
+        supersedes_id = body.supersedes_memory_id or automatic_supersedes
+        if supersedes_id:
+            connection.execute("UPDATE memories SET memory_status='superseded',superseded_by=?,valid_until=COALESCE(valid_until,?),updated_at=? WHERE id=? AND persona_key=?", (memory_id, created, created, supersedes_id, body.persona_key))
+            connection.execute("INSERT INTO memory_audit VALUES (?,?,'supersede',?,?)", (str(uuid.uuid4()), supersedes_id, json.dumps({"superseded_by":memory_id,"automatic":not bool(body.supersedes_memory_id)}, ensure_ascii=False), created))
         connection.execute("INSERT INTO memory_audit VALUES (?, ?, 'create', '', ?)", (str(uuid.uuid4()), memory_id, created))
+        refresh_memory_links(connection, memory_id, body.persona_key)
         connection.commit()
         row = connection.execute("SELECT * FROM memories WHERE id=?", (memory_id,)).fetchone()
     return memory_dict(row)
@@ -764,14 +999,18 @@ def create_memory(body: MemoryIn) -> dict[str, Any]:
 def update_memory(memory_id: str, body: MemoryIn) -> dict[str, Any]:
     updated = now_iso()
     with closing(db()) as connection:
+        before = connection.execute("SELECT * FROM memories WHERE id=? AND deleted_at IS NULL", (memory_id,)).fetchone()
+        if not before:
+            raise HTTPException(404, "记忆不存在")
         cursor = connection.execute(
-            "UPDATE memories SET title=?,content=?,kind=?,persona_key=?,updated_at=? WHERE id=? AND deleted_at IS NULL",
-            (body.title, body.content, body.kind, body.persona_key, updated, memory_id),
+            "UPDATE memories SET title=?,content=?,kind=?,persona_key=?,importance=?,confidence=?,source_type=?,valid_from=?,valid_until=?,strength=MIN(1.0,strength+.12),last_confirmed_at=?,memory_status='active',updated_at=? WHERE id=? AND deleted_at IS NULL",
+            (body.title, body.content, body.kind, body.persona_key, body.importance, body.confidence, body.source_type, body.valid_from, body.valid_until, updated, updated, memory_id),
         )
         if not cursor.rowcount:
             raise HTTPException(404, "记忆不存在")
-        connection.execute("INSERT INTO memory_audit VALUES (?, ?, 'edit', '', ?)", (str(uuid.uuid4()), memory_id, updated))
+        connection.execute("INSERT INTO memory_audit VALUES (?, ?, 'edit', ?, ?)", (str(uuid.uuid4()), memory_id, json.dumps({"before":dict(before)}, ensure_ascii=False), updated))
         connection.execute("DELETE FROM memory_embeddings WHERE memory_id=?", (memory_id,))
+        refresh_memory_links(connection, memory_id, body.persona_key)
         connection.commit()
         row = connection.execute("SELECT * FROM memories WHERE id=?", (memory_id,)).fetchone()
     return memory_dict(row)
@@ -1546,7 +1785,7 @@ BUILTIN_TOOL_SPECS = {
     },
     "memory_search": {
         "permission": "memory_read",
-        "description": "检索 Atherloom 本地长期记忆，返回可用于后续更新的 memory_id。",
+        "description": "记忆操作的第一步。用户要求记住、纠正、补充、改分类，或你准备写入长期记忆时，先用关键词检索同一人物/事项；返回真实 memory_id。搜到同一事项后必须更新，搜不到才能新增。普通聊天无需机械调用。",
         "input_schema": {
             "type": "object",
             "properties": {"query": {"type": "string", "description": "记忆标题或内容关键词；留空返回最近记忆"}},
@@ -1554,28 +1793,37 @@ BUILTIN_TOOL_SPECS = {
     },
     "memory_create": {
         "permission": "memory_write",
-        "description": "新增一条本地长期记忆。只保存用户明确表达、值得跨对话保留的信息。",
+        "description": "仅在 memory_search 确认没有同一事项后新增。把用户明确要求记住、未来会影响相处或需要跨对话保留的内容写入；闲聊、一次性问题和未经支持的猜测不要写。必须自行选择 kind、importance、confidence、source_type；不确定推断用 inferred 且 confidence<0.7，交给用户确认。",
         "input_schema": {
             "type": "object",
             "properties": {
                 "title": {"type": "string", "description": "简短明确的标题"},
                 "content": {"type": "string", "description": "忠实、完整且不臆测的记忆内容"},
-                "kind": {"type": "string", "enum": ["fact", "preference", "relationship", "promise", "event", "emotion", "summary", "diary", "other"]},
+                "kind": {"type": "string", "enum": ["fact", "preference", "relationship", "promise", "event", "emotion", "summary", "diary", "other"], "description": "必选分类：fact稳定事实；preference偏好习惯；relationship人物关系；promise承诺约定；event具体事件；emotion持续情绪感受；summary阶段摘要；diary日记正文；other无法归入以上类型"},
                 "source_message_id": {"type": "string", "description": "如果记忆来自某条具体消息，填写该消息 ID，以便回溯原话"},
+                "importance": {"type": "number", "minimum": 0, "maximum": 1, "description": "对长期关系或未来行为的重要程度"},
+                "confidence": {"type": "number", "minimum": 0, "maximum": 1, "description": "明确原话接近1，合理推断必须低于0.7"},
+                "source_type": {"type": "string", "enum": ["explicit","inferred","manual","imported"], "description": "记忆来源性质"},
+                "valid_from": {"type": "string", "description": "事实开始生效的 ISO 时间，可省略"},
+                "valid_until": {"type": "string", "description": "临时事实结束的 ISO 时间，可省略"},
+                "supersedes_memory_id": {"type": "string", "description": "新事实替代的旧记忆 ID；必须来自搜索结果"},
             },
-            "required": ["title", "content"],
+            "required": ["title", "content", "kind"],
         },
     },
     "memory_update": {
         "permission": "memory_write",
-        "description": "按 memory_id 更新已有本地记忆。应先调用 memory_search 获得准确 ID。",
+        "description": "用于纠正、补充、重新分类或刷新 memory_search 找到的同一条记忆。保留忠实完整的新表述，不要把不同事项硬合并。必须使用搜索返回的 memory_id；同一事实变化时更新原记忆，不另建重复项。",
         "input_schema": {
             "type": "object",
             "properties": {
                 "memory_id": {"type": "string", "description": "memory_search 返回的准确 ID"},
                 "title": {"type": "string"},
                 "content": {"type": "string"},
-                "kind": {"type": "string", "enum": ["fact", "preference", "relationship", "promise", "event", "emotion", "summary", "diary", "other"]},
+                "kind": {"type": "string", "enum": ["fact", "preference", "relationship", "promise", "event", "emotion", "summary", "diary", "other"], "description": "需要时同步修正分类"},
+                "importance": {"type": "number", "minimum": 0, "maximum": 1},
+                "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+                "valid_from": {"type": "string"}, "valid_until": {"type": "string"},
             },
             "required": ["memory_id"],
         },
@@ -1612,7 +1860,7 @@ def builtin_tool_catalog(permissions: dict[str, str]) -> tuple[list[dict[str, An
     }
     catalog, bindings = [], {}
     for name, spec in BUILTIN_TOOL_SPECS.items():
-        if name != "game_play" and permissions.get(spec["permission"], "ask") != "allow":
+        if name != "game_play" and permissions.get(spec["permission"], "ask") == "deny":
             continue
         safe_name = f"atherloom_{name}"
         catalog.append({"name": safe_name, "description": spec["description"], "input_schema": spec["input_schema"]})
@@ -1675,9 +1923,13 @@ async def invoke_builtin_tool(name: str, arguments: dict[str, Any]) -> dict[str,
                     "kind": item["kind"], "reason": item["reason"],
                 } for item in recalled]}
             else:
-                rows = connection.execute("SELECT * FROM memories WHERE persona_key=? AND deleted_at IS NULL ORDER BY starred DESC,updated_at DESC LIMIT 20", (persona_key,)).fetchall()
+                rows = connection.execute("SELECT * FROM memories WHERE persona_key=? AND memory_status IN ('active','candidate') AND deleted_at IS NULL ORDER BY starred DESC,updated_at DESC LIMIT 20", (persona_key,)).fetchall()
         return {"memories": [{"memory_id": row["id"], "title": row["title"], "content": row["content"], "kind": row["kind"], "updated_at": row["updated_at"]} for row in rows]}
     if name == "memory_create":
+        kind = str(arguments.get("kind") or "").strip()
+        allowed_kinds = {"fact", "preference", "relationship", "promise", "event", "emotion", "summary", "diary", "other"}
+        if kind not in allowed_kinds:
+            raise ValueError("新增记忆必须由 AI 选择有效 kind 分类")
         source_message_id = str(arguments.get("source_message_id") or arguments.get("_source_message_id") or "").strip() or None
         source_conversation_id = str(arguments.get("_conversation_id") or "").strip() or None
         if source_message_id:
@@ -1689,10 +1941,12 @@ async def invoke_builtin_tool(name: str, arguments: dict[str, Any]) -> dict[str,
         body = MemoryIn(
             title=str(arguments.get("title", "")).strip(),
             content=str(arguments.get("content", "")).strip(),
-            kind=str(arguments.get("kind") or "fact"),
+            kind=kind,
             source_conversation_id=source_conversation_id,
             source_message_id=source_message_id,
             persona_key=str(arguments.get("_persona_key") or "__unassigned__"),
+            importance=float(arguments.get("importance", .5)), confidence=float(arguments.get("confidence", 1)),
+            source_type=str(arguments.get("source_type") or "explicit"), valid_from=arguments.get("valid_from"), valid_until=arguments.get("valid_until"), supersedes_memory_id=arguments.get("supersedes_memory_id"),
         )
         saved = create_memory(body)
         return {"created": True, "memory_id": saved["id"], "title": saved["title"], "kind": saved["kind"]}
@@ -1702,13 +1956,18 @@ async def invoke_builtin_tool(name: str, arguments: dict[str, Any]) -> dict[str,
             row = connection.execute("SELECT * FROM memories WHERE id=? AND persona_key=? AND deleted_at IS NULL", (memory_id, str(arguments.get("_persona_key") or "__unassigned__"))).fetchone()
         if not row:
             raise ValueError("找不到该 memory_id；请先调用 memory_search")
+        kind = str(arguments.get("kind", row["kind"])).strip()
+        if kind not in {"fact", "preference", "relationship", "promise", "event", "emotion", "summary", "diary", "other"}:
+            raise ValueError("记忆 kind 分类无效")
         body = MemoryIn(
             title=str(arguments.get("title", row["title"])).strip(),
             content=str(arguments.get("content", row["content"])).strip(),
-            kind=str(arguments.get("kind", row["kind"])),
+            kind=kind,
             source_conversation_id=row["source_conversation_id"],
             source_message_id=row["source_message_id"],
             persona_key=row["persona_key"],
+            importance=float(arguments.get("importance", row["importance"])), confidence=float(arguments.get("confidence", row["confidence"])),
+            source_type=row["source_type"], valid_from=arguments.get("valid_from", row["valid_from"]), valid_until=arguments.get("valid_until", row["valid_until"]),
         )
         saved = update_memory(memory_id, body)
         return {"updated": True, "memory_id": saved["id"], "title": saved["title"], "kind": saved["kind"]}
@@ -1954,6 +2213,7 @@ def delete_conversation(conversation_id: str) -> dict[str, bool]:
                 connection.execute(f"DELETE FROM favorite_owners WHERE favorite_id IN ({favorite_placeholders})", favorite_ids)
                 connection.execute(f"DELETE FROM favorites WHERE id IN ({favorite_placeholders})", favorite_ids)
             connection.execute(f"DELETE FROM message_trash WHERE message_id IN ({placeholders})", message_ids)
+            connection.execute(f"DELETE FROM message_tool_events WHERE message_id IN ({placeholders})", message_ids)
         connection.execute("DELETE FROM message_selections WHERE conversation_id=?", (conversation_id,))
         connection.execute("DELETE FROM summary_versions WHERE conversation_id=?", (conversation_id,))
         connection.execute("DELETE FROM conversation_continuity WHERE conversation_id=?", (conversation_id,))
@@ -2029,10 +2289,14 @@ def branch_conversation(conversation_id: str, message_id: str) -> dict[str, Any]
             "SELECT * FROM messages WHERE conversation_id=? AND created_at<=? AND NOT EXISTS (SELECT 1 FROM message_trash t WHERE t.message_id=messages.id) ORDER BY created_at", (conversation_id, pivot["created_at"])
         ).fetchall()
         for row in rows:
+            copied_id = str(uuid.uuid4())
             connection.execute(
                 "INSERT INTO messages VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (str(uuid.uuid4()), new_id, row["role"], row["content"], row["provider_id"], row["model"], row["created_at"], row["reasoning"], row["parent_message_id"]),
+                (copied_id, new_id, row["role"], row["content"], row["provider_id"], row["model"], row["created_at"], row["reasoning"], row["parent_message_id"]),
             )
+            event_row = connection.execute("SELECT events_json FROM message_tool_events WHERE message_id=?", (row["id"],)).fetchone()
+            if event_row:
+                connection.execute("INSERT INTO message_tool_events VALUES (?,?)", (copied_id, event_row["events_json"]))
         connection.commit()
     return {"id": new_id, "title": title, "provider_id": source["provider_id"], "persona_id": source["persona_id"], "summary": source["summary"], "created_at": created, "updated_at": created, "pinned": 0, "starred": 0, "archived": 0}
 
@@ -2040,10 +2304,17 @@ def branch_conversation(conversation_id: str, message_id: str) -> dict[str, Any]
 @app.get("/api/conversations/{conversation_id}/messages")
 def get_messages(conversation_id: str) -> list[dict[str, Any]]:
     with closing(db()) as connection:
-        return [dict(row) for row in connection.execute("""SELECT messages.*,
+        rows = [dict(row) for row in connection.execute("""SELECT messages.*,
             CASE WHEN s.assistant_message_id=messages.id THEN 1 ELSE 0 END AS selected
             FROM messages LEFT JOIN message_selections s ON s.conversation_id=messages.conversation_id AND s.parent_message_id=messages.parent_message_id
             WHERE messages.conversation_id=? AND NOT EXISTS (SELECT 1 FROM message_trash t WHERE t.message_id=messages.id) ORDER BY messages.created_at""", (conversation_id,))]
+        event_rows = {row["message_id"]: row["events_json"] for row in connection.execute("SELECT message_id,events_json FROM message_tool_events WHERE message_id IN (SELECT id FROM messages WHERE conversation_id=?)", (conversation_id,))}
+    for row in rows:
+        try:
+            row["tool_events"] = json.loads(event_rows.get(row["id"], "[]"))
+        except (json.JSONDecodeError, TypeError):
+            row["tool_events"] = []
+    return rows
 
 
 @app.patch("/api/messages/selection")
@@ -2949,6 +3220,13 @@ def load_chat_context(connection: sqlite3.Connection, body: ChatIn, cutoff: str 
     proactive_questions = proactive_row and proactive_row["value"] == "true"
     question_context = ("用户允许你在合适时主动提问、自然追问或发起新话题。需要用户选择时，先自然地说一句引导语，再在回复末尾严格输出 <questions>[{\"question\":\"问题\",\"options\":[\"选项一\",\"选项二\",\"选项三\"]}]</questions>；可包含 1 至 4 个问题，每题 2 至 5 个简短选项，不要在标签外重复选项。用户明确要求你提问时必须使用此格式。不要机械地每轮都提问。" if proactive_questions else "除非完成当前请求确实缺少必要信息，否则不要主动反问或发起问卷；优先直接回应用户。")
     formatting_context = "界面支持 Markdown。你可以根据语义有节制地使用 **粗体**、*斜体*、标题、引用、列表与代码块；不要为了装饰而过度格式化。"
+    memory_tool_context = """Atherloom 记忆工具操作规程（工具可用时必须遵守）：
+1. 触发：用户明确说“记住/以后别忘/改一下记忆”，或内容会长期影响称呼、偏好、关系、承诺与未来协作时，先调用 atherloom_memory_search。普通寒暄、临时任务、敏感猜测和一次性信息不要写入。
+2. 搜索后决策：搜到同一事项，纠正、补充、状态变化或重新分类一律调用 atherloom_memory_update；只有确认没有同一事项才调用 atherloom_memory_create。不要口头声称“记住了”却不调用工具，也不要重复新增。
+3. 分类：fact=稳定事实；preference=偏好习惯；relationship=人物关系；promise=承诺约定；event=具体经历；emotion=持续感受；summary=阶段总结；diary=日记正文；other=确实无法归类。kind 不可省略。
+4. 可信与来源：用户明确原话用 source_type=explicit、confidence 接近 1；你的推断用 inferred 且 confidence<0.7，使其进入“待确认”，不得把推断伪装成事实。importance 表示未来影响与长期保留价值，不是语气强烈程度。
+5. 时间与变化：临时事实填写 valid_from/valid_until。全新的替代事实可在 create 中填写搜索得到的 supersedes_memory_id；普通补充直接 update。工具结果成功后再自然告诉用户已新增、已更新或已进入待确认。
+记忆会随时间衰减，真实召回会加固，也会沿关联记忆扩散；不得删除、隐藏或绕过用户的候选确认。"""
     tool_names = [name for name, enabled in persona_config["tools"].items() if enabled]
     tool_context = f"该人格启用的本地能力偏好：{', '.join(tool_names)}。只有 Atherloom 实际提供的能力才可调用。" if tool_names else ""
     game_tool_context = "Atherloom 真实内置六款可执行游戏工具：云汀钓记、抓娃娃机、云纹老虎机、星潮合成、雾径迷宫、余烬地牢。这些不是需要你设计、模拟、联网搜索或确认是否存在的文字游戏。用户说“玩抓娃娃机”等游玩指令时，Atherloom 会先执行对应游戏并通过 <verified_game_context> 提供结果；你必须依据结果自然回应，绝不能声称要创建一个虚拟游戏。只有收到已执行结果才能声称自己实际操作过。"
@@ -2967,7 +3245,7 @@ def load_chat_context(connection: sqlite3.Connection, body: ChatIn, cutoff: str 
     roleplay_context = relevant_roleplay_archive(connection, body.content)
     continuity = connection.execute("SELECT open_threads FROM conversation_continuity WHERE conversation_id=?", (body.conversation_id,)).fetchone()
     thread_context = f"<open_threads>\n{continuity['open_threads']}\n</open_threads>\n这是上一段对话仍在延续的原文线头；只用于自然接续，不得扩写成用户没有表达过的事实。" if continuity and continuity["open_threads"].strip() else ""
-    stable_parts = [part for part in (worldbook_before,persona_prompt,worldbook_after,conversation["summary"] if persona_config["history_enabled"] else "",thread_context if persona_config["history_enabled"] else "",question_context,formatting_context,tool_context,game_tool_context) if part]
+    stable_parts = [part for part in (worldbook_before,persona_prompt,worldbook_after,conversation["summary"] if persona_config["history_enabled"] else "",thread_context if persona_config["history_enabled"] else "",question_context,formatting_context,memory_tool_context,tool_context,game_tool_context) if part]
     typing_context = f"<typing_presence>{body.typing_context}</typing_presence>\n这是用户主动开启的输入状态元数据，不含未发送正文；只在语气确实相关时轻微参考，不要声称看见了用户没发出的文字。" if body.typing_context else ""
     runtime_parts = [part for part in (time_context,typing_context,game_context,media_context,roleplay_context) if part]
     system_parts = [*stable_parts, "\n\n<runtime_context>\n" + "\n\n".join(runtime_parts) + "\n</runtime_context>" if runtime_parts else ""]
@@ -3145,6 +3423,23 @@ async def rebuild_memory_vectors(body: MemoryVectorRebuildIn) -> dict[str, Any]:
             indexed += len(batch)
     except (httpx.HTTPError, json.JSONDecodeError, TypeError, ValueError) as exc:
         raise HTTPException(502, str(exc)) from exc
+    with closing(db()) as connection:
+        vector_rows = connection.execute("""SELECT e.memory_id,e.vector_json FROM memory_embeddings e JOIN memories m ON m.id=e.memory_id
+          WHERE e.provider_id=? AND e.model=? AND m.persona_key IN (?,'__shared__') AND m.memory_status='active' AND m.deleted_at IS NULL
+          ORDER BY m.updated_at DESC LIMIT 800""", (provider_id, model, body.persona_key)).fetchall()
+        decoded = [(row["memory_id"], json.loads(row["vector_json"])) for row in vector_rows]
+        stamp = now_iso()
+        connection.execute("DELETE FROM memory_links WHERE relation='semantic' AND source_memory_id IN (SELECT id FROM memories WHERE persona_key=?)", (body.persona_key,))
+        for index, (left_id, left) in enumerate(decoded):
+            neighbors = []
+            for right_id, right in decoded[index + 1:]:
+                score = sum(a*b for a,b in zip(left,right))
+                if score >= .72:
+                    neighbors.append((score,right_id))
+            for score, right_id in sorted(neighbors, reverse=True)[:12]:
+                for source_id,target_id in ((left_id,right_id),(right_id,left_id)):
+                    connection.execute("INSERT OR REPLACE INTO memory_links VALUES (?,?,'semantic',?,?,?)", (source_id,target_id,round(min(.98,score),4),stamp,stamp))
+        connection.commit()
     return {
         "ok": True, "provider_id": provider_id, "model": model,
         "indexed": indexed, "total": len(memories), "dimensions": dimensions,
@@ -3325,8 +3620,8 @@ def retrieve_memories(
     if not query_terms and not query_vector:
         return []
     rows = list(connection.execute(
-        "SELECT * FROM memories WHERE persona_key=? AND archived=0 AND deleted_at IS NULL",
-        (persona_key,),
+        "SELECT * FROM memories WHERE persona_key IN (?,'__shared__') AND memory_status='active' AND archived=0 AND deleted_at IS NULL AND (valid_until IS NULL OR valid_until>?) ORDER BY starred DESC,updated_at DESC LIMIT 1200",
+        (persona_key, now_iso()),
     ))
     if not rows:
         return []
@@ -3345,6 +3640,9 @@ def retrieve_memories(
     usage_rows = {row["memory_id"]: row for row in connection.execute("SELECT * FROM memory_usage")}
     ranked = []
     for row, terms in zip(rows, documents):
+        effective_strength = memory_effective_strength(row)
+        if effective_strength < .06 and not row["starred"]:
+            continue
         length = max(1, sum(terms.values()))
         lexical_score = 0.0
         matched = []
@@ -3371,6 +3669,9 @@ def retrieve_memories(
         if row["starred"]:
             score += .2
         score += min(.5, math.log1p((usage_rows.get(row["id"])["recall_count"] if usage_rows.get(row["id"]) else 0)) * .08)
+        score *= .35 + effective_strength * .65
+        score *= .55 + float(row["confidence"] or 0) * .45
+        score += float(row["importance"] or .5) * .12
         ranked.append({"score": score, "lexical_score": lexical_score, "semantic_score": semantic_score, "row": row, "terms": set(terms), "matched": matched})
     ranked.sort(key=lambda item: item["score"], reverse=True)
     ranked_ids = {item["row"]["id"] for item in ranked}
@@ -3381,6 +3682,21 @@ def retrieve_memories(
     if not ranked and low_information:
         recent = sorted(zip(rows, documents), key=lambda item: item[0]["updated_at"], reverse=True)[:min(3, limit)]
         ranked = [{"score": .08, "lexical_score": 0.0, "semantic_score": None, "row": row, "terms": set(terms), "matched": []} for row, terms in recent]
+
+    seed_scores = {item["row"]["id"]: item["score"] for item in ranked[:8]}
+    if seed_scores:
+        placeholders = ",".join("?" for _ in seed_scores)
+        row_map = {row["id"]: row for row in rows}
+        document_map = {row["id"]: terms for row, terms in zip(rows, documents)}
+        known = {item["row"]["id"] for item in ranked}
+        for link in connection.execute(f"SELECT * FROM memory_links WHERE source_memory_id IN ({placeholders}) ORDER BY weight DESC", tuple(seed_scores)):
+            target = row_map.get(link["target_memory_id"])
+            if not target or target["id"] in known or float(link["weight"]) < .16:
+                continue
+            spread = seed_scores[link["source_memory_id"]] * float(link["weight"]) * .42
+            if spread >= .08:
+                ranked.append({"score": spread, "lexical_score": 0.0, "semantic_score": None, "row": target, "terms": set(document_map[target["id"]]), "matched": [], "associated": True})
+                known.add(target["id"])
 
     selected = []
     used_chars = 0
@@ -3400,11 +3716,13 @@ def retrieve_memories(
         connection.executemany("""INSERT INTO memory_usage(memory_id,recall_count,last_recalled_at) VALUES (?,1,?)
           ON CONFLICT(memory_id) DO UPDATE SET recall_count=recall_count+1,last_recalled_at=excluded.last_recalled_at""",
           [(item["row"]["id"], recalled_at) for item in selected])
+        connection.executemany("UPDATE memories SET strength=?,last_confirmed_at=? WHERE id=?", [(min(1.0, memory_effective_strength(item["row"]) + (1.0-memory_effective_strength(item["row"]))* .10), recalled_at, item["row"]["id"]) for item in selected])
         connection.commit()
     return [{
         "id": item["row"]["id"], "title": item["row"]["title"], "kind": item["row"]["kind"],
         "content": item["row"]["content"], "score": round(item["score"], 4),
-        "reason": "类型与主题匹配" if item["row"]["kind"] in type_hints else "主题相关",
+        "reason": "联想唤起" if item.get("associated") else ("类型与主题匹配" if item["row"]["kind"] in type_hints else "主题相关"),
+        "strength": round(memory_effective_strength(item["row"]), 4), "confidence": item["row"]["confidence"],
     } for item in selected]
 
 
@@ -3556,6 +3874,7 @@ async def chat(body: ChatIn) -> StreamingResponse:
     async def stream():
         full = ""
         reasoning = ""
+        tool_events: list[dict[str, Any]] = []
         usage = None
         try:
             if memory_sources:
@@ -3584,7 +3903,8 @@ async def chat(body: ChatIn) -> StreamingResponse:
                     payload = {"model": provider["model"], "temperature": provider["temperature"], "top_p": provider["top_p"], "stream": bool(provider["stream_enabled"]), "messages": provider_messages}
                     if provider["cache_mode"] == "openai" and provider["prompt_cache_key"]:
                         payload["prompt_cache_key"] = provider["prompt_cache_key"]
-                    if provider["protocol"] in ("deepseek", "glm") and provider["thinking_enabled"]:
+                    thinking_enabled = provider["thinking_enabled"] if body.thinking_enabled is None else body.thinking_enabled
+                    if provider["protocol"] in ("deepseek", "glm") and thinking_enabled:
                         payload["thinking"] = {"type": "enabled"}
                     headers = {"Authorization": f"Bearer {provider['api_key']}", "content-type": "application/json"}
                     url = provider_endpoint(provider["base_url"], provider["protocol"])
@@ -3652,7 +3972,9 @@ async def chat(body: ChatIn) -> StreamingResponse:
                                 server, original = mcp_bindings[call["name"]]
                                 try:
                                     policy = expanded_mcp_server(server).get("tool_policies", {}).get(original, "allow")
-                                    if policy == "ask":
+                                    approved = set(body.approved_tool_permissions)
+                                    builtin_permission = BUILTIN_TOOL_SPECS.get(original, {}).get("permission") if server.get("transport") == "builtin" else None
+                                    if policy == "ask" and builtin_permission not in approved and call["name"] not in approved:
                                         raise PermissionError("该工具设置为“每次询问”，当前未获得用户确认")
                                     arguments = dict(call.get("arguments") or {})
                                     if server.get("transport") == "builtin":
@@ -3661,6 +3983,13 @@ async def chat(body: ChatIn) -> StreamingResponse:
                                         arguments["_source_message_id"] = user_id
                                     result = await invoke_server_tool(server, original, arguments)
                                     content, is_error = mcp_result_text(result)[:50000], False
+                                    if original == "web_search" and isinstance(result, dict):
+                                        event = {
+                                            "type": "web_search", "query": str(result.get("query") or arguments.get("query") or ""),
+                                            "results": [item for item in result.get("results", []) if isinstance(item, dict) and item.get("url")][:8],
+                                        }
+                                        tool_events.append(event)
+                                        yield json.dumps({"tool_event": event}, ensure_ascii=False) + "\n"
                                     record_mcp_audit(
                                         server["id"], original, "success",
                                         conversation_id=body.conversation_id, user_message_id=user_id,
@@ -3762,6 +4091,8 @@ async def chat(body: ChatIn) -> StreamingResponse:
                         "INSERT INTO messages VALUES (?, ?, 'assistant', ?, ?, ?, ?, ?, ?)",
                         (assistant_id, body.conversation_id, full, body.provider_id, provider["model"], now_iso(), reasoning, user_id),
                     )
+                    if tool_events:
+                        connection.execute("INSERT OR REPLACE INTO message_tool_events VALUES (?,?)", (assistant_id, json.dumps(tool_events, ensure_ascii=False)))
                     connection.execute("INSERT OR REPLACE INTO message_selections VALUES (?,?,?)", (body.conversation_id, user_id, assistant_id))
                     conversation = connection.execute("SELECT title FROM conversations WHERE id=?", (body.conversation_id,)).fetchone()
                     mode_row = connection.execute("SELECT value FROM app_settings WHERE key='auto_title_mode'").fetchone()
