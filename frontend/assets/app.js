@@ -565,6 +565,7 @@ function startupConversationPlan(persona,conversations){const mode=persona?.conf
 
 async function bootstrap() {
   Object.assign(state, await api("/api/bootstrap"));
+  state.providers.forEach(provider=>{provider.thinking_enabled=true;});
   state.favorites = await api("/api/favorites");
   state.mcp_audit = await api("/api/mcp-audit");
   state.provider = state.providers[0]?.id || null;const storedPersona=localStorage.getItem("atherloom:last-persona");state.persona=state.personas.some(item=>item.id===storedPersona)?storedPersona:state.personas[0]?.id||null;[state.memories,state.memory_stats]=await Promise.all([api(`/api/memories?persona_key=${encodeURIComponent(memoryPersonaKey())}`),api(`/api/memory-stats?persona_key=${encodeURIComponent(memoryPersonaKey())}`)]);

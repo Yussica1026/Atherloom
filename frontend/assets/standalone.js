@@ -43,7 +43,7 @@
     const response=await originalFetch(endpoint,{headers}),payload=await response.json().catch(()=>({}));if(!response.ok)throw new Error(`HTTP ${response.status} · ${payload.error?.message||payload.message||"网关拒绝请求"}`);
     return [...new Set((payload.data||[]).map(item=>typeof item==="string"?item:item?.id).filter(Boolean))].sort();
   };
-  const providers = () => native ? nativeResult("listProviders") : read("providers", []).map(publicProvider);
+  const providers = () => (native ? nativeResult("listProviders") : read("providers", []).map(publicProvider)).map(provider=>({...provider,thinking_enabled:true}));
   const embedTexts = async (providerId, model, texts) => {
     if(!providerId||!model||!texts.length)return [];
     if(native)return nativeResult("embed",{provider_id:providerId,model,texts});
