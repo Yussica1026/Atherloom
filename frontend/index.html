@@ -415,12 +415,19 @@
         </section>
 
         <section class="tab" id="tab-memory">
-          <h3>记忆库</h3><p class="muted">保存经过确认的长期记忆，并按需注入聊天上下文。</p>
+          <div class="section-heading"><div><h3>记忆库</h3><p>保存经过确认的长期记忆，并按需注入聊天上下文。</p></div><div class="memory-heading-actions"><button type="button" id="memoryCandidateBadge" class="memory-candidate-badge" hidden></button><button type="button" class="ghost" id="consolidateMemories">立即整理</button></div></div>
+          <section class="memory-howto" aria-labelledby="memoryHowtoTitle"><div><strong id="memoryHowtoTitle">你和 AI 都这样使用记忆</strong><ol><li><b>先搜索</b>：确认有没有同一件事。</li><li><b>再判断</b>：没有就新增；纠正、补充或变化就修改原记忆。</li><li><b>最后复核</b>：AI 不确定的推断会放进“待确认”，由你确认或驳回。</li></ol><small>事实是稳定资料，偏好是习惯喜好，关系是人物关系，承诺是约定，事件是一次经历，情绪是持续感受。重要度决定长期保留程度，可信度表示确定程度。</small></div><div class="memory-ai-access"><strong id="memoryAiAccessState">正在检查 AI 权限…</strong><button type="button" class="primary small" id="enableMemoryAi">允许 AI 管理记忆</button><small>开启后，AI 会获得搜索、新增和修改工具；不会获得删除工具。</small></div></section>
           <div class="memory-status"><span class="status-dot online"></span><div><strong>本地记忆库</strong><small>data/local.db · 已连接</small></div></div>
-          <div class="memory-toolbar"><input id="memorySearch" placeholder="搜索记忆内容"><select id="memoryOwnerFilter"><option value="current">当前人格的记忆</option><option value="__unassigned__">未分配旧记忆</option></select><select id="memoryKindFilter"><option value="">全部类型</option><option value="fact">事实</option><option value="preference">偏好</option><option value="relationship">关系</option><option value="promise">承诺</option><option value="event">事件</option><option value="emotion">情感</option><option value="summary">摘要</option><option value="diary">日记</option><option value="other">其他</option></select></div>
+          <p class="save-state" id="memoryOrganizeState"></p>
+          <div class="memory-toolbar"><input id="memorySearch" placeholder="搜索记忆内容"><select id="memoryOwnerFilter"><option value="current">当前人格的记忆</option><option value="__unassigned__">未分配旧记忆</option></select><select id="memoryStatusFilter"><option value="current">当前记忆</option><option value="candidate">只看待确认</option><option value="forgotten">已遗忘</option><option value="superseded">已替代</option><option value="archived">已归档</option><option value="trash">回收站</option></select><select id="memoryKindFilter"><option value="">全部类型</option><option value="fact">事实</option><option value="preference">偏好</option><option value="relationship">关系</option><option value="promise">承诺</option><option value="event">事件</option><option value="emotion">情感</option><option value="summary">摘要</option><option value="diary">日记</option><option value="other">其他</option></select></div>
           <form id="memoryForm" class="edit-card visible">
             <label>标题<input name="title" required placeholder="这条记忆的简短标题"></label>
             <label>类型<select name="kind"><option value="fact">事实</option><option value="preference">偏好</option><option value="relationship">关系</option><option value="promise">承诺</option><option value="event">事件</option><option value="emotion">情感</option><option value="summary">摘要</option><option value="diary">日记</option><option value="other">其他</option></select></label>
+            <label>重要度 <output id="memoryImportanceValue">50%</output><input name="importance" type="range" min="0" max="1" step="0.05" value="0.5"></label>
+            <label>可信度 <output id="memoryConfidenceValue">100%</output><input name="confidence" type="range" min="0" max="1" step="0.05" value="1"></label>
+            <label>来源<select name="source_type"><option value="manual">手动记录</option><option value="explicit">用户明确表达</option><option value="inferred">AI 推断</option><option value="imported">导入</option></select></label>
+            <label>有效期开始<input name="valid_from" type="datetime-local"></label>
+            <label>有效期结束<input name="valid_until" type="datetime-local"></label>
             <label>内容<textarea name="content" rows="5" required placeholder="需要跨窗口记住的内容"></textarea></label>
             <div class="form-actions"><button type="button" class="ghost" id="cancelMemoryEdit" hidden>取消编辑</button><button class="primary" id="saveMemory">添加到当前人格</button></div>
           </form>
@@ -534,7 +541,7 @@
             <div class="setting-row"><div><strong>读取用户选择的文件 <span class="recommend">推荐：始终允许</span></strong><small>只读取你通过拍照、选择图片或选择文件明确交给当前对话的内容；不会扫描设备</small></div><select data-permission="file_read"><option value="allow">始终允许</option><option value="ask">每次询问</option><option value="deny">禁止</option></select></div>
             <h4>记忆</h4>
             <div class="setting-row"><div><strong>读取记忆 <span class="recommend">推荐：始终允许</span></strong><small>跨窗口检索相关本地或 MCP 记忆</small></div><select data-permission="memory_read"><option value="allow">始终允许</option><option value="ask">每次询问</option><option value="deny">禁止</option></select></div>
-            <div class="setting-row"><div><strong>写入记忆 <span class="recommend">推荐：每次询问</span></strong><small>新增、更新或关联长期记忆</small></div><select data-permission="memory_write"><option value="allow">始终允许</option><option value="ask">每次询问</option><option value="deny">禁止</option></select></div>
+            <div class="setting-row"><div><strong>写入记忆 <span class="recommend">推荐：始终允许</span></strong><small>AI 会按“先搜索、再新增或修改”的规则管理记忆；不包含删除权限</small></div><select data-permission="memory_write"><option value="allow">始终允许</option><option value="ask">每次询问</option><option value="deny">禁止</option></select></div>
             <h4>内容</h4>
             <div class="setting-row"><div><strong>写日记 <span class="recommend">推荐：每次询问</span></strong><small>创建或更新日记条目</small></div><select data-permission="diary_write"><option value="allow">始终允许</option><option value="ask">每次询问</option><option value="deny">禁止</option></select></div>
             <h4>高风险操作</h4>
