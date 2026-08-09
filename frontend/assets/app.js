@@ -81,6 +81,26 @@ function showFetchedModels(models, form = $("#providerForm")) {
 }
 
 let bookObjectUrl,currentBook=null;
+const READING_DB="atherloom-reading",READING_STORE="books",LAST_BOOK_KEY="atherloom:last-book";
+let readingDbPromise,restoringLastBook;
+function openReadingDb(){
+  if(!("indexedDB" in window))return Promise.reject(new Error("当前浏览器不支持本地书架"));
+  if(!readingDbPromise)readingDbPromise=new Promise((resolve,reject)=>{const request=indexedDB.open(READING_DB,1);request.onupgradeneeded=()=>{if(!request.result.objectStoreNames.contains(READING_STORE))request.result.createObjectStore(READING_STORE,{keyPath:"key"});};request.onsuccess=()=>resolve(request.result);request.onerror=()=>reject(request.error||new Error("无法打开本地书架"));});
+  return readingDbPromise;
+}
+async function storeBookLocally(book){
+  const db=await openReadingDb();await new Promise((resolve,reject)=>{const transaction=db.transaction(READING_STORE,"readwrite");transaction.objectStore(READING_STORE).put({key:book.key,title:book.title,text:book.text,status:book.status||`${book.title} · 本地书架`,updated_at:new Date().toISOString()});transaction.oncomplete=resolve;transaction.onerror=()=>reject(transaction.error||new Error("书籍保存失败"));});localStorage.setItem(LAST_BOOK_KEY,book.key);
+}
+async function readStoredBook(key){
+  if(!key)return null;const db=await openReadingDb();return new Promise((resolve,reject)=>{const request=db.transaction(READING_STORE,"readonly").objectStore(READING_STORE).get(key);request.onsuccess=()=>resolve(request.result||null);request.onerror=()=>reject(request.error||new Error("书籍读取失败"));});
+}
+function mountBook(book){
+  const reader=$("#bookReader"),pre=document.createElement("pre");pre.textContent=book.text;reader.replaceChildren(pre);currentBook={title:book.title,key:book.key,text:book.text,status:book.status};loadBookAiChat();setBookControls(true);renderBookNotes();requestAnimationFrame(()=>{reader.scrollTop=Number(localStorage.getItem(book.key)||0);});reader.onscroll=()=>localStorage.setItem(book.key,String(reader.scrollTop));$("#bookStatus").textContent=book.status||`${book.title} · 已从本地书架恢复`;
+}
+async function restoreLastBook(){
+  if(currentBook)return currentBook;if(restoringLastBook)return restoringLastBook;const key=localStorage.getItem(LAST_BOOK_KEY);if(!key)return null;
+  restoringLastBook=(async()=>{try{const book=await readStoredBook(key);if(book?.text){mountBook({...book,status:`${book.title} · 已从本地书架恢复`});return currentBook;}localStorage.removeItem(LAST_BOOK_KEY);}catch(error){$("#bookStatus").textContent=`本地书架恢复失败：${error.message}`;}finally{restoringLastBook=null;}return null;})();return restoringLastBook;
+}
 const bookLocalKey=kind=>currentBook?`${currentBook.key}:${kind}`:"";
 const readBookLocal=kind=>{try{return JSON.parse(localStorage.getItem(bookLocalKey(kind))||"[]");}catch{return [];}};
 const writeBookLocal=(kind,value)=>localStorage.setItem(bookLocalKey(kind),JSON.stringify(value));
@@ -159,7 +179,7 @@ async function openLocalBook(file) {
     if (bookObjectUrl) { URL.revokeObjectURL(bookObjectUrl); bookObjectUrl = undefined; }
     reader.onscroll = null;
     if (isPdf) {
-      status.textContent=`${file.name} · 正在本地解析 PDF 文字…`;const result=await extractBrowserPdfText(file);validateBookText(result.text);const pre=document.createElement("pre");pre.textContent=result.text;reader.replaceChildren(pre);currentBook={title:file.name,key,text:result.text};loadBookAiChat();setBookControls(true);renderBookNotes();reader.scrollTop=Number(localStorage.getItem(key)||0);reader.onscroll=()=>localStorage.setItem(key,String(reader.scrollTop));status.textContent=`${file.name} · 已解析 ${result.pages} 页文字${result.truncated?"（正文过长，已安全截取）":""}`;
+      status.textContent=`${file.name} · 正在本地解析 PDF 文字…`;const result=await extractBrowserPdfText(file);validateBookText(result.text);const book={title:file.name,key,text:result.text,status:`${file.name} · 已解析 ${result.pages} 页文字${result.truncated?"（正文过长，已安全截取）":""}`};mountBook(book);await storeBookLocally(book);
       return;
     }
     if(format==="zip")throw new Error("检测到 EPUB/ZIP 电子书；当前版本请先导出为 TXT 或 Markdown 后再共读");
@@ -167,14 +187,7 @@ async function openLocalBook(file) {
     const decoded = decodeBookBytes(buffer);
     const text = decoded.text;
     validateBookText(text);
-    const pre = document.createElement("pre");
-    pre.textContent = text;
-    reader.replaceChildren(pre);
-    currentBook={title:file.name,key,text};loadBookAiChat();
-    setBookControls(true);renderBookNotes();
-    reader.scrollTop = Number(localStorage.getItem(key) || 0);
-    reader.onscroll = () => localStorage.setItem(key, String(reader.scrollTop));
-    status.textContent = file.size > limit ? `${file.name} · 已打开前 2 MB，避免设备卡顿` : `${file.name} · 本地文件`;
+    const book={title:file.name,key,text,status:file.size>limit?`${file.name} · 已打开前 2 MB，避免设备卡顿`:`${file.name} · 本地文件`};mountBook(book);await storeBookLocally(book);
   } catch (error) {
     reader.innerHTML = `<div class="game-empty"><span>!</span><h3>这本书没有打开</h3><p>${escapeHtml(error.message || "无法读取本地文件")}</p></div>`;
     status.textContent = `${file.name} · 打开失败`;
@@ -426,11 +439,15 @@ function assistantContentParts(content){
 }
 function renderQuestionCards(questions){return questions.length?`<section class="question-deck" aria-label="助手提问"><div class="question-deck-title">想听听你的选择</div>${questions.map((item,index)=>`<div class="question-card"><strong><span>${index+1}</span>${escapeHtml(item.question)}</strong><div>${item.options.map(option=>`<button type="button" data-question-option="${encodeURIComponent(option)}" data-question-title="${encodeURIComponent(item.question)}">${escapeHtml(option)}</button>`).join("")}</div></div>`).join("")}</section>`:"";}
 function renderAssistantContent(content){const parts=assistantContentParts(content);return renderMarkdown(parts.text)+renderQuestionCards(parts.questions);}
+function renderToolEvents(events){
+  const searches=(Array.isArray(events)?events:[]).filter(event=>event?.type==="web_search"&&Array.isArray(event.results));
+  return searches.map(event=>`<section class="web-results" aria-label="网页搜索结果"><header><span>联网检索</span><strong>${escapeHtml(event.query||"搜索结果")}</strong></header><div>${event.results.slice(0,8).map(item=>{let host="网页";try{host=new URL(item.url).hostname.replace(/^www\./,"");}catch{}return `<a class="web-result" href="${escapeHtml(item.url)}" target="_blank" rel="noopener noreferrer"><span>${escapeHtml(item.source||host)}</span><strong>${escapeHtml(item.title||host)}</strong>${item.snippet?`<p>${escapeHtml(item.snippet)}</p>`:""}<small>${escapeHtml(host)} ↗</small></a>`;}).join("")}</div></section>`).join("");
+}
 
 function renderMessages({stickToBottom=true}={}) {
   $("#welcome").hidden = state.messages.length > 0;
   $("#messages").innerHTML = visibleMessageVersions().map(m => { const index=state.messages.indexOf(m); return `<article class="message ${m.role}" data-index="${index}">
-    <div class="message-body">${m.memory_sources?.length ? `<div class="memory-sources">本轮使用记忆：${m.memory_sources.map(source => `<span>${escapeHtml(source.title)}</span>`).join("")}</div>` : ""}${m.reasoning ? `<details class="thinking"><summary>思考过程（点开查看）</summary><div>${escapeHtml(m.reasoning)}</div></details>` : ""}<div class="bubble">${m.pending && !m.content ? `<span class="response-waiting"><i></i>正在生成</span>` : m.role === "assistant" && !m.streaming ? renderAssistantContent(m.content) : escapeHtml(m.content)}</div></div>
+    <div class="message-body">${m.memory_sources?.length ? `<div class="memory-sources">本轮使用记忆：${m.memory_sources.map(source => `<span>${escapeHtml(source.title)}</span>`).join("")}</div>` : ""}${m.reasoning ? `<details class="thinking"><summary>思考过程（点开查看）</summary><div>${escapeHtml(m.reasoning)}</div></details>` : ""}${renderToolEvents(m.tool_events)}<div class="bubble">${m.pending && !m.content ? `<span class="response-waiting"><i></i>正在生成</span>` : m.role === "assistant" && !m.streaming ? renderAssistantContent(m.content) : escapeHtml(m.content)}</div></div>
     ${m.pending ? "" : `<div class="message-actions"><button data-action="copy">复制</button>${m.id ? `<button data-action="favorite">${state.favorites.some(f => f.source_message_id === m.id && f.owners?.includes("user")) ? "★ 已珍藏" : "☆ 珍藏"}</button>` : ""}<button data-action="edit">修改</button>${m.role === "user" || m.parent_message_id || m.retry_content ? `<button data-action="regenerate">重新 Roll</button>` : ""}${m.id ? `<button data-action="more" aria-label="更多消息操作">•••</button>` : ""}</div>`}
     ${m.role === "assistant" && m._version_count > 1 ? `<div class="version-switcher"><button data-action="version-prev" ${m._version_index === 0 ? "disabled" : ""}>‹</button><span>${m._version_index + 1} / ${m._version_count}</span><button data-action="version-next" ${m._version_index === m._version_count - 1 ? "disabled" : ""}>›</button></div>` : ""}
     ${m.role === "assistant" && m.model ? `<div class="message-meta">${escapeHtml(m.model)}</div>` : ""}</article>`; }).join("");
@@ -624,6 +641,7 @@ function updateStreamingMessage(message,messages=state.messages,conversationId=s
   const body=article.querySelector(".message-body"),bubble=article.querySelector(".bubble");
   if(message.memory_sources?.length){let sources=article.querySelector(".memory-sources");if(!sources){sources=document.createElement("div");sources.className="memory-sources";body.insertBefore(sources,body.firstChild);}sources.innerHTML=`本轮使用记忆：${message.memory_sources.map(source=>`<span>${escapeHtml(source.title)}</span>`).join("")}`;}
   if(message.reasoning){let thinking=article.querySelector(".thinking");if(!thinking){thinking=document.createElement("details");thinking.className="thinking";thinking.innerHTML="<summary>思考过程（点开查看）</summary><div></div>";body.insertBefore(thinking,bubble);}const reasoning=thinking.querySelector("div");if(reasoning.textContent!==message.reasoning)reasoning.textContent=message.reasoning;}
+  if(message.tool_events?.length){let tools=article.querySelector(".web-results-host");if(!tools){tools=document.createElement("div");tools.className="web-results-host";body.insertBefore(tools,bubble);}tools.innerHTML=renderToolEvents(message.tool_events);}
   if(bubble){if(message.role==="assistant"&&message.streaming){if(message.content){if(bubble.childNodes.length===1&&bubble.firstChild?.nodeType===Node.TEXT_NODE)bubble.firstChild.nodeValue=message.content;else bubble.replaceChildren(document.createTextNode(message.content));}}else bubble.innerHTML=message.role==="assistant"?renderAssistantContent(message.content):escapeHtml(message.content);}
   renderPickers();scheduleStreamingScroll();
 }
@@ -650,7 +668,7 @@ async function generateReply(content, reuseUserMessageId = null, attachments = [
   }
   state.generating.add(conversationId);state.generation_controllers.set(conversationId,controller);state.message_cache.set(conversationId,messages);streamFollow=true;renderHistory();renderCurrentTitle();updateComposerState();
   if(reuseUserMessageId)delete state.version_selection[reuseUserMessageId];
-  messages.push({ role: "assistant", content: "", reasoning: "", model: provider.model, parent_message_id: reuseUserMessageId, pending: true, streaming: provider.stream_enabled!==false&&provider.stream_enabled!==0 });if(state.current===conversationId)renderMessages();
+    messages.push({ role: "assistant", content: "", reasoning: "", tool_events:[], model: provider.model, parent_message_id: reuseUserMessageId, pending: true, streaming: provider.stream_enabled!==false&&provider.stream_enabled!==0 });if(state.current===conversationId)renderMessages();
   const assistant = messages[messages.length - 1];
   let presenter;
   try {
@@ -658,7 +676,7 @@ async function generateReply(content, reuseUserMessageId = null, attachments = [
     const response = await fetch("/api/chat", { method: "POST",headers: { "Content-Type": "application/json" },signal:controller.signal,body: JSON.stringify({ conversation_id:conversationId,content: content || "重新生成",attachments,provider_id: provider.id,vision_provider_id:state.settings.vision_provider_id||"",persona_id:personaId,reuse_user_message_id:reuseUserMessageId,local_time: localTimeContext(),typing_context:reuseUserMessageId?"":consumeTypingContext(),game_context:gameContext,media_context:mediaContext,worldbook_ids:worldbookIds }) });
     if (!response.ok) {const detail=(await response.json().catch(()=>({}))).detail;throw new Error(formatHttpError(response.status,detail));}
     const reader=response.body.getReader(),decoder=new TextDecoder();presenter=createStreamPresenter(assistant,assistant.streaming,messages,conversationId);let pending="";
-    while(true){const {value,done}=await reader.read();if(done)break;pending+=decoder.decode(value,{stream:true});const lines=pending.split("\n");pending=lines.pop();for(const line of lines){if(!line)continue;const event=JSON.parse(line);if(event.error)throw new Error(event.error);let structureUpdated=false;if(event.memory_sources){assistant.memory_sources=event.memory_sources;structureUpdated=true;}if(typeof event.delta==="string"&&event.delta!=="null")presenter.push(event.delta);if(typeof event.reasoning_delta==="string"&&event.reasoning_delta!=="null"){assistant.reasoning+=event.reasoning_delta;structureUpdated=true;}if(event.done){assistant.usage=event.usage||null;structureUpdated=true;await presenter.finish();assistant.pending=false;assistant.streaming=false;assistant.id=event.assistant_id;assistant.parent_message_id=event.user_id;const pendingUser=[...messages].reverse().find(m=>m.role==="user"&&!m.id);if(pendingUser)pendingUser.id=event.user_id;if(event.title){const conversation=state.conversations.find(c=>c.id===conversationId);if(conversation)conversation.title=event.title;}if(state.current===conversationId){renderCurrentTitle();renderMessages({stickToBottom:streamFollow});}renderHistory();}if(structureUpdated)updateStreamingMessage(assistant,messages,conversationId);}}
+    while(true){const {value,done}=await reader.read();if(done)break;pending+=decoder.decode(value,{stream:true});const lines=pending.split("\n");pending=lines.pop();for(const line of lines){if(!line)continue;const event=JSON.parse(line);if(event.error)throw new Error(event.error);let structureUpdated=false;if(event.memory_sources){assistant.memory_sources=event.memory_sources;structureUpdated=true;}if(event.tool_event){assistant.tool_events.push(event.tool_event);structureUpdated=true;}if(typeof event.delta==="string"&&event.delta!=="null")presenter.push(event.delta);if(typeof event.reasoning_delta==="string"&&event.reasoning_delta!=="null"){assistant.reasoning+=event.reasoning_delta;structureUpdated=true;}if(event.done){assistant.usage=event.usage||null;structureUpdated=true;await presenter.finish();assistant.pending=false;assistant.streaming=false;assistant.id=event.assistant_id;assistant.parent_message_id=event.user_id;const pendingUser=[...messages].reverse().find(m=>m.role==="user"&&!m.id);if(pendingUser)pendingUser.id=event.user_id;if(event.title){const conversation=state.conversations.find(c=>c.id===conversationId);if(conversation)conversation.title=event.title;}if(state.current===conversationId){renderCurrentTitle();renderMessages({stickToBottom:streamFollow});}renderHistory();}if(structureUpdated)updateStreamingMessage(assistant,messages,conversationId);}}
   } catch (error) {presenter?.cancel();assistant.pending=false;assistant.streaming=false;if(error.name==="AbortError"){if(!assistant.content)assistant.content="已停止生成";}else{assistant.retry_content=content;assistant.retry_media_context=mediaContext;assistant.content=`生成未完成：${error.message}`;if(!reuseUserMessageId){try{const fresh=await api(`/api/conversations/${conversationId}/messages`),persisted=[...fresh].reverse().find(item=>item.role==="user"&&item.content===content);if(persisted)persisted.attachments=attachments;messages.splice(0,messages.length,...fresh,assistant);}catch{}}}if(state.current===conversationId)renderMessages({stickToBottom:streamFollow});}
   finally{state.generating.delete(conversationId);state.generation_controllers.delete(conversationId);renderHistory();if(state.current===conversationId){renderCurrentTitle();updateComposerState();state.memories=await api(`/api/memories?persona_key=${encodeURIComponent(memoryPersonaKey())}`).catch(()=>state.memories);renderSettings();}}
 }
@@ -1054,7 +1072,7 @@ document.querySelectorAll("[data-pet-action]").forEach(button=>button.onclick=()
 $("#renamePet").onclick=()=>{const current=gameState.homestead?.pet;if(!current)return;const name=prompt("给小伙伴改名",current.name);if(name?.trim())playHomestead({action:"rename_pet",name:name.trim()});};
 setInterval(()=>{if(gameState.current==="homestead"&&gameState.homestead?.pet)renderHomestead();},30000);
 $("#openFavorites").onclick=openFavorites;$("#closeFavorites").onclick=()=>$("#favoritesSpace").hidden=true;
-$("#openReading").onclick=()=>openMedia("reading");$("#openCinema").onclick=()=>openMedia("cinema");$("#openListening").onclick=()=>openMedia("listening");$("#closeMedia").onclick=()=>{$("#mediaSpace").hidden=true;$("#moviePlayer").pause();$("#musicPlayer").pause();};
+$("#openReading").onclick=async()=>{openMedia("reading");await restoreLastBook();};$("#openCinema").onclick=()=>openMedia("cinema");$("#openListening").onclick=()=>openMedia("listening");$("#closeMedia").onclick=()=>{$("#mediaSpace").hidden=true;$("#moviePlayer").pause();$("#musicPlayer").pause();};
 $("#toggleChatStatus").onclick=()=>setChatStatus($("#chatStatusStrip").hidden);$("#closeChatStatus").onclick=()=>setChatStatus(false);
 $("#stickyNext").onclick=()=>{const note=stickyQueue[stickyIndex],seen=new Set(JSON.parse(localStorage.getItem("atherloom:seen-board-notes")||"[]"));if(note)seen.add(note.id);localStorage.setItem("atherloom:seen-board-notes",JSON.stringify([...seen].slice(-500)));stickyIndex++;showStickyNote();};
 $("#stickyReply").onclick=()=>{$("#stickyReplyForm").hidden=false;$("#stickyReplyForm").elements.content.focus();};
@@ -1072,7 +1090,7 @@ $("#deleteAllMessageVersions").onclick=async()=>{const index=Number($("#messageM
 $("#chooseBook").onclick=()=>$("#bookInput").click();$("#bookInput").onchange=async event=>{const file=event.target.files?.[0];event.target.value="";await openLocalBook(file);};
 document.querySelectorAll("[data-reading-tab]").forEach(button=>button.onclick=()=>showReadingTab(button.dataset.readingTab));
 $("#addBookmark").onclick=()=>{
-  if(!currentBook)return;const position=currentBookPosition(),items=readBookLocal("bookmarks");items.unshift({id:crypto.randomUUID?.()||String(Date.now()),...position,created_at:new Date().toISOString()});writeBookLocal("bookmarks",items.slice(0,300));renderBookNotes();showReadingTab("bookmarks");
+  if(!currentBook){$("#bookStatus").textContent="请先打开一本书";return;}const position=currentBookPosition(),items=readBookLocal("bookmarks");items.unshift({id:crypto.randomUUID?.()||String(Date.now()),...position,created_at:new Date().toISOString()});writeBookLocal("bookmarks",items.slice(0,300));renderBookNotes();showReadingTab("bookmarks");$("#bookStatus").textContent=`${currentBook.title} · 已添加书签（约 ${Math.round(position.ratio*100)}%）`;
 };
 $("#addAnnotation").onclick=()=>{
   if(!currentBook)return;const selected=selectedBookText();if(!selected){$("#bookStatus").textContent="请先在正文里选择一段文字";return;}const note=prompt("写下对这段文字的批注：","");if(note===null)return;const items=readBookLocal("annotations");items.unshift({id:crypto.randomUUID?.()||String(Date.now()),...selected,note:note.trim().slice(0,5000),created_at:new Date().toISOString()});writeBookLocal("annotations",items.slice(0,500));renderBookNotes();showReadingTab("annotations");getSelection()?.removeAllRanges();
