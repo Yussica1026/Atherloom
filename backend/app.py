@@ -3907,7 +3907,8 @@ async def chat(body: ChatIn) -> StreamingResponse:
                     if provider["cache_mode"] == "openai" and provider["prompt_cache_key"]:
                         payload["prompt_cache_key"] = provider["prompt_cache_key"]
                     thinking_enabled = provider["thinking_enabled"] if body.thinking_enabled is None else body.thinking_enabled
-                    if provider["protocol"] in ("deepseek", "glm") and thinking_enabled:
+                    reasoning_model = provider["protocol"] in ("deepseek", "glm") or "deepseek" in provider["model"].lower()
+                    if reasoning_model and thinking_enabled:
                         payload["thinking"] = {"type": "enabled"}
                     headers = {"Authorization": f"Bearer {provider['api_key']}", "content-type": "application/json"}
                     url = provider_endpoint(provider["base_url"], provider["protocol"])
