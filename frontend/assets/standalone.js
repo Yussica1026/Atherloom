@@ -21,7 +21,6 @@
     return { cur_date: now.toLocaleDateString("zh-CN"), cur_time: now.toLocaleTimeString("zh-CN", { hour12: false }), cur_datetime: local, model_id: provider?.model || "未提供", model_name: provider?.model || "未提供", locale: navigator.language || "zh-CN", timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || "未提供", system_version: "Atherloom", device_info: navigator.userAgent || "未提供", battery_level: battery ? `${Math.round(battery.level * 100)}%` : "未提供", nickname: settings().display_name || "未提供", assistant_name: persona?.name || "当前人格" };
   };
   const native = window.AtherloomNative;
-  if(native){ const homesteadButton=document.querySelector("#openHomestead"); if(homesteadButton) homesteadButton.hidden=true; }
   const nativeStreams = new Map();
   window.AtherloomNativeStream = (id, raw) => { const callback=nativeStreams.get(id); if(callback)callback(JSON.parse(raw)); };
   const nativeStreamResponse = (request, transform) => {
