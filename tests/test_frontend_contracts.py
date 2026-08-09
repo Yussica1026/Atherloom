@@ -40,9 +40,8 @@ class FrontendRegressionContracts(unittest.TestCase):
         self.assertIn('row?.remove();try{await updateHistoryState', APP)
         self.assertNotIn('if(next)await openConversation(next.id);else await newConversation();', APP)
 
-    def test_reasoning_is_folded_by_default(self):
-        self.assertIn("<details class=\"thinking\"><summary>思考过程（点开查看）", APP)
-        self.assertNotIn('<details class="thinking" open>', APP)
+    def test_reasoning_is_visible_by_default(self):
+        self.assertIn('<details class="thinking" open><summary>思考过程（点击收起）', APP)
 
     def test_browser_backup_reports_download_record(self):
         self.assertIn("具体位置请查看浏览器下载记录", APP)
