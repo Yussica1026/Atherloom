@@ -202,6 +202,7 @@
     const gamePersona = url.searchParams.get("persona_id") || body.persona_id || "__default__";
     const gameKey = gameId => `game:${gameId}:${gamePersona}`;
     if (url.pathname === "/api/bootstrap") return json({ providers:providers(),personas:read("personas",[]),worldbooks:read("worldbooks",[]),mcp_servers:mcpServers(),conversations:read("conversations",[]),settings:settings() });
+    if (native && url.pathname.startsWith("/api/homestead")) return json({detail:"云芽庭院是独立游戏，Android 版未安装"},404);
     const homePersona=url.searchParams.get("persona_id")||"__default__",homeKey=`homestead:${homePersona}`;
     if(url.pathname==="/api/homestead"&&method==="GET"){const state=settleHome(read(homeKey,homeDefault()));write(homeKey,state);return json({state,events:[],catalog:homeCatalog,allowed_actions:homeAllowed(state)});}
     if(url.pathname==="/api/homestead/action"&&method==="POST"&&body.action==="daily_claim"){const state=settleHome(read(homeKey,homeDefault())),day=new Date().toISOString().slice(0,10);if(state.daily_claim_day===day)return json({detail:"今天的云贝已经领过了"},409);state.daily_claim_day=day;state.coins+=30;homeEvent(state,"daily_claim","领取了今日云贝，得到 30 云贝。");write(homeKey,state);return json({state,events:["领取了今日云贝，得到 30 云贝。"],catalog:homeCatalog,allowed_actions:homeAllowed(state)});}
