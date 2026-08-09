@@ -706,6 +706,9 @@ def bootstrap() -> dict[str, Any]:
                     connection.execute("UPDATE memories SET memory_status='forgotten',updated_at=? WHERE id=?", (now_iso(), memory["id"]))
             connection.execute("INSERT INTO app_settings(key,value) VALUES ('memory_lifecycle_date',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", (today,))
             connection.commit()
+        # 思维链默认策略：所有已有线路统一恢复开启；用户仍可在请求协议不支持时由上游忽略。
+        connection.execute("UPDATE providers SET thinking_enabled=1 WHERE thinking_enabled IS NULL OR thinking_enabled=0")
+        connection.commit()
         providers = [masked_provider(row) for row in connection.execute("SELECT * FROM providers ORDER BY created_at")]
         personas = [{**dict(row), "config": normalize_persona_config(row["config_json"])} for row in connection.execute("SELECT p.*,c.config_json FROM personas p LEFT JOIN persona_configs c ON c.persona_id=p.id ORDER BY p.created_at")]
         conversations = [dict(row) for row in connection.execute("SELECT * FROM conversations ORDER BY updated_at DESC")]
