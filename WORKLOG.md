@@ -1,5 +1,14 @@
 # Atherloom 开发工作日志
 
+## 2026-08-11 · AstrBot 乌有乡工具结果上下文注入修复
+
+- 根据实际对话日志定位：AstrBot 插件使用 `yield event.plain_result(...)` 时，结果会走“直接发给用户”流程，Agent 下一轮收到的却是“工具没有返回值”，因此 AI 看不到自己刚刚旅行的地点和环境。
+- 修复 `astrbot_plugin_nowhere`：`nowhere_travel` 改为返回结构化纯文本 `NOWHERE_TRAVEL_RESULT`，由 AstrBot 转换为真正的 tool result，下一轮上下文可读取地点、天气、声音、地形和观察内容。
+- 工具异常也改为返回上下文可见的错误结果，避免 AI 误判为没有调用成功或没有收到结果。
+- 增加“冰岛 雷克雅未克”“雷克雅未克”等中文地点别名，统一归一化到 `Reykjavik`。
+- 插件版本更新至 `1.0.1`，补充 5 项插件契约测试，全部通过。
+- AstrBot 提交：`4137543 chore: release context injection fix`。
+
 ## 2026-08-11 · v0.5.72 乌有乡入口与 AI 行动直播
 
 - 根据 Android 真机截图定位到 AssetManager 路径多一层 `assets/`：同步任务把 `frontend/assets/nowhere/index.html` 打包为 `assets/nowhere/index.html`，而旧版错误读取了 `nowhere/index.html`。
