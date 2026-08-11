@@ -50,8 +50,15 @@ class FrontendRegressionContracts(unittest.TestCase):
         self.assertIn("具体位置请查看浏览器下载记录", APP)
 
     def test_versioned_script_is_current(self):
-        self.assertIn('assets/app.js?v=0540', INDEX)
-        self.assertIn('assets/standalone.js?v=0518', INDEX)
+        self.assertIn('assets/app.js?v=0541', INDEX)
+        self.assertIn('assets/standalone.js?v=0519', INDEX)
+
+    def test_desire_state_is_consistent_between_web_and_android(self):
+        self.assertIn('motivationData.offline_mode||"limited"', APP)
+        self.assertIn('30*60*1000', APP)
+        self.assertIn('desireCoupling', STANDALONE)
+        self.assertIn('desireApplyEvent(currentDesire,"contact_message")', STANDALONE)
+        self.assertIn('const motivationEvent=', STANDALONE)
 
     def test_chat_enter_is_newline_only(self):
         self.assertNotIn('$("#prompt").addEventListener("keydown"', APP)

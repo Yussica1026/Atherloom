@@ -3163,7 +3163,7 @@ def motivation_event(persona_key: str, body: MotivationEventIn) -> dict[str, Any
     persona_id = None if persona_key == "__default__" else persona_key
     with closing(db()) as connection:
         enabled, state, offline_mode = load_motivation(connection, persona_id)
-        changes = apply_event(state, body.event)
+        changes = apply_event(state, body.event) if enabled else []
         save_motivation(connection, persona_id, enabled, state, offline_mode)
         connection.commit()
     return {"enabled": enabled, "state": state, "changes": changes}
@@ -3174,7 +3174,7 @@ def motivation_tick(persona_key: str) -> dict[str, Any]:
     persona_id = None if persona_key == "__default__" else persona_key
     with closing(db()) as connection:
         enabled, state, offline_mode = load_motivation(connection, persona_id)
-        result = tick(state)
+        result = tick(state) if enabled else {"state": state, "generated": [], "next_interval": 0}
         save_motivation(connection, persona_id, enabled, result["state"], offline_mode)
         connection.commit()
     return {"enabled": enabled, **result}
