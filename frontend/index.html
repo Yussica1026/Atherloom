@@ -13,7 +13,7 @@
   <title>Atherloom</title>
   <link rel="manifest" href="manifest.json">
   <link rel="icon" href="assets/app-icon.svg" type="image/svg+xml">
-  <link rel="stylesheet" href="assets/app.css?v=0544">
+  <link rel="stylesheet" href="assets/app.css?v=0545">
   <script>
     // Recovery path for browsers that retained a failed external stylesheet
     // response. This keeps user data untouched and injects only verified CSS.
@@ -144,7 +144,7 @@
       <aside id="gameCards" class="game-cards"></aside>
       <main class="game-stage">
         <div id="gameEmpty" class="game-empty"><span>✦</span><h3>挑一款游戏吧</h3><p>每个人格拥有独立存档，AI 的操作会留下记录。</p></div>
-        <section id="nowhereStage" class="nowhere-stage" hidden><iframe id="nowhereFrame" title="乌有乡 · 旁观者" loading="lazy"></iframe><footer><span><b id="nowhereAutoStatus">等待 AI 出发</b><small>原作：旋复 · yuyixuanfu/nowhere · CC BY-NC 4.0</small></span><div><select id="nowhereAutoSteps" aria-label="自主旅行步数"><option value="6">自主 6 步</option><option value="10" selected>自主 10 步</option><option value="12">自主 12 步</option></select><button class="primary" id="startNowhereAuto" type="button">让 AI 自己旅行</button><button class="ghost" id="stopNowhereAuto" type="button" hidden>立即停止</button><button class="ghost" id="reloadNowhere" type="button">重载地图</button></div></footer></section>
+        <section id="nowhereStage" class="nowhere-stage" hidden><iframe id="nowhereFrame" title="乌有乡 · 旁观者" loading="lazy"></iframe><aside id="nowhereThoughts" class="nowhere-thoughts" aria-live="polite"><strong>AI 心里话</strong><p id="nowhereThoughtText">还没出发。让它自己决定下一步。</p><ol id="nowhereActionLog"></ol></aside><footer><span><b id="nowhereAutoStatus">等待 AI 出发</b><small>原作：旋复 · yuyixuanfu/nowhere · CC BY-NC 4.0</small></span><div><select id="nowhereAutoSteps" aria-label="自主旅行步数"><option value="6">自主 6 步</option><option value="10" selected>自主 10 步</option><option value="12">自主 12 步</option></select><button class="primary" id="startNowhereAuto" type="button">让 AI 自己旅行</button><button class="ghost" id="stopNowhereAuto" type="button" hidden>立即停止</button><button class="ghost" id="reloadNowhere" type="button">重载地图</button></div></footer></section>
         <section id="homesteadStage" class="mini-game-stage homestead-stage" hidden>
           <header><div><span class="eyebrow">LITTLE LIVING GARDEN</span><h3>云芽庭院</h3><p>花和宠物会跟着真实时间生活。记得回来看看它们。</p></div><div class="homestead-wallet"><div class="homestead-coins">云贝 <strong id="homesteadCoins">0</strong></div><button class="ghost" id="homesteadDailyClaim" type="button">领取今日云贝 · +30</button></div></header>
           <div class="homestead-management"><div><strong>照料方式</strong><small id="homesteadManagerStatus">现在由你亲自照料</small></div><label class="switch"><input id="homesteadAiEnabled" type="checkbox"><span></span></label><button class="ghost" id="homesteadAiNow" type="button">请人格照料一次</button></div>
@@ -640,11 +640,11 @@
   <div class="message-menu-backdrop" id="instructionPicker" hidden><section class="message-editor instruction-picker" role="dialog" aria-label="指令注入"><h3>指令注入</h3><p class="muted">仅对当前聊天窗口生效，可随时取消。</p><div id="instructionBookList" class="instruction-book-list"></div><div class="form-actions"><button type="button" class="primary" id="closeInstructionPicker">完成</button></div></section></div>
   <div class="message-menu-backdrop" id="manualCompressDialog" hidden><form class="message-editor manual-compress-dialog" role="dialog" aria-label="主动压缩对话"><h3>主动压缩对话</h3><p class="muted">把最早的若干轮整理进会话摘要。原消息仍可查看，但后续聊天不再重复携带这些原文。</p><label>压缩轮数<input id="manualCompressRounds" type="number" min="1" max="100" value="10" required></label><small id="manualCompressHint">将保留最近一轮原文。</small><p class="save-state" id="manualCompressStatus"></p><div class="form-actions"><button type="button" class="ghost" id="cancelManualCompress">取消</button><button class="primary" id="confirmManualCompress" type="submit">开始压缩</button></div></form></div>
   <div class="message-menu-backdrop" id="worldbookEntryEditor" hidden><form class="message-editor worldbook-entry-editor" role="dialog" aria-label="世界书条目"><h3>世界书条目</h3><label>条目名称<input name="name" maxlength="100" required></label><label>内容<textarea name="content" rows="8" required></textarea></label><label class="check-label"><input name="enabled" type="checkbox" checked>启用条目</label><label class="check-label"><input name="constant" type="checkbox">常驻激活</label><label>关键词（每行一个）<textarea name="keywords" rows="3"></textarea></label><div class="entry-options"><label class="check-label"><input name="use_regex" type="checkbox">使用正则</label><label class="check-label"><input name="case_sensitive" type="checkbox">区分大小写</label><label>扫描深度<input name="scan_depth" type="number" min="1" max="100" value="4"></label><label>注入位置<select name="position"><option value="system_before">系统提示前</option><option value="system_after" selected>系统提示后</option><option value="history_before">对话历史前</option><option value="history_after">对话历史后</option></select></label><label>注入角色<select name="role"><option value="system">系统</option><option value="user">用户</option><option value="assistant">助手</option></select></label><label>优先级<input name="priority" type="number" min="-9999" max="9999" value="0"></label></div><div class="form-actions"><button type="button" class="ghost" id="cancelWorldbookEntry">取消</button><button class="primary">保存条目</button></div></form></div>
-  <script src="assets/standalone.js?v=0522"></script>
-  <script src="assets/app.js?v=0544" defer></script>
+  <script src="assets/standalone.js?v=0523"></script>
+  <script src="assets/app.js?v=0545" defer></script>
   <script>
     if ('serviceWorker' in navigator) {
-      navigator.serviceWorker.register('service-worker.js?v=149', { updateViaCache: 'none' }).then(registration => registration.update());
+      navigator.serviceWorker.register('service-worker.js?v=150', { updateViaCache: 'none' }).then(registration => registration.update());
       // 新缓存在下次打开时接管；不强制刷新正在聊天、共读或剧场中的页面。
     }
   </script>

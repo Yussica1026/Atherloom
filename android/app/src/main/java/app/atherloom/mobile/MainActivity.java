@@ -208,8 +208,8 @@ public class MainActivity extends Activity {
         }
 
         @JavascriptInterface public String readBundledAsset(String path) {
-            if (!"nowhere/index.html".equals(path)) return "";
-            try { return read(context.getAssets().open(path)); }
+            if (!"assets/nowhere/index.html".equals(path)) return "";
+            try { return read(context.getAssets().open("assets/nowhere/index.html")); }
             catch (Exception error) { return ""; }
         }
 

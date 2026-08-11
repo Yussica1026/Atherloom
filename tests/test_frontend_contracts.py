@@ -50,15 +50,15 @@ class FrontendRegressionContracts(unittest.TestCase):
         self.assertIn("具体位置请查看浏览器下载记录", APP)
 
     def test_versioned_script_is_current(self):
-        self.assertIn('assets/app.js?v=0544', INDEX)
-        self.assertIn('assets/standalone.js?v=0522', INDEX)
+        self.assertIn('assets/app.js?v=0545', INDEX)
+        self.assertIn('assets/standalone.js?v=0523', INDEX)
 
     def test_manual_compression_keeps_original_messages_but_reduces_hot_context(self):
         self.assertIn('id="openManualCompress"', INDEX)
         self.assertIn('/compress`', APP)
         self.assertIn('compressed:${conversationId}', STANDALONE)
         self.assertIn('<conversation_summary>', STANDALONE)
-        self.assertIn('readBundledAsset("nowhere/index.html")', APP)
+        self.assertIn('readBundledAsset("assets/nowhere/index.html")', APP)
 
     def test_android_autonomy_wake_is_user_controlled(self):
         self.assertIn('id="autonomyEnabled"', INDEX)
@@ -77,9 +77,16 @@ class FrontendRegressionContracts(unittest.TestCase):
     def test_original_nowhere_observer_has_a_visible_game_entry(self):
         self.assertIn('id="nowhereStage"', INDEX)
         self.assertIn('原作：旋复 · yuyixuanfu/nowhere · CC BY-NC 4.0', INDEX)
-        self.assertIn('readBundledAsset("nowhere/index.html")', APP)
+        self.assertIn('readBundledAsset("assets/nowhere/index.html")', APP)
         self.assertIn('frame.srcdoc=', APP)
         self.assertIn('base href="https://appassets.androidplatform.net/assets/nowhere/"', APP)
+
+    def test_nowhere_android_entry_and_live_actions_are_visible(self):
+        self.assertIn('getAssets().open("assets/nowhere/index.html")', ANDROID)
+        self.assertIn('id="nowhereThoughts"', INDEX)
+        self.assertIn('id="nowhereActionLog"', INDEX)
+        self.assertIn('function updateNowhereLive(event)', APP)
+        self.assertIn('type:"nowhere"', STANDALONE)
 
     def test_chat_enter_is_newline_only(self):
         self.assertNotIn('$("#prompt").addEventListener("keydown"', APP)
