@@ -364,7 +364,7 @@ public class MainActivity extends Activity {
                 if(toolCalls.length()==0)toolCalls=parseDsmlToolCalls(content);
                 JSONObject responseMessage = protocol.equals("anthropic") ? null : data.getJSONArray("choices").getJSONObject(0).getJSONObject("message");
                 String reasoning = protocol.equals("anthropic") ? "" : nullableString(responseMessage, "reasoning_content"); if (reasoning.isEmpty()) reasoning=nullableString(responseMessage, "reasoning");
-                return new JSONObject().put("ok", true).put("content", content).put("reasoning", reasoning).put("model", provider.optString("model")).put("tool_calls",toolCalls).put("raw_assistant",rawAssistant).toString();
+                return new JSONObject().put("ok", true).put("content", content).put("reasoning", reasoning).put("model", provider.optString("model")).put("tool_calls",toolCalls).put("raw_assistant",rawAssistant).put("usage",data.optJSONObject("usage")).toString();
             } catch (Exception error) { return failure(error); } finally { if (connection != null) connection.disconnect(); }
         }
 
@@ -400,12 +400,15 @@ public class MainActivity extends Activity {
                     try (OutputStream output = connection.getOutputStream()) { output.write(payload.toString().getBytes(StandardCharsets.UTF_8)); }
                     int status = connection.getResponseCode();
                     if (status >= 400) { String response = read(connection.getErrorStream()); throw new Exception("HTTP " + status + " · " + response.substring(0, Math.min(300, response.length()))); }
+                    JSONObject usage = new JSONObject();
                     try (BufferedReader reader = new BufferedReader(new InputStreamReader(connection.getInputStream(), StandardCharsets.UTF_8))) {
                         String line;
                         while ((line = reader.readLine()) != null) {
                             if (!line.startsWith("data:")) continue;
                             String rawEvent = line.substring(5).trim(); if (rawEvent.isEmpty() || rawEvent.equals("[DONE]")) continue;
-                            JSONObject event = new JSONObject(rawEvent), output = new JSONObject();
+                            JSONObject event = new JSONObject(rawEvent), output = new JSONObject(), eventUsage = event.optJSONObject("usage");
+                            JSONObject message = event.optJSONObject("message"); if (eventUsage == null && message != null) eventUsage = message.optJSONObject("usage");
+                            if (eventUsage != null) for (Iterator<String> keys = eventUsage.keys(); keys.hasNext();) { String key = keys.next(); usage.put(key, eventUsage.get(key)); }
                             if (protocol.equals("anthropic")) {
                                 JSONObject delta = event.optJSONObject("delta");
                                 if (delta != null && event.optString("type").equals("content_block_delta")) { if (!delta.optString("text").isEmpty()) output.put("delta", delta.optString("text")); if (!delta.optString("thinking").isEmpty()) output.put("reasoning_delta", delta.optString("thinking")); }
@@ -416,7 +419,7 @@ public class MainActivity extends Activity {
                             if (output.length() > 0) emitStream(callbackId, output);
                         }
                     }
-                    emitStream(callbackId, new JSONObject().put("done", true).put("model", provider.optString("model")));
+                    emitStream(callbackId, new JSONObject().put("done", true).put("model", provider.optString("model")).put("usage", usage.length() > 0 ? usage : JSONObject.NULL));
                 } catch (Exception error) {
                     try { emitStream(callbackId, new JSONObject().put("error", error.getMessage())); } catch (Exception ignored) {}
                 } finally { if (connection != null) connection.disconnect(); }

@@ -6,6 +6,9 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 APP = (ROOT / "frontend/assets/app.js").read_text(encoding="utf-8")
 INDEX = (ROOT / "frontend/index.html").read_text(encoding="utf-8")
 CSS = (ROOT / "frontend/assets/app.css").read_text(encoding="utf-8")
+STANDALONE = (ROOT / "frontend/assets/standalone.js").read_text(encoding="utf-8")
+ANDROID = (ROOT / "android/app/src/main/java/app/atherloom/mobile/MainActivity.java").read_text(encoding="utf-8")
+INLINE = (ROOT / "frontend/inline.html").read_text(encoding="utf-8")
 
 
 class FrontendRegressionContracts(unittest.TestCase):
@@ -47,7 +50,8 @@ class FrontendRegressionContracts(unittest.TestCase):
         self.assertIn("具体位置请查看浏览器下载记录", APP)
 
     def test_versioned_script_is_current(self):
-        self.assertIn('assets/app.js?v=0537', INDEX)
+        self.assertIn('assets/app.js?v=0540', INDEX)
+        self.assertIn('assets/standalone.js?v=0518', INDEX)
 
     def test_chat_enter_is_newline_only(self):
         self.assertNotIn('$("#prompt").addEventListener("keydown"', APP)
@@ -66,6 +70,44 @@ class FrontendRegressionContracts(unittest.TestCase):
         for status in (400, 401, 402, 403, 429, 500):
             self.assertIn(f'{status}:', APP)
         self.assertNotIn('assistant.content=`连接失败：', APP)
+
+    def test_reported_token_usage_survives_android_and_standalone(self):
+        self.assertIn("cache_creation_input_tokens", STANDALONE)
+        self.assertIn("cache_read_input_tokens", STANDALONE)
+        self.assertIn("assistant.usage=normalizeUsage(event.usage||totalUsage)", STANDALONE)
+        self.assertIn("usage:assistant.usage", STANDALONE)
+        self.assertIn('.put("usage",data.optJSONObject("usage"))', ANDROID)
+        self.assertIn('.put("usage", usage.length() > 0 ? usage : JSONObject.NULL)', ANDROID)
+
+    def test_life_tools_and_user_tool_timeout_are_exposed(self):
+        self.assertIn('data-permission="life_records"', INDEX)
+        self.assertIn('id="toolTimeoutSeconds"', INDEX)
+        self.assertIn('id="toolTimeoutSeconds"', INLINE)
+        self.assertIn('data-permission="life_records"', INLINE)
+        self.assertIn("atherloom_life_records_list", STANDALONE)
+        self.assertIn("atherloom_life_record_save", STANDALONE)
+        self.assertIn("toolTimeoutSeconds", APP)
+        self.assertIn("tool_timeout_seconds", APP)
+
+    def test_life_book_is_a_standalone_persona_scoped_space(self):
+        for markup in (INDEX, INLINE):
+            self.assertIn('id="openLifeBook"', markup)
+            self.assertIn('id="lifeBookSpace"', markup)
+            self.assertIn('data-life-page="anniversary"', markup)
+            self.assertIn('id="memoForm"', markup)
+            self.assertIn('id="countdownForm"', markup)
+        self.assertIn('kind==="anniversary"', APP)
+        self.assertIn('data-toggle-memo', APP)
+        self.assertIn('"anniversary","memo","countdown"', STANDALONE)
+
+    def test_one_provider_can_store_and_switch_multiple_models(self):
+        for markup in (INDEX, INLINE):
+            self.assertIn('id="providerModelsText"', markup)
+            self.assertIn('id="addProviderModel"', markup)
+        self.assertIn("function providerModels", APP)
+        self.assertIn("data.models=", APP)
+        self.assertIn("flatMap(p=>providerModels(p)", APP)
+        self.assertIn("toolDeadline", STANDALONE)
 
 
 if __name__ == "__main__":

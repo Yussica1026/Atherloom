@@ -68,7 +68,8 @@ def init_db() -> None:
               stream_enabled INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL,
               vision_mode TEXT NOT NULL DEFAULT 'auto',
               cache_mode TEXT NOT NULL DEFAULT 'auto',
-              prompt_cache_key TEXT NOT NULL DEFAULT ''
+              prompt_cache_key TEXT NOT NULL DEFAULT '',
+              models_json TEXT NOT NULL DEFAULT '[]'
             );
             CREATE TABLE IF NOT EXISTS personas (
               id TEXT PRIMARY KEY, name TEXT NOT NULL, prompt TEXT NOT NULL,
@@ -259,6 +260,9 @@ def init_db() -> None:
             connection.execute("ALTER TABLE providers ADD COLUMN cache_mode TEXT NOT NULL DEFAULT 'auto'")
         if "prompt_cache_key" not in columns:
             connection.execute("ALTER TABLE providers ADD COLUMN prompt_cache_key TEXT NOT NULL DEFAULT ''")
+        if "models_json" not in columns:
+            connection.execute("ALTER TABLE providers ADD COLUMN models_json TEXT NOT NULL DEFAULT '[]'")
+            connection.execute("UPDATE providers SET models_json=json_array(model) WHERE model<>''")
         memory_columns = {row["name"] for row in connection.execute("PRAGMA table_info(memories)")}
         if "strength" not in memory_columns and DB_PATH.exists():
             backup_path = DB_PATH.with_name(f"{DB_PATH.stem}.pre-memory-lifecycle-{datetime.now().strftime('%Y%m%d')}.bak")
@@ -332,6 +336,7 @@ class ProviderIn(BaseModel):
     base_url: str
     api_key: str = ""
     model: str
+    models: list[str] = Field(default_factory=list, max_length=200)
     enabled: bool = True
     custom_headers: str = "{}"
     prompt_cache: bool = True
@@ -419,8 +424,9 @@ class AppSettingsIn(BaseModel):
     typing_presence_enabled: bool = True
     tool_permissions: dict[str, str] = Field(default_factory=lambda: {
         "web_search": "allow", "file_read": "allow", "memory_read": "allow", "memory_write": "allow",
-        "diary_write": "ask", "delete": "ask"
+        "life_records": "allow", "diary_write": "ask", "delete": "ask"
     })
+    tool_timeout_seconds: int = Field(default=180, ge=30, le=900)
     font_scale: int = Field(default=100, ge=85, le=130)
     message_density: str = Field(default="comfortable", pattern="^(compact|comfortable|relaxed)$")
     code_theme: str = Field(default="auto", pattern="^(auto|light|dark|contrast)$")
@@ -503,7 +509,7 @@ class DreamGenerateIn(BaseModel):
 
 
 class LifeRecordIn(BaseModel):
-    kind: str = Field(pattern="^(expense|income|period|meal)$")
+    kind: str = Field(pattern="^(expense|income|period|meal|anniversary|memo|countdown)$")
     occurred_at: str = Field(min_length=10, max_length=40)
     amount: float | None = Field(default=None, ge=0, le=999999999)
     category: str = Field(default="", max_length=80)
@@ -620,6 +626,8 @@ def masked_provider(row: sqlite3.Row) -> dict[str, Any]:
     item["thinking_enabled"] = bool(item["thinking_enabled"])
     item["stream_enabled"] = bool(item["stream_enabled"])
     item["has_api_key"] = bool(item.pop("api_key"))
+    stored_models = json.loads(item.pop("models_json", "[]") or "[]")
+    item["models"] = list(dict.fromkeys([item["model"], *stored_models])) if item.get("model") else stored_models
     return item
 
 
@@ -732,7 +740,8 @@ def bootstrap() -> dict[str, Any]:
         "display_name": settings_rows.get("display_name", ""),
         "proactive_questions": settings_rows.get("proactive_questions", "false") == "true",
         "typing_presence_enabled": settings_rows.get("typing_presence_enabled", "true") == "true",
-        "tool_permissions": json.loads(settings_rows.get("tool_permissions", '{"web_search":"allow","file_read":"allow","memory_read":"allow","memory_write":"allow","diary_write":"ask","delete":"ask"}')),
+        "tool_permissions": {"web_search":"allow","file_read":"allow","memory_read":"allow","memory_write":"allow","life_records":"allow","diary_write":"ask","delete":"ask", **json.loads(settings_rows.get("tool_permissions", "{}"))},
+        "tool_timeout_seconds": int(settings_rows.get("tool_timeout_seconds", "180")),
         "font_scale": int(settings_rows.get("font_scale", "100")),
         "message_density": settings_rows.get("message_density", "comfortable"),
         "code_theme": settings_rows.get("code_theme", "auto"),
@@ -761,6 +770,7 @@ def save_settings(body: AppSettingsIn) -> dict[str, Any]:
             "proactive_questions": "true" if body.proactive_questions else "false",
             "typing_presence_enabled": "true" if body.typing_presence_enabled else "false",
             "tool_permissions": json.dumps(body.tool_permissions, ensure_ascii=False),
+            "tool_timeout_seconds": str(body.tool_timeout_seconds),
             "font_scale": str(body.font_scale),
             "message_density": body.message_density,
             "code_theme": body.code_theme,
@@ -1127,6 +1137,24 @@ def create_life_record(persona_key: str, body: LifeRecordIn) -> dict[str, Any]:
     return item
 
 
+@app.put("/api/life-records/{persona_key}/{record_id}")
+def update_life_record(persona_key: str, record_id: str, body: LifeRecordIn) -> dict[str, Any]:
+    with closing(db()) as connection:
+        cursor = connection.execute(
+            """UPDATE life_records SET kind=?,occurred_at=?,amount=?,category=?,title=?,note=?,
+               metadata_json=?,visible_to_ai=? WHERE id=? AND persona_key=?""",
+            (body.kind, body.occurred_at, body.amount, body.category, body.title, body.note,
+             json.dumps(body.metadata, ensure_ascii=False), int(body.visible_to_ai), record_id, persona_key),
+        )
+        if not cursor.rowcount:
+            raise HTTPException(404, "生活记录不存在")
+        connection.commit()
+        row = connection.execute("SELECT * FROM life_records WHERE id=?", (record_id,)).fetchone()
+    item = dict(row)
+    item["metadata"] = json.loads(item.pop("metadata_json") or "{}")
+    return item
+
+
 @app.delete("/api/life-records/{persona_key}/{record_id}")
 def delete_life_record(persona_key: str, record_id: str) -> dict[str, bool]:
     with closing(db()) as connection:
@@ -1285,8 +1313,8 @@ def save_provider(body: ProviderIn) -> dict[str, Any]:
             if source:
                 api_key = source["api_key"]
         connection.execute(
-            "INSERT INTO providers(id,name,protocol,base_url,api_key,model,enabled,custom_headers,prompt_cache,thinking_enabled,stream_enabled,temperature,top_p,max_tokens,created_at,vision_mode,cache_mode,prompt_cache_key) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (provider_id, body.name, protocol, body.base_url.rstrip("/"), api_key, body.model, int(body.enabled), body.custom_headers, int(body.prompt_cache), int(body.thinking_enabled), int(body.stream_enabled), body.temperature, body.top_p, body.max_tokens, now_iso(), body.vision_mode, body.cache_mode, body.prompt_cache_key),
+            "INSERT INTO providers(id,name,protocol,base_url,api_key,model,enabled,custom_headers,prompt_cache,thinking_enabled,stream_enabled,temperature,top_p,max_tokens,created_at,vision_mode,cache_mode,prompt_cache_key,models_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (provider_id, body.name, protocol, body.base_url.rstrip("/"), api_key, body.model, int(body.enabled), body.custom_headers, int(body.prompt_cache), int(body.thinking_enabled), int(body.stream_enabled), body.temperature, body.top_p, body.max_tokens, now_iso(), body.vision_mode, body.cache_mode, body.prompt_cache_key, json.dumps(list(dict.fromkeys([body.model, *body.models])), ensure_ascii=False)),
         )
         connection.commit()
         row = connection.execute("SELECT * FROM providers WHERE id=?", (provider_id,)).fetchone()
@@ -1300,8 +1328,8 @@ def update_provider(provider_id: str, body: ProviderIn) -> dict[str, Any]:
         if not existing:
             raise HTTPException(404, "API 线路不存在")
         api_key = body.api_key or existing["api_key"]
-        connection.execute("""UPDATE providers SET name=?,protocol=?,base_url=?,api_key=?,model=?,enabled=?,custom_headers=?,prompt_cache=?,thinking_enabled=?,stream_enabled=?,temperature=?,top_p=?,max_tokens=?,vision_mode=?,cache_mode=?,prompt_cache_key=? WHERE id=?""",
-            (body.name, body.protocol, body.base_url.rstrip("/"), api_key, body.model, int(body.enabled), body.custom_headers, int(body.prompt_cache), int(body.thinking_enabled), int(body.stream_enabled), body.temperature, body.top_p, body.max_tokens, body.vision_mode, body.cache_mode, body.prompt_cache_key, provider_id))
+        connection.execute("""UPDATE providers SET name=?,protocol=?,base_url=?,api_key=?,model=?,enabled=?,custom_headers=?,prompt_cache=?,thinking_enabled=?,stream_enabled=?,temperature=?,top_p=?,max_tokens=?,vision_mode=?,cache_mode=?,prompt_cache_key=?,models_json=? WHERE id=?""",
+            (body.name, body.protocol, body.base_url.rstrip("/"), api_key, body.model, int(body.enabled), body.custom_headers, int(body.prompt_cache), int(body.thinking_enabled), int(body.stream_enabled), body.temperature, body.top_p, body.max_tokens, body.vision_mode, body.cache_mode, body.prompt_cache_key, json.dumps(list(dict.fromkeys([body.model, *body.models])), ensure_ascii=False), provider_id))
         connection.commit()
         row = connection.execute("SELECT * FROM providers WHERE id=?", (provider_id,)).fetchone()
     return masked_provider(row)
@@ -1831,6 +1859,22 @@ BUILTIN_TOOL_SPECS = {
             "required": ["memory_id"],
         },
     },
+    "life_records_list": {
+        "permission": "life_records",
+        "description": "读取当前人格可见的生活簿，包括记账、生理期、饮食、纪念日、备忘录和倒数日。修改前先读取并取得准确 record_id。",
+        "input_schema": {"type": "object", "properties": {"kind": {"type": "string", "enum": ["expense", "income", "period", "meal", "anniversary", "memo", "countdown"]}, "limit": {"type": "integer", "minimum": 1, "maximum": 100}}},
+    },
+    "life_record_save": {
+        "permission": "life_records",
+        "description": "为当前人格新增或修改生活簿记录。修改必须填写 life_records_list 返回的 record_id；纪念日用 anniversary，备忘录用 memo，倒数日用 countdown。不得修改其他人格的数据。",
+        "input_schema": {"type": "object", "properties": {
+            "record_id": {"type": "string", "description": "修改时必填；新增时省略"},
+            "kind": {"type": "string", "enum": ["expense", "income", "period", "meal", "anniversary", "memo", "countdown"]},
+            "occurred_at": {"type": "string", "description": "ISO 日期时间"}, "amount": {"type": "number"},
+            "category": {"type": "string"}, "title": {"type": "string"}, "note": {"type": "string"},
+            "visible_to_ai": {"type": "boolean"},
+        }, "required": ["kind", "occurred_at", "category"]},
+    },
     "journal_create": {
         "permission": "diary_write",
         "description": "写一篇 AI 日记或共同日记。可以对用户公开，也可以作为 AI 的密封私人日记。",
@@ -1857,13 +1901,15 @@ BUILTIN_TOOL_SPECS = {
 
 
 def builtin_tool_catalog(permissions: dict[str, str]) -> tuple[list[dict[str, Any]], dict[str, tuple[dict[str, Any], str]]]:
+    def policy_for(spec: dict[str, Any]) -> str:
+        return permissions.get(spec["permission"], "allow" if spec["permission"] in {"game_play", "life_records"} else "ask")
     server = {
         "id": "__builtin__", "name": "Atherloom 内置工具", "transport": "builtin",
-        "tool_policies": {name: ("allow" if name == "game_play" else permissions.get(spec["permission"], "ask")) for name, spec in BUILTIN_TOOL_SPECS.items()},
+        "tool_policies": {name: policy_for(spec) for name, spec in BUILTIN_TOOL_SPECS.items()},
     }
     catalog, bindings = [], {}
     for name, spec in BUILTIN_TOOL_SPECS.items():
-        if name != "game_play" and permissions.get(spec["permission"], "ask") == "deny":
+        if policy_for(spec) == "deny":
             continue
         safe_name = f"atherloom_{name}"
         catalog.append({"name": safe_name, "description": spec["description"], "input_schema": spec["input_schema"]})
@@ -1974,6 +2020,31 @@ async def invoke_builtin_tool(name: str, arguments: dict[str, Any]) -> dict[str,
         )
         saved = update_memory(memory_id, body)
         return {"updated": True, "memory_id": saved["id"], "title": saved["title"], "kind": saved["kind"]}
+    if name == "life_records_list":
+        persona_key = str(arguments.get("_persona_key") or "__default__")
+        kind, limit = str(arguments.get("kind") or "").strip(), max(1, min(int(arguments.get("limit") or 30), 100))
+        with closing(db()) as connection:
+            query = "SELECT * FROM life_records WHERE persona_key=? AND visible_to_ai=1"
+            params: list[Any] = [persona_key]
+            if kind:
+                query += " AND kind=?"; params.append(kind)
+            rows = connection.execute(query + " ORDER BY occurred_at DESC,created_at DESC LIMIT ?", (*params, limit)).fetchall()
+        return {"records": [{**dict(row), "metadata": json.loads(row["metadata_json"] or "{}")} for row in rows]}
+    if name == "life_record_save":
+        persona_key = str(arguments.get("_persona_key") or "__default__")
+        kind, category = str(arguments.get("kind") or "").strip(), str(arguments.get("category") or "").strip()
+        if kind not in {"expense", "income", "period", "meal", "anniversary", "memo", "countdown"}: raise ValueError("生活记录 kind 无效")
+        if kind == "period" and category not in {"start", "flow", "end", "symptom"}: raise ValueError("生理期 category 必须是 start、flow、end 或 symptom")
+        body = LifeRecordIn(kind=kind, occurred_at=str(arguments.get("occurred_at") or ""), amount=arguments.get("amount"), category=category, title=str(arguments.get("title") or ""), note=str(arguments.get("note") or ""), metadata={}, visible_to_ai=bool(arguments.get("visible_to_ai", True)))
+        record_id = str(arguments.get("record_id") or "").strip()
+        if not record_id:
+            saved = create_life_record(persona_key, body)
+            return {"created": True, "record": saved}
+        with closing(db()) as connection:
+            cursor = connection.execute("""UPDATE life_records SET kind=?,occurred_at=?,amount=?,category=?,title=?,note=?,metadata_json=?,visible_to_ai=? WHERE id=? AND persona_key=?""", (body.kind, body.occurred_at, body.amount, body.category, body.title, body.note, json.dumps(body.metadata, ensure_ascii=False), int(body.visible_to_ai), record_id, persona_key))
+            if not cursor.rowcount: raise ValueError("找不到当前人格的生活记录 record_id")
+            connection.commit(); row = connection.execute("SELECT * FROM life_records WHERE id=?", (record_id,)).fetchone()
+        return {"updated": True, "record": dict(row)}
     if name == "journal_create":
         persona_key = str(arguments.get("_persona_key") or "__default__")
         saved = create_journal(persona_key, JournalIn(
@@ -3812,6 +3883,8 @@ async def chat(body: ChatIn) -> StreamingResponse:
             bound_mcp_servers = [dict(row) for row in connection.execute(f"SELECT * FROM mcp_servers WHERE enabled=1 AND name IN ({placeholders})", bound_names)]
         permission_row = connection.execute("SELECT value FROM app_settings WHERE key='tool_permissions'").fetchone()
         permissions = json.loads(permission_row["value"]) if permission_row else {"memory_read": "allow"}
+        timeout_row = connection.execute("SELECT value FROM app_settings WHERE key='tool_timeout_seconds'").fetchone()
+        tool_timeout_seconds = max(30, min(int(timeout_row["value"]) if timeout_row else 180, 900))
         if permissions.get("memory_read") == "allow" and persona_config["memory_enabled"]:
             query_vector, embedding_provider_id, embedding_model = await query_memory_vector(body.content)
             memory_sources = retrieve_memories(
@@ -3948,8 +4021,14 @@ async def chat(body: ChatIn) -> StreamingResponse:
                             ]
                         tool_calls_used = 0
                         tool_reasoning: list[str] = []
+                        tool_deadline = asyncio.get_running_loop().time() + tool_timeout_seconds
                         for _round in range(MAX_TOOL_ROUNDS):
-                            probe = await client.post(url, headers=headers, json=tool_payload)
+                            remaining_seconds = tool_deadline - asyncio.get_running_loop().time()
+                            if remaining_seconds <= 0: break
+                            try:
+                                probe = await asyncio.wait_for(client.post(url, headers=headers, json=tool_payload), timeout=remaining_seconds)
+                            except TimeoutError:
+                                break
                             if probe.status_code >= 400:
                                 yield json.dumps({"error": f"API {probe.status_code}: {probe.text[:500]}"}, ensure_ascii=False) + "\n"
                                 return
@@ -3985,7 +4064,9 @@ async def chat(body: ChatIn) -> StreamingResponse:
                                         arguments["_persona_key"] = motivation_key(body.persona_id)
                                         arguments["_conversation_id"] = body.conversation_id
                                         arguments["_source_message_id"] = user_id
-                                    result = await invoke_server_tool(server, original, arguments)
+                                    remaining_seconds = tool_deadline - asyncio.get_running_loop().time()
+                                    if remaining_seconds <= 0: raise TimeoutError(f"AI 工具调用已达到用户设置的 {tool_timeout_seconds} 秒上限")
+                                    result = await asyncio.wait_for(invoke_server_tool(server, original, arguments), timeout=remaining_seconds)
                                     content, is_error = mcp_result_text(result)[:50000], False
                                     if original == "web_search" and isinstance(result, dict):
                                         event = {
@@ -4116,8 +4197,12 @@ async def chat(body: ChatIn) -> StreamingResponse:
                 if usage:
                     input_tokens = usage.get("input_tokens", usage.get("prompt_tokens", 0)) or 0
                     output_tokens = usage.get("output_tokens", usage.get("completion_tokens", 0)) or 0
+                    cache_creation_tokens = usage.get("cache_creation_input_tokens", 0) or 0
+                    cache_read_tokens = usage.get("cache_read_input_tokens", 0) or 0
                     usage = {**usage, "input_tokens": input_tokens, "output_tokens": output_tokens,
-                             "total_tokens": usage.get("total_tokens") or input_tokens + output_tokens}
+                             "cache_creation_input_tokens": cache_creation_tokens,
+                             "cache_read_input_tokens": cache_read_tokens,
+                             "total_tokens": usage.get("total_tokens") or input_tokens + output_tokens + cache_creation_tokens + cache_read_tokens}
                 continuity = sync_conversation_continuity(body.conversation_id, body.persona_id)
                 yield json.dumps({"done": True, "assistant_id": assistant_id, "user_id": user_id, "title": generated_title, "usage": usage, "continuity": continuity}, ensure_ascii=False) + "\n"
         except asyncio.CancelledError:

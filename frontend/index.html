@@ -13,7 +13,7 @@
   <title>Atherloom</title>
   <link rel="manifest" href="manifest.json">
   <link rel="icon" href="assets/app-icon.svg" type="image/svg+xml">
-  <link rel="stylesheet" href="assets/app.css?v=0533">
+  <link rel="stylesheet" href="assets/app.css?v=0540">
   <script>
     // Recovery path for browsers that retained a failed external stylesheet
     // response. This keeps user data untouched and injects only verified CSS.
@@ -58,6 +58,7 @@
         <button class="new-chat game-library-button" id="openGames"><span>✦</span> 游戏库</button>
         <button class="new-chat game-library-button" id="openHomestead"><span>▧</span> 云芽庭院</button>
         <button class="new-chat game-library-button" id="openFavorites"><span>☆</span> 珍藏</button>
+        <button class="new-chat game-library-button life-book-button" id="openLifeBook"><span>▥</span> 生活簿</button>
         <div class="sidebar-hub">
           <button class="new-chat game-library-button sidebar-hub-toggle" id="toggleCreateHub" aria-expanded="false"><span>⌘</span> 共创空间 <i>⌄</i></button>
           <div class="sidebar-hub-panel" id="createHubPanel" hidden>
@@ -325,6 +326,23 @@
       <form id="roleplayBackstageForm"><textarea rows="3" required placeholder="例如：下一幕慢一点，沈长卿现在真正担心什么？"></textarea><div><small id="roleplayBackstageStatus">和当前故事的旁白本体讨论</small><button class="primary">发送</button></div></form>
     </aside>
   </section>
+  <section class="collection-space life-book-space" id="lifeBookSpace" hidden>
+    <header><div><span class="life-eyebrow">LIFE BOOK</span><h2>生活簿</h2><p>把日常、重要日子和惦记的事，收在同一本册子里。</p></div><div class="life-book-head"><span class="persona-scope" id="lifePersonaName">默认人格</span><button class="close-button" id="closeLifeBook" aria-label="关闭生活簿">×</button></div></header>
+    <main class="life-book-main">
+      <div class="life-today" id="lifeSummary"></div>
+      <nav class="life-book-pages" aria-label="生活簿分类"><button class="active" data-life-page="daily">日常</button><button data-life-page="anniversary">纪念日</button><button data-life-page="memo">备忘录</button><button data-life-page="countdown">倒数日</button></nav>
+      <section class="life-book-sheet active" data-life-panel="daily">
+        <div class="inner-space-tabs life-tabs"><button type="button" class="active" data-life-kind="expense">记一笔</button><button type="button" data-life-kind="period">生理期</button><button type="button" data-life-kind="meal">吃饭</button></div>
+        <form id="lifeRecordForm" class="edit-card visible life-record-form"><input name="kind" value="expense" hidden><label>时间<input name="occurred_at" type="datetime-local" required></label><label data-life-field="money">收支<select name="flow"><option value="expense">支出</option><option value="income">收入</option></select></label><label data-life-field="money">金额<input name="amount" type="number" min="0" step="0.01" inputmode="decimal" placeholder="0.00"></label><label data-life-field="money">分类<select name="money_category"><option>餐饮</option><option>日用</option><option>交通</option><option>娱乐</option><option>居住</option><option>医疗</option><option>工资</option><option>其他</option></select></label><label data-life-field="period" hidden>记录<select name="period_event"><option value="start">今天开始</option><option value="flow">经期中</option><option value="end">今天结束</option><option value="symptom">身体感受</option></select></label><label data-life-field="period" hidden>感受与症状<input name="symptoms" maxlength="160" placeholder="例如：轻微腹痛、情绪平稳"></label><label data-life-field="meal" hidden>哪一顿<select name="meal_type"><option>早餐</option><option>午餐</option><option>晚餐</option><option>加餐</option><option>饮水</option></select></label><label data-life-field="meal" hidden>吃了什么<input name="meal_content" maxlength="160" placeholder="例如：番茄鸡蛋面"></label><label class="life-note">补充<textarea name="note" rows="3" maxlength="3000" placeholder="可不填"></textarea></label><label class="check-label life-share"><input name="visible_to_ai" type="checkbox"> 允许当前人格在聊天中参考</label><div class="form-actions"><span class="save-state" id="lifeRecordStatus"></span><button class="primary">记下来</button></div></form>
+        <div id="lifeRecordList" class="life-record-list"></div>
+      </section>
+      <section class="life-book-sheet" data-life-panel="anniversary" hidden><form id="anniversaryForm" class="edit-card visible life-special-form"><label>纪念日名称<input name="title" maxlength="160" required placeholder="例如：我们认识的日子"></label><label>日期<input name="occurred_at" type="date" required></label><label class="life-note">备注<textarea name="note" rows="3" maxlength="3000"></textarea></label><label class="check-label"><input name="repeat_yearly" type="checkbox" checked> 每年重复</label><label class="check-label"><input name="visible_to_ai" type="checkbox"> 允许 AI 参考和更改</label><div class="form-actions"><span class="save-state"></span><button class="primary">收进纪念日</button></div></form><div id="anniversaryList" class="life-special-list"></div></section>
+      <section class="life-book-sheet" data-life-panel="memo" hidden><form id="memoForm" class="edit-card visible life-special-form"><label>备忘内容<input name="title" maxlength="160" required placeholder="例如：取快递"></label><label>提醒时间<input name="occurred_at" type="datetime-local" required></label><label class="life-note">补充<textarea name="note" rows="3" maxlength="3000"></textarea></label><label class="check-label"><input name="visible_to_ai" type="checkbox"> 允许 AI 参考和更改</label><div class="form-actions"><span class="save-state"></span><button class="primary">记进备忘</button></div></form><div id="memoList" class="life-special-list"></div></section>
+      <section class="life-book-sheet" data-life-panel="countdown" hidden><form id="countdownForm" class="edit-card visible life-special-form"><label>期待的事<input name="title" maxlength="160" required placeholder="例如：出发旅行"></label><label>目标日期<input name="occurred_at" type="date" required></label><label class="life-note">补充<textarea name="note" rows="3" maxlength="3000"></textarea></label><label class="check-label"><input name="visible_to_ai" type="checkbox"> 允许 AI 参考和更改</label><div class="form-actions"><span class="save-state"></span><button class="primary">开始倒数</button></div></form><div id="countdownList" class="life-special-list"></div></section>
+      <p class="privacy-note">记录按当前人格分开保存。只有勾选允许 AI 的内容，当前人格才能在聊天中读取和修改。</p>
+    </main>
+  </section>
+
   <section class="call-space" id="callSpace" hidden>
     <button class="close-button call-close" id="closeCall">×</button><div class="call-orb" id="callOrb">A</div><h2>语音通话</h2><p id="callStatus">点击开始后，我会听你说话并朗读模型回复。</p><div id="callTranscript" class="call-transcript"></div><div class="call-actions"><button class="primary" id="startCall">开始通话</button><button class="ghost" id="endCall" disabled>结束</button></div>
   </section>
@@ -342,7 +360,6 @@
         <button data-tab="worldbooks">世界书</button>
         <button data-tab="summary">自动总结</button>
         <button data-tab="memory">记忆库</button>
-        <button data-tab="life">生活记录</button>
         <button data-tab="journal">日记与留言</button>
         <button data-tab="mcp">MCP</button>
         <button data-tab="tools">工具与权限</button>
@@ -361,7 +378,8 @@
             <label>供应商 / 协议<select name="protocol" id="providerProtocol"><option value="openai">OpenAI 兼容</option><option value="anthropic">Anthropic Messages</option><option value="deepseek">DeepSeek</option><option value="glm">智谱 GLM</option></select></label>
             <label>官方或反代 Base URL<input name="base_url" required placeholder="https://proxy.example.com/v1"></label>
             <label>API Key<span class="secret-field"><input name="api_key" type="password" autocomplete="new-password"><button type="button" id="pasteApiKey" aria-label="从剪贴板粘贴 API Key">粘贴</button><button type="button" id="toggleApiKey" aria-label="显示或隐藏 API Key">◉</button></span><small class="muted" id="providerKeyState">新线路需要填写 Key；保存后不会把明文重新显示出来。</small></label>
-            <label>模型 ID<span class="model-field"><input name="model" required placeholder="可手填，也可从线路拉取"><button type="button" id="fetchModels">拉取模型</button></span><select id="providerModelSelect" class="model-choice" aria-label="选择已拉取的模型" hidden></select></label>
+            <label>当前默认模型<span class="model-field"><input name="model" required placeholder="输入模型 ID"><button type="button" id="addProviderModel">加入列表</button><button type="button" id="fetchModels">拉取模型</button></span><select id="providerModelSelect" class="model-choice" aria-label="选择已拉取的模型" hidden></select></label>
+            <label>已配置的模型（每行一个）<textarea name="models_text" id="providerModelsText" rows="4" placeholder="deepseek-v4-flash&#10;deepseek-v4-pro"></textarea><small class="muted">同一套 Base URL 和 API Key 可以保存多个模型；聊天顶部可随时切换。</small></label>
             <label>温度 Temperature<input name="temperature" type="number" min="0" max="2" step="0.1" value="0.7"><small class="muted">越低越稳定；部分推理模型可能忽略此项。</small></label>
             <label>Top P<input name="top_p" type="number" min="0" max="1" step="0.05" value="1"></label>
             <label>最大输出 Tokens<input name="max_tokens" type="number" min="1" max="200000" step="1" value="4096"></label>
@@ -374,7 +392,7 @@
             <label class="check-label"><input name="stream_enabled" type="checkbox" checked> 流式输出<small class="muted">开启后，回复会边生成边显示。</small></label>
             <label class="check-label"><input name="enabled" type="checkbox" checked> 启用这条线路</label>
             <p class="cache-hint" id="automaticCacheHint" hidden>此供应商的缓存由 API 服务自动处理，无需手动开关。</p>
-            <div class="form-actions"><button type="button" class="ghost" id="cancelProvider">取消</button><button type="button" class="ghost" id="testProvider">测试连接</button><button type="button" class="ghost" id="saveProviderCopy" hidden>另存为新模型</button><button class="primary">保存线路</button></div>
+            <div class="form-actions"><button type="button" class="ghost" id="cancelProvider">取消</button><button type="button" class="ghost" id="testProvider">测试当前模型</button><button class="primary">保存线路与模型</button></div>
             <p class="connection-state" id="connectionState"></p>
           </form>
         </section>
@@ -443,11 +461,11 @@
           <p class="privacy-note">自动总结提取的长期记忆会先进入待确认区；确认后才保存，不会直接污染正式记忆库。</p>
         </section>
 
-        <section class="tab" id="tab-life">
-          <div class="section-heading"><div><span class="life-eyebrow">DAILY LEDGER</span><h3>生活手账</h3><p>钱、身体和每一顿饭，放在同一条日历上慢慢照看。</p></div><span class="persona-scope" id="lifePersonaName">默认人格</span></div>
-          <div class="life-today" id="lifeSummary"></div>
-          <div class="inner-space-tabs life-tabs"><button type="button" class="active" data-life-kind="expense">记一笔</button><button type="button" data-life-kind="period">生理期</button><button type="button" data-life-kind="meal">吃饭</button></div>
-          <form id="lifeRecordForm" class="edit-card visible life-record-form">
+        <section class="tab" id="tab-life-legacy" hidden>
+          <div class="section-heading"><div><span class="life-eyebrow">DAILY LEDGER</span><h3>生活手账</h3></div><span class="persona-scope" id="legacyLifePersonaName">默认人格</span></div>
+          <div class="life-today" id="legacyLifeSummary"></div>
+          <div class="inner-space-tabs life-tabs"><button type="button" class="active" data-legacy-life-kind="expense">记一笔</button><button type="button" data-legacy-life-kind="period">生理期</button><button type="button" data-legacy-life-kind="meal">吃饭</button></div>
+          <form id="legacyLifeRecordForm" class="edit-card visible life-record-form">
             <input name="kind" value="expense" hidden>
             <label>时间<input name="occurred_at" type="datetime-local" required></label>
             <label data-life-field="money">收支<select name="flow"><option value="expense">支出</option><option value="income">收入</option></select></label>
@@ -459,9 +477,9 @@
             <label data-life-field="meal" hidden>吃了什么<input name="meal_content" maxlength="160" placeholder="例如：番茄鸡蛋面"></label>
             <label class="life-note">补充<textarea name="note" rows="3" maxlength="3000" placeholder="可不填"></textarea></label>
             <label class="check-label life-share"><input name="visible_to_ai" type="checkbox"> 允许当前人格在聊天中参考</label>
-            <div class="form-actions"><span class="save-state" id="lifeRecordStatus"></span><button class="primary">记下来</button></div>
+            <div class="form-actions"><span class="save-state" id="legacyLifeRecordStatus"></span><button class="primary">记下来</button></div>
           </form>
-          <div id="lifeRecordList" class="life-record-list"></div>
+          <div id="legacyLifeRecordList" class="life-record-list"></div>
           <p class="privacy-note">记录按当前人格分开保存。未勾选时，不会提供给 AI；健康记录只用于个人整理，不能替代医疗建议。</p>
         </section>
 
@@ -542,6 +560,9 @@
             <h4>记忆</h4>
             <div class="setting-row"><div><strong>读取记忆 <span class="recommend">推荐：始终允许</span></strong><small>跨窗口检索相关本地或 MCP 记忆</small></div><select data-permission="memory_read"><option value="allow">始终允许</option><option value="ask">每次询问</option><option value="deny">禁止</option></select></div>
             <div class="setting-row"><div><strong>写入记忆 <span class="recommend">推荐：始终允许</span></strong><small>AI 会按“先搜索、再新增或修改”的规则管理记忆；不包含删除权限</small></div><select data-permission="memory_write"><option value="allow">始终允许</option><option value="ask">每次询问</option><option value="deny">禁止</option></select></div>
+            <h4>生活记录</h4>
+            <div class="setting-row"><div><strong>记账、生理期与饮食 <span class="recommend">推荐：始终允许</span></strong><small>当前人格可以读取、新增和修改自己的生活记录；不同人格的数据互相隔离</small></div><select data-permission="life_records"><option value="allow">始终允许</option><option value="ask">每次询问</option><option value="deny">禁止</option></select></div>
+            <div class="setting-row"><div><strong>AI 工具调用最长时间</strong><small>从模型决定调用工具开始计时；到达上限后停止继续调用，并根据已经取得的结果回答</small></div><label><input id="toolTimeoutSeconds" type="number" min="30" max="900" step="10" value="180"> 秒</label></div>
             <h4>内容</h4>
             <div class="setting-row"><div><strong>写日记 <span class="recommend">推荐：每次询问</span></strong><small>创建或更新日记条目</small></div><select data-permission="diary_write"><option value="allow">始终允许</option><option value="ask">每次询问</option><option value="deny">禁止</option></select></div>
             <h4>高风险操作</h4>
@@ -608,11 +629,11 @@
   <div class="message-menu-backdrop" id="messageEditor" hidden><form class="message-editor" role="dialog" aria-label="修改消息"><h3>修改内容</h3><textarea id="messageEditContent" rows="7" required></textarea><div class="form-actions"><button type="button" class="ghost" id="cancelMessageEdit">取消</button><button class="primary">保存修改</button></div></form></div>
   <div class="message-menu-backdrop" id="instructionPicker" hidden><section class="message-editor instruction-picker" role="dialog" aria-label="指令注入"><h3>指令注入</h3><p class="muted">仅对当前聊天窗口生效，可随时取消。</p><div id="instructionBookList" class="instruction-book-list"></div><div class="form-actions"><button type="button" class="primary" id="closeInstructionPicker">完成</button></div></section></div>
   <div class="message-menu-backdrop" id="worldbookEntryEditor" hidden><form class="message-editor worldbook-entry-editor" role="dialog" aria-label="世界书条目"><h3>世界书条目</h3><label>条目名称<input name="name" maxlength="100" required></label><label>内容<textarea name="content" rows="8" required></textarea></label><label class="check-label"><input name="enabled" type="checkbox" checked>启用条目</label><label class="check-label"><input name="constant" type="checkbox">常驻激活</label><label>关键词（每行一个）<textarea name="keywords" rows="3"></textarea></label><div class="entry-options"><label class="check-label"><input name="use_regex" type="checkbox">使用正则</label><label class="check-label"><input name="case_sensitive" type="checkbox">区分大小写</label><label>扫描深度<input name="scan_depth" type="number" min="1" max="100" value="4"></label><label>注入位置<select name="position"><option value="system_before">系统提示前</option><option value="system_after" selected>系统提示后</option><option value="history_before">对话历史前</option><option value="history_after">对话历史后</option></select></label><label>注入角色<select name="role"><option value="system">系统</option><option value="user">用户</option><option value="assistant">助手</option></select></label><label>优先级<input name="priority" type="number" min="-9999" max="9999" value="0"></label></div><div class="form-actions"><button type="button" class="ghost" id="cancelWorldbookEntry">取消</button><button class="primary">保存条目</button></div></form></div>
-  <script src="assets/standalone.js?v=0515"></script>
-  <script src="assets/app.js?v=0537" defer></script>
+  <script src="assets/standalone.js?v=0518"></script>
+  <script src="assets/app.js?v=0540" defer></script>
   <script>
     if ('serviceWorker' in navigator) {
-      navigator.serviceWorker.register('service-worker.js?v=141', { updateViaCache: 'none' }).then(registration => registration.update());
+      navigator.serviceWorker.register('service-worker.js?v=145', { updateViaCache: 'none' }).then(registration => registration.update());
       // 新缓存在下次打开时接管；不强制刷新正在聊天、共读或剧场中的页面。
     }
   </script>
