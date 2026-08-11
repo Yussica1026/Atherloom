@@ -414,6 +414,11 @@ class ConversationState(BaseModel):
     archived: bool | None = None
 
 
+class ManualCompressIn(BaseModel):
+    rounds: int = Field(ge=1, le=100)
+    provider_id: str | None = None
+
+
 class AppSettingsIn(BaseModel):
     auto_title_mode: str = Field(default="local", pattern="^(off|local|model)$")
     title_provider_id: str = ""
@@ -2435,6 +2440,54 @@ def get_messages(conversation_id: str) -> list[dict[str, Any]]:
         except (json.JSONDecodeError, TypeError):
             row["tool_events"] = []
     return rows
+
+
+@app.post("/api/conversations/{conversation_id}/compress")
+async def compress_conversation(conversation_id: str, body: ManualCompressIn) -> dict[str, Any]:
+    with closing(db()) as connection:
+        conversation = connection.execute("SELECT * FROM conversations WHERE id=?", (conversation_id,)).fetchone()
+        if not conversation:
+            raise HTTPException(404, "会话不存在")
+        provider_id = body.provider_id or conversation["provider_id"]
+        provider = connection.execute("SELECT * FROM providers WHERE id=? AND enabled=1", (provider_id,)).fetchone() if provider_id else None
+        if not provider:
+            raise HTTPException(400, "请先为当前对话选择可用模型线路")
+        rows = list(connection.execute("""SELECT messages.id,messages.role,messages.content,messages.created_at FROM messages
+          WHERE messages.conversation_id=?
+          AND NOT EXISTS (SELECT 1 FROM message_trash t WHERE t.message_id=messages.id)
+          AND NOT EXISTS (SELECT 1 FROM timeline_archived_messages a WHERE a.message_id=messages.id)
+          AND (messages.role!='assistant' OR messages.parent_message_id IS NULL OR messages.id=COALESCE(
+            (SELECT s.assistant_message_id FROM message_selections s WHERE s.conversation_id=messages.conversation_id AND s.parent_message_id=messages.parent_message_id),
+            (SELECT m2.id FROM messages m2 WHERE m2.conversation_id=messages.conversation_id AND m2.parent_message_id=messages.parent_message_id AND NOT EXISTS (SELECT 1 FROM message_trash t2 WHERE t2.message_id=m2.id) ORDER BY m2.created_at DESC LIMIT 1)
+          )) ORDER BY messages.created_at""", (conversation_id,)))
+        available_rounds = max(0, (len(rows) - 2) // 2)
+        if available_rounds < 1:
+            raise HTTPException(409, "至少保留最近一轮原文，当前没有可压缩的旧对话")
+        chosen_rounds = min(body.rounds, available_rounds)
+        batch = rows[:chosen_rounds * 2]
+        transcript = "\n\n".join(f"{('用户' if row['role']=='user' else '助手')}：{row['content']}" for row in batch)
+        settings = {row["key"]: row["value"] for row in connection.execute("SELECT key,value FROM app_settings WHERE key IN ('summary_prompt')")}
+        prompt = settings.get("summary_prompt", DEFAULT_SUMMARY_PROMPT)
+        prompt = prompt.replace("{{title}}", conversation["title"]).replace("{{existing_summary}}", conversation["summary"] or "暂无").replace("{{conversation}}", transcript)
+    headers = provider_headers(provider["protocol"], provider["api_key"], provider["custom_headers"])
+    payload = {"model": provider["model"], "max_tokens": min(2000, max(640, int(provider["max_tokens"]))), "messages": [{"role": "user", "content": prompt}]}
+    try:
+        async with httpx.AsyncClient(timeout=120) as client:
+            response = await client.post(provider_endpoint(provider["base_url"], provider["protocol"]), headers=headers, json=payload)
+        response.raise_for_status()
+        data = response.json()
+        summary = ("".join(block.get("text", "") for block in data.get("content", []) if block.get("type") == "text") if provider["protocol"] == "anthropic" else data.get("choices", [{}])[0].get("message", {}).get("content", "")).strip()
+    except (httpx.HTTPError, json.JSONDecodeError, KeyError, TypeError) as error:
+        raise HTTPException(502, f"压缩模型请求失败：{error}") from error
+    if not summary:
+        raise HTTPException(502, "压缩模型没有返回摘要")
+    created = now_iso()
+    with closing(db()) as connection:
+        connection.execute("UPDATE conversations SET summary=?,updated_at=? WHERE id=?", (summary, created, conversation_id))
+        connection.execute("INSERT INTO summary_versions VALUES (?,?,?,?,?)", (str(uuid.uuid4()), conversation_id, summary, "manual", created))
+        connection.executemany("INSERT OR IGNORE INTO timeline_archived_messages VALUES (?,?,?)", [(row["id"], conversation_id, created) for row in batch])
+        connection.commit()
+    return {"ok": True, "rounds": chosen_rounds, "messages": len(batch), "summary": summary, "available_rounds": available_rounds - chosen_rounds}
 
 
 @app.patch("/api/messages/selection")
