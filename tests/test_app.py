@@ -988,6 +988,17 @@ class LocalClientTests(unittest.TestCase):
         self.assertEqual(reset["state"]["tick_count"], 0)
         self.assertEqual(self.client.get("/api/motivation/__default__").json()["offline_mode"], "frozen")
 
+    def test_disabled_motivation_ignores_ticks_and_events(self):
+        self.client.put("/api/motivation/quiet-persona/enabled", json={"enabled": False, "offline_mode": "frozen"})
+        before = self.client.get("/api/motivation/quiet-persona").json()["state"]
+        ticked = self.client.post("/api/motivation/quiet-persona/tick").json()
+        changed = self.client.post("/api/motivation/quiet-persona/event", json={"event": "happy_moment"}).json()
+        self.assertFalse(ticked["enabled"])
+        self.assertEqual(ticked["next_interval"], 0)
+        self.assertEqual(ticked["state"], before)
+        self.assertEqual(changed["changes"], [])
+        self.assertEqual(changed["state"], before)
+
     def test_journal_and_board_visibility_is_enforced(self):
         public = self.client.post("/api/journals/persona-a", json={
             "title": "together", "content": "visible", "space": "shared",
