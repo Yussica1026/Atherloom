@@ -1,5 +1,13 @@
 # Atherloom 开发工作日志
 
+## 2026-08-11 · v0.5.71 主动压缩与乌有乡 Android 加载修复
+
+- 聊天顶栏新增主动压缩按钮和轮数选择窗口。压缩调用当前会话线路，写入会话摘要与摘要版本记录；被压缩消息继续显示，但从后续模型热上下文排除，最近一轮原文强制保留。
+- Android Standalone 使用独立的压缩消息 ID 集合，并把会话摘要作为 `<conversation_summary>` 注入后续请求，与桌面后端保持相同语义。
+- 用户真机截图确认乌有乡 iframe 报 `net::ERR_INVALID_RESPONSE`。修复后不再让 WebView 直接导航嵌套资产 URL，而由 `MainActivity.readBundledAsset` 读取入口，前端通过带固定 base URL 的 `srcdoc` 装载。
+- 补齐原版观察页需要的 `/state`、`/history`、`/marks`、`/sightings`、`/postcards` Android 本地响应映射。
+- 版本升级为 `0.5.71-standalone`（versionCode 75）；115 项自动化测试、JS 语法检查和完整移动端浏览器冒烟通过。
+
 ## 2026-08-11 · v0.5.70 AI 自主生活与 Android 后台唤醒
 
 ### 用户目标

@@ -207,6 +207,12 @@ public class MainActivity extends Activity {
             return value == null ? "" : value.toString();
         }
 
+        @JavascriptInterface public String readBundledAsset(String path) {
+            if (!"nowhere/index.html".equals(path)) return "";
+            try { return read(context.getAssets().open(path)); }
+            catch (Exception error) { return ""; }
+        }
+
         @JavascriptInterface public void showNotice(String message) {
             new Handler(Looper.getMainLooper()).post(() -> Toast.makeText(context, message, Toast.LENGTH_LONG).show());
         }
