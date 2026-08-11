@@ -246,7 +246,7 @@ class LocalClientTests(unittest.TestCase):
     def test_builtin_tools_follow_permissions_and_mutate_memory_by_id(self):
         tools, bindings = app_module.builtin_tool_catalog({"web_search":"allow","memory_read":"allow","memory_write":"allow","life_records":"deny","diary_write":"deny"})
         names = {tool["name"] for tool in tools}
-        self.assertEqual(names, {"atherloom_game_play", "atherloom_web_search", "atherloom_memory_search", "atherloom_memory_create", "atherloom_memory_update"})
+        self.assertEqual(names, {"atherloom_nowhere", "atherloom_game_play", "atherloom_web_search", "atherloom_memory_search", "atherloom_memory_create", "atherloom_memory_update"})
         self.assertEqual(bindings["atherloom_memory_update"][1], "memory_update")
         create_spec = next(tool for tool in tools if tool["name"] == "atherloom_memory_create")
         search_spec = next(tool for tool in tools if tool["name"] == "atherloom_memory_search")
@@ -283,7 +283,7 @@ class LocalClientTests(unittest.TestCase):
         self.assertTrue(updated["updated"])
         self.assertEqual(self.client.get("/api/memories?q=温牛奶").json()[0]["id"], created["memory_id"])
         denied, _ = app_module.builtin_tool_catalog({"web_search":"deny","memory_read":"ask","memory_write":"deny","life_records":"deny","diary_write":"deny"})
-        self.assertEqual([tool["name"] for tool in denied], ["atherloom_game_play", "atherloom_memory_search"])
+        self.assertEqual([tool["name"] for tool in denied], ["atherloom_nowhere", "atherloom_game_play", "atherloom_memory_search"])
         played = asyncio.run(app_module.invoke_builtin_tool("game_play", {"game_id": "claw_machine"}))
         self.assertEqual(played["game_id"], "claw_machine")
         self.assertEqual(played["executed"]["action"], "grab")

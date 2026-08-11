@@ -3,3 +3,12 @@ cryptography>=44,<46
 httpx>=0.27,<1
 mcp>=1.12,<2
 uvicorn[standard]>=0.30,<1
+# Original Nowhere runtime; source is vendored under third_party/nowhere.
+fastmcp>=2,<3
+numpy>=2,<3
+scipy>=1.14,<2
+skyfield>=1.49,<2
+timezonefinder>=8,<9
+opencc-python-reimplemented>=0.1.7,<1
+ephem>=4.1,<5
+tzdata>=2025.1
