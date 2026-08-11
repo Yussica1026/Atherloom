@@ -10,6 +10,7 @@ import os
 import random
 import re
 import sqlite3
+import sys
 import uuid
 from urllib.parse import parse_qs, unquote, urlparse
 from collections import Counter
@@ -612,6 +613,12 @@ class RoleplayStateIn(BaseModel):
 
 
 app = FastAPI(title="Local Claude Style Client", docs_url=None, redoc_url=None)
+
+# 原版乌有乡运行时保持在 third_party 中；这里只提供挂载桥，不改写其报告和规则。
+NOWHERE_ROOT = ROOT / "third_party" / "nowhere"
+if str(NOWHERE_ROOT) not in sys.path:
+    sys.path.insert(0, str(NOWHERE_ROOT))
+os.environ.setdefault("NOWHERE_HOME", str(DB_PATH.parent / "nowhere"))
 
 
 @app.on_event("startup")
@@ -1788,6 +1795,17 @@ async def bound_mcp_catalog(servers: list[dict[str, Any]]) -> tuple[list[dict[st
 
 
 BUILTIN_TOOL_SPECS = {
+    "nowhere": {
+        "permission": "game_play",
+        "description": "乌有乡原版真实地球旅行工具（旋复 / yuyixuanfu/nowhere，CC BY-NC 4.0）。用户要求开门旅行、继续旅程、走路、观察、听电台、询问当地、标记地点、寄明信片、等待、查看或放下纪念品时调用。返回内容来自原版实现，不要自行模拟。",
+        "input_schema": {"type": "object", "properties": {
+            "action": {"type": "string", "enum": ["open_door", "continue_journey", "walk", "listen", "look_around", "ask", "mark", "marks", "where_am_i", "souvenir", "give_souvenir", "walk_to", "wait", "send_postcard"]},
+            "to": {"type": "string"}, "direction": {"type": "string"}, "distance_km": {"type": "number"},
+            "seconds": {"type": "integer"}, "topic": {"type": "string"}, "name": {"type": "string"},
+            "note": {"type": "string"}, "overwrite": {"type": "boolean"}, "place": {"type": "string"},
+            "hours": {"type": "number"}, "text": {"type": "string"},
+        }, "required": ["action"]},
+    },
     "game_play": {
         "permission": "game_play",
         "description": "实际游玩 Atherloom 内置游戏。用户邀请你玩、要求你操作，或明确提到云汀钓记、抓娃娃机、云纹老虎机、星潮合成、雾径迷宫、余烬地牢时，调用此工具；不要自己设计或文字模拟游戏。action 可省略，由 Atherloom 根据真实局面选择安全动作。",
@@ -1922,6 +1940,34 @@ def _clean_search_text(value: str) -> str:
 
 
 async def invoke_builtin_tool(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+    if name == "nowhere":
+        try:
+            import nowhere.server as nowhere_server
+        except ImportError as exc:
+            raise ValueError("乌有乡原版运行依赖尚未安装，请执行 pip install -r requirements.txt") from exc
+        action = str(arguments.get("action", ""))
+        if action == "open_door": return await nowhere_server.open_door_impl(arguments.get("to"))
+        if action == "continue_journey": return await nowhere_server.open_door_impl(resume=True)
+        if action == "walk": return await nowhere_server.walk_impl(str(arguments.get("direction") or "forward"), float(arguments.get("distance_km") or 2.0))
+        if action == "listen": return await nowhere_server.listen_impl(int(arguments.get("seconds") or 10))
+        if action == "look_around": return await nowhere_server.look_around_impl()
+        if action == "ask": return await nowhere_server.ask_impl(str(arguments.get("topic") or ""))
+        if action == "mark": return nowhere_server.mark_impl(str(arguments.get("name") or ""), str(arguments.get("note") or ""), bool(arguments.get("overwrite", False)))
+        if action == "marks": return nowhere_server.marks_impl()
+        if action == "where_am_i": return nowhere_server.where_am_i_impl()
+        if action == "souvenir":
+            item = nowhere_server._state.souvenir
+            if item is None: return {"text": "身上什么都没带。空手走的。", "data": {"souvenir": None}}
+            return {"text": f"你身上带着{item['name']}。来自{item['from']}。", "data": {"souvenir": item}}
+        if action == "give_souvenir":
+            item = nowhere_server._state.souvenir
+            if item is None: return {"text": "身上什么都没有。", "data": {"error": "empty"}}
+            nowhere_server._state.souvenir = None
+            return {"text": f"你把{item['name']}放在了路边。也许会有人捡到。", "data": {"dropped": item}}
+        if action == "walk_to": return await nowhere_server.walk_to_impl(str(arguments.get("place") or ""))
+        if action == "wait": return await nowhere_server.wait_impl(float(arguments.get("hours") or 1.0))
+        if action == "send_postcard": return nowhere_server.send_postcard_impl(str(arguments.get("text") or ""))
+        raise ValueError("未知的乌有乡动作")
     if name == "game_play":
         game_id = str(arguments.get("game_id", "")).strip()
         if game_id not in AI_GAME_ACTIONS:
@@ -2639,6 +2685,7 @@ def fishing_pick(state: dict[str, Any]) -> tuple[str, int]:
 def game_catalog() -> list[dict[str, Any]]:
     return [
         {"id": "homestead", "name": "云芽庭院", "icon": "▧", "status": "playable", "description": "种花、养宠物，也可以授权当前人格照料。"},
+        {"id": "nowhere", "name": "乌有乡", "icon": "◎", "status": "playable", "description": "原版真实地球旅行；让 AI 用身体在世界上走一走。"},
         {"id": "quiet_fishing", "name": "云汀钓记", "icon": "◌", "status": "playable", "description": "为 AI 与用户共同设计的原创确定性钓鱼游戏。"},
         {"id": "claw_machine", "name": "抓娃娃机", "icon": "◇", "status": "playable", "description": "移动爪子、选择目标并收集娃娃。"},
         {"id": "cloud_slots", "name": "云纹老虎机", "icon": "✦", "status": "playable", "description": "只使用游戏内云贝的确定性三轴小游戏。"},
@@ -4570,6 +4617,14 @@ def delete_latest_roleplay_turn(story_id: str, turn_number: int) -> dict[str, An
         return {"ok": True, "state": state}
 
 
+try:
+    from nowhere.web import app as nowhere_observer_app
+except ImportError:
+    nowhere_observer_app = None
+if nowhere_observer_app is not None:
+    app.mount("/nowhere", nowhere_observer_app, name="nowhere")
+else:
+    app.mount("/nowhere", StaticFiles(directory=FRONTEND / "assets" / "nowhere", html=True), name="nowhere-fallback")
 app.mount("/assets", StaticFiles(directory=FRONTEND / "assets"), name="assets")
 
 

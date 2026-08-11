@@ -50,8 +50,8 @@ class FrontendRegressionContracts(unittest.TestCase):
         self.assertIn("具体位置请查看浏览器下载记录", APP)
 
     def test_versioned_script_is_current(self):
-        self.assertIn('assets/app.js?v=0541', INDEX)
-        self.assertIn('assets/standalone.js?v=0519', INDEX)
+        self.assertIn('assets/app.js?v=0542', INDEX)
+        self.assertIn('assets/standalone.js?v=0520', INDEX)
 
     def test_desire_state_is_consistent_between_web_and_android(self):
         self.assertIn('motivationData.offline_mode||"limited"', APP)
@@ -59,6 +59,12 @@ class FrontendRegressionContracts(unittest.TestCase):
         self.assertIn('desireCoupling', STANDALONE)
         self.assertIn('desireApplyEvent(currentDesire,"contact_message")', STANDALONE)
         self.assertIn('const motivationEvent=', STANDALONE)
+
+    def test_original_nowhere_observer_has_a_visible_game_entry(self):
+        self.assertIn('id="nowhereStage"', INDEX)
+        self.assertIn('原作：旋复 · yuyixuanfu/nowhere · CC BY-NC 4.0', INDEX)
+        self.assertIn('window.AtherloomNative?`/assets/nowhere/index.html?', APP)
+        self.assertIn(':"/nowhere/"', APP)
 
     def test_chat_enter_is_newline_only(self):
         self.assertNotIn('$("#prompt").addEventListener("keydown"', APP)
