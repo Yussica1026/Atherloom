@@ -346,11 +346,11 @@ class LocalClientTests(unittest.TestCase):
     def test_python_and_standalone_tool_loops_share_hard_budgets(self):
         backend = (app_module.ROOT / "backend" / "app.py").read_text(encoding="utf-8")
         standalone = (app_module.ROOT / "frontend" / "assets" / "standalone.js").read_text(encoding="utf-8")
-        self.assertEqual(app_module.MAX_TOOL_ROUNDS, 4)
+        self.assertEqual(app_module.MAX_TOOL_ROUNDS, 12)
         self.assertEqual(app_module.MAX_TOOL_CALLS_PER_TURN, 12)
         self.assertEqual(app_module.MAX_TOOL_CALLS_PER_ROUND, 4)
         self.assertIn("for _round in range(MAX_TOOL_ROUNDS)", backend)
-        self.assertIn("maxToolRounds=4,maxToolCalls=12,maxCallsPerRound=4", standalone)
+        self.assertIn("maxToolRounds=12,maxToolCalls=12,maxCallsPerRound=4", standalone)
         self.assertIn("工具调用预算已用完", backend)
         self.assertIn("工具调用预算已用完", standalone)
 

@@ -12,6 +12,7 @@ import android.net.Uri;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
+import android.os.Build;
 import android.provider.MediaStore;
 import android.view.ViewGroup;
 import android.webkit.GeolocationPermissions;
@@ -42,9 +43,11 @@ import java.nio.charset.StandardCharsets;
 import java.util.Iterator;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+import java.lang.ref.WeakReference;
 
 public class MainActivity extends Activity {
-    private static final int FILE_CHOOSER = 41, AUDIO_PERMISSION = 42;
+    private static final int FILE_CHOOSER = 41, AUDIO_PERMISSION = 42, NOTIFICATION_PERMISSION = 43;
+    private static WeakReference<WebView> liveWebView = new WeakReference<>(null);
     private WebView webView;
     private ValueCallback<Uri[]> fileCallback;
     private Uri pendingCameraUri;
@@ -53,10 +56,20 @@ public class MainActivity extends Activity {
     @Override public void onCreate(Bundle state) {
         super.onCreate(state);
         webView = new WebView(this);
+        liveWebView = new WeakReference<>(webView);
         webView.setLayoutParams(new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
         setContentView(webView);
         configureWebView();
         webView.loadUrl("https://appassets.androidplatform.net/assets/index.html?standalone=1");
+        if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED)
+            requestPermissions(new String[]{Manifest.permission.POST_NOTIFICATIONS}, NOTIFICATION_PERMISSION);
+    }
+
+    static boolean runAutonomyWake() {
+        WebView view = liveWebView.get();
+        if (view == null) return false;
+        view.post(() -> view.evaluateJavascript("window.AtherloomRunAutonomyWake&&window.AtherloomRunAutonomyWake()", null));
+        return true;
     }
 
     private void configureWebView() {
@@ -196,6 +209,16 @@ public class MainActivity extends Activity {
 
         @JavascriptInterface public void showNotice(String message) {
             new Handler(Looper.getMainLooper()).post(() -> Toast.makeText(context, message, Toast.LENGTH_LONG).show());
+        }
+
+        @JavascriptInterface public String configureAutonomy(String raw) {
+            try {
+                JSONObject config = new JSONObject(raw);
+                context.getSharedPreferences("atherloom_runtime", Context.MODE_PRIVATE).edit().putString("autonomy_config", config.toString()).apply();
+                Intent intent = new Intent(context, AutonomyService.class).setAction(config.optBoolean("enabled") ? AutonomyService.ACTION_START : AutonomyService.ACTION_STOP);
+                if (config.optBoolean("enabled") && Build.VERSION.SDK_INT >= 26) context.startForegroundService(intent); else context.startService(intent);
+                return "{\"ok\":true}";
+            } catch (Exception error) { return failure(error); }
         }
 
         @JavascriptInterface public String listModels(String raw) {
@@ -476,6 +499,10 @@ public class MainActivity extends Activity {
         webView.evaluateJavascript("window.AtherloomHandleBack ? window.AtherloomHandleBack() : false", handled -> {
             if (!"true".equals(handled)) { if (webView.canGoBack()) webView.goBack(); else MainActivity.super.onBackPressed(); }
         });
+    }
+    @Override protected void onDestroy() {
+        if (liveWebView.get() == webView) liveWebView.clear();
+        super.onDestroy();
     }
     @Override protected void onActivityResult(int request, int result, Intent data) {
         super.onActivityResult(request, result, data);
