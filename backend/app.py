@@ -4175,6 +4175,14 @@ async def chat(body: ChatIn) -> StreamingResponse:
                                         }
                                         tool_events.append(event)
                                         yield json.dumps({"tool_event": event}, ensure_ascii=False) + "\n"
+                                    if original == "nowhere":
+                                        event = {
+                                            "type": "nowhere",
+                                            "action": str(arguments.get("action") or ""),
+                                            "text": content[:500],
+                                        }
+                                        tool_events.append(event)
+                                        yield json.dumps({"tool_event": event}, ensure_ascii=False) + "\n"
                                     record_mcp_audit(
                                         server["id"], original, "success",
                                         conversation_id=body.conversation_id, user_message_id=user_id,

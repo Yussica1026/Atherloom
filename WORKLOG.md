@@ -1,5 +1,13 @@
 # Atherloom 开发工作日志
 
+## 2026-08-11 · v0.5.72 乌有乡入口与 AI 行动直播
+
+- 根据 Android 真机截图定位到 AssetManager 路径多一层 `assets/`：同步任务把 `frontend/assets/nowhere/index.html` 打包为 `assets/nowhere/index.html`，而旧版错误读取了 `nowhere/index.html`。
+- 修正原生资源桥与前端调用路径，并保留固定路径白名单，避免资源读取接口被用于任意 APK 文件。
+- 游戏观察页新增“AI 心里话”、最新行动说明和最近 12 步行动轨迹。显示内容来自真实 `atherloom_nowhere` 工具调用及其结果，不暴露或伪造模型隐藏推理。
+- Python 后端与 Android Standalone 工具循环均逐步发送 `nowhere` 事件，开始、停止和错误状态也会即时反馈。
+- 版本升级为 `0.5.72-standalone`（versionCode 76）；116 项自动化测试、JS 语法检查和完整移动端浏览器冒烟通过。
+
 ## 2026-08-11 · v0.5.71 主动压缩与乌有乡 Android 加载修复
 
 - 聊天顶栏新增主动压缩按钮和轮数选择窗口。压缩调用当前会话线路，写入会话摘要与摘要版本记录；被压缩消息继续显示，但从后续模型热上下文排除，最近一轮原文强制保留。
