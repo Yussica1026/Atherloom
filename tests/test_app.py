@@ -1,4 +1,5 @@
 import asyncio
+import json
 import tempfile
 import unittest
 import uuid
@@ -27,6 +28,20 @@ class LocalClientTests(unittest.TestCase):
         payload = self.client.get("/api/bootstrap").json()
         self.assertEqual(payload["personas"], [])
 
+    def test_provider_keeps_multiple_models_on_one_api_line(self):
+        payload = {"name": "DeepSeek", "protocol": "deepseek", "base_url": "https://api.deepseek.com/v1",
+                   "api_key": "secret", "model": "deepseek-v4-flash",
+                   "models": ["deepseek-v4-flash", "deepseek-v4-pro"]}
+        created = self.client.post("/api/providers", json=payload)
+        self.assertEqual(created.status_code, 200)
+        provider = created.json()
+        self.assertEqual(provider["models"], ["deepseek-v4-flash", "deepseek-v4-pro"])
+        payload.update({"api_key": "", "model": "deepseek-v4-pro", "models": provider["models"]})
+        updated = self.client.put(f"/api/providers/{provider['id']}", json=payload).json()
+        self.assertEqual(updated["model"], "deepseek-v4-pro")
+        self.assertEqual(set(updated["models"]), set(provider["models"]))
+        self.assertEqual(updated["models"][0], "deepseek-v4-pro")
+
     def test_life_records_round_trip_and_ai_visibility(self):
         payload = {"kind":"meal","occurred_at":"2026-07-30T12:00:00+08:00","category":"午餐","title":"番茄鸡蛋面","note":"吃得很饱","metadata":{},"visible_to_ai":True}
         created = self.client.post("/api/life-records/test-persona", json=payload).json()
@@ -41,6 +56,47 @@ class LocalClientTests(unittest.TestCase):
         removed = self.client.delete(f"/api/life-records/test-persona/{created['id']}")
         self.assertTrue(removed.json()["ok"])
 
+    def test_ai_life_tools_are_persona_scoped_and_can_update_period_records(self):
+        tools, _ = app_module.builtin_tool_catalog({})
+        names = {tool["name"] for tool in tools}
+        self.assertIn("atherloom_life_records_list", names)
+        self.assertIn("atherloom_life_record_save", names)
+        created = asyncio.run(app_module.invoke_builtin_tool("life_record_save", {
+            "_persona_key": "persona-a", "kind": "period", "occurred_at": "2026-08-11T09:00:00+08:00",
+            "category": "start", "title": "轻微腹痛", "visible_to_ai": True,
+        }))
+        record_id = created["record"]["id"]
+        updated = asyncio.run(app_module.invoke_builtin_tool("life_record_save", {
+            "_persona_key": "persona-a", "record_id": record_id, "kind": "period",
+            "occurred_at": "2026-08-11T09:00:00+08:00", "category": "flow", "title": "状态平稳",
+        }))
+        self.assertTrue(updated["updated"])
+        own = asyncio.run(app_module.invoke_builtin_tool("life_records_list", {"_persona_key": "persona-a", "kind": "period"}))
+        other = asyncio.run(app_module.invoke_builtin_tool("life_records_list", {"_persona_key": "persona-b", "kind": "period"}))
+        self.assertEqual(own["records"][0]["category"], "flow")
+        self.assertEqual(other["records"], [])
+
+    def test_life_book_special_entries_can_be_created_and_updated(self):
+        for kind, title in (("anniversary", "相识纪念日"), ("memo", "取快递"), ("countdown", "出发旅行")):
+            payload = {"kind": kind, "occurred_at": "2026-08-20T12:00:00+08:00", "category": kind,
+                       "title": title, "note": "生活簿测试", "metadata": {"completed": False}, "visible_to_ai": True}
+            created = self.client.post("/api/life-records/book-persona", json=payload)
+            self.assertEqual(created.status_code, 200)
+            item = created.json()
+            payload["metadata"]["completed"] = True
+            updated = self.client.put(f"/api/life-records/book-persona/{item['id']}", json=payload)
+            self.assertEqual(updated.status_code, 200)
+            self.assertTrue(updated.json()["metadata"]["completed"])
+        rows = self.client.get("/api/life-records/book-persona").json()["entries"]
+        self.assertEqual({row["kind"] for row in rows}, {"anniversary", "memo", "countdown"})
+        self.assertEqual(self.client.get("/api/life-records/other-persona").json()["entries"], [])
+
+    def test_tool_timeout_setting_is_user_configurable(self):
+        settings = self.client.get("/api/bootstrap").json()["settings"]
+        settings["tool_timeout_seconds"] = 240
+        saved = self.client.put("/api/settings", json=settings).json()
+        self.assertEqual(saved["tool_timeout_seconds"], 240)
+
     def test_database_schema_version_is_recorded_and_future_versions_are_refused(self):
         with app_module.closing(app_module.db()) as connection:
             version = connection.execute("PRAGMA user_version").fetchone()[0]
@@ -48,6 +104,22 @@ class LocalClientTests(unittest.TestCase):
             connection.execute(f"PRAGMA user_version = {app_module.DB_SCHEMA_VERSION + 1}")
         with self.assertRaisesRegex(RuntimeError, "高于当前程序支持"):
             app_module.init_db()
+
+    def test_legacy_memory_migration_creates_verified_backup(self):
+        legacy = Path(self.tempdir.name) / "legacy.db"
+        app_module.DB_PATH = legacy
+        with app_module.closing(app_module.sqlite3.connect(legacy)) as connection:
+            connection.execute("CREATE TABLE memories (id TEXT PRIMARY KEY,title TEXT NOT NULL,content TEXT NOT NULL,kind TEXT NOT NULL,starred INTEGER NOT NULL DEFAULT 0,archived INTEGER NOT NULL DEFAULT 0,created_at TEXT NOT NULL,updated_at TEXT NOT NULL,deleted_at TEXT)")
+            connection.execute("INSERT INTO memories VALUES ('old','旧记忆','迁移前正文','fact',0,0,'2026-01-01','2026-01-01',NULL)")
+            connection.commit()
+        app_module.init_db()
+        backups = list(legacy.parent.glob("legacy.pre-memory-lifecycle-*.bak"))
+        self.assertEqual(len(backups), 1)
+        with app_module.closing(app_module.sqlite3.connect(backups[0])) as backup:
+            self.assertEqual(backup.execute("SELECT content FROM memories WHERE id='old'").fetchone()[0], "迁移前正文")
+            self.assertNotIn("strength", {row[1] for row in backup.execute("PRAGMA table_info(memories)")})
+        with app_module.closing(app_module.sqlite3.connect(legacy)) as migrated:
+            self.assertIn("strength", {row[1] for row in migrated.execute("PRAGMA table_info(memories)")})
 
     def test_sse_parser_reassembles_multiline_events_and_flushes_final_event(self):
         async def lines():
@@ -172,10 +244,24 @@ class LocalClientTests(unittest.TestCase):
         self.assertEqual(refreshed["tools"][0]["name"], "echo")
 
     def test_builtin_tools_follow_permissions_and_mutate_memory_by_id(self):
-        tools, bindings = app_module.builtin_tool_catalog({"web_search":"allow","memory_read":"allow","memory_write":"allow"})
+        tools, bindings = app_module.builtin_tool_catalog({"web_search":"allow","memory_read":"allow","memory_write":"allow","life_records":"deny","diary_write":"deny"})
         names = {tool["name"] for tool in tools}
         self.assertEqual(names, {"atherloom_game_play", "atherloom_web_search", "atherloom_memory_search", "atherloom_memory_create", "atherloom_memory_update"})
         self.assertEqual(bindings["atherloom_memory_update"][1], "memory_update")
+        create_spec = next(tool for tool in tools if tool["name"] == "atherloom_memory_create")
+        search_spec = next(tool for tool in tools if tool["name"] == "atherloom_memory_search")
+        update_spec = next(tool for tool in tools if tool["name"] == "atherloom_memory_update")
+        self.assertIn("第一步", search_spec["description"])
+        self.assertIn("搜不到才能新增", search_spec["description"])
+        self.assertIn("confidence<0.7", create_spec["description"])
+        self.assertIn("不另建重复项", update_spec["description"])
+        self.assertIn("kind", create_spec["input_schema"]["required"])
+        self.assertEqual(len(create_spec["input_schema"]["properties"]["kind"]["enum"]), 9)
+        self.assertIn("importance", create_spec["input_schema"]["properties"])
+        self.assertIn("confidence", create_spec["input_schema"]["properties"])
+        self.assertIn("supersedes_memory_id", create_spec["input_schema"]["properties"])
+        with self.assertRaisesRegex(ValueError, "选择有效 kind"):
+            asyncio.run(app_module.invoke_builtin_tool("memory_create", {"title":"未分类", "content":"不应静默落成 fact"}))
         conversation = self.client.post("/api/conversations", json={"title": "来源测试"}).json()
         source_message_id = "source-message"
         with app_module.closing(app_module.db()) as connection:
@@ -196,12 +282,25 @@ class LocalClientTests(unittest.TestCase):
         updated = asyncio.run(app_module.invoke_builtin_tool("memory_update", {"memory_id":created["memory_id"],"content":"用户现在喜欢温牛奶"}))
         self.assertTrue(updated["updated"])
         self.assertEqual(self.client.get("/api/memories?q=温牛奶").json()[0]["id"], created["memory_id"])
-        denied, _ = app_module.builtin_tool_catalog({"web_search":"deny","memory_read":"ask","memory_write":"deny"})
-        self.assertEqual([tool["name"] for tool in denied], ["atherloom_game_play"])
+        denied, _ = app_module.builtin_tool_catalog({"web_search":"deny","memory_read":"ask","memory_write":"deny","life_records":"deny","diary_write":"deny"})
+        self.assertEqual([tool["name"] for tool in denied], ["atherloom_game_play", "atherloom_memory_search"])
         played = asyncio.run(app_module.invoke_builtin_tool("game_play", {"game_id": "claw_machine"}))
         self.assertEqual(played["game_id"], "claw_machine")
         self.assertEqual(played["executed"]["action"], "grab")
         self.assertEqual(played["state"]["turn"], 1)
+
+    def test_search_tool_events_are_stored_without_changing_message_schema(self):
+        conversation = self.client.post("/api/conversations", json={"title": "网页证据"}).json()
+        message_id = "assistant-with-search"
+        event = {"type":"web_search","query":"Atherloom","results":[{"title":"项目页","url":"https://example.com/a","snippet":"摘要"}]}
+        with app_module.closing(app_module.db()) as connection:
+            connection.execute("INSERT INTO messages VALUES (?, ?, 'assistant', '回答', NULL, NULL, ?, '', NULL)", (message_id, conversation["id"], app_module.now_iso()))
+            connection.execute("INSERT INTO message_tool_events VALUES (?,?)", (message_id, json.dumps([event], ensure_ascii=False)))
+            connection.commit()
+        messages = self.client.get(f"/api/conversations/{conversation['id']}/messages").json()
+        self.assertEqual(messages[0]["tool_events"][0]["results"][0]["title"], "项目页")
+        with app_module.closing(app_module.db()) as connection:
+            self.assertEqual(len(connection.execute("PRAGMA table_info(messages)").fetchall()), 9)
 
     def test_deepseek_dsml_tool_call_is_parsed(self):
         content = (
@@ -578,6 +677,77 @@ class LocalClientTests(unittest.TestCase):
         with app_module.closing(app_module.db()) as connection:
             results = app_module.retrieve_memories(connection, "你好")
         self.assertEqual(results[0]["id"], memory["id"])
+
+    def test_memory_lifecycle_merges_links_and_supersedes(self):
+        first = self.client.post("/api/memories", json={"title":"枔枔住在上海","content":"枔枔目前住在上海浦东","kind":"fact","persona_key":"brain","importance":.8}).json()
+        duplicate = self.client.post("/api/memories", json={"title":"枔枔住在上海","content":"枔枔目前住在上海浦东","kind":"fact","persona_key":"brain"}).json()
+        self.assertEqual(duplicate["id"], first["id"])
+        self.assertTrue(duplicate["merged"])
+        related = self.client.post("/api/memories", json={"title":"喜欢江边散步","content":"枔枔喜欢在上海浦东江边散步","kind":"preference","persona_key":"brain"}).json()
+        links = self.client.get(f"/api/memories/{first['id']}/associations").json()
+        self.assertTrue(any(item["id"] == related["id"] for item in links))
+        replacement = self.client.post("/api/memories", json={"title":"枔枔搬到杭州","content":"枔枔现在已经搬到杭州居住","kind":"fact","persona_key":"brain","supersedes_memory_id":first["id"]}).json()
+        with app_module.closing(app_module.db()) as connection:
+            old = connection.execute("SELECT * FROM memories WHERE id=?", (first["id"],)).fetchone()
+        self.assertEqual(old["memory_status"], "superseded")
+        self.assertEqual(old["superseded_by"], replacement["id"])
+        self.assertNotIn(first["id"], [item["id"] for item in self.client.get("/api/memories?persona_key=brain").json()])
+
+    def test_memory_forgetting_cycle_and_recall_reinforcement(self):
+        memory = self.client.post("/api/memories", json={"title":"短暂心情","content":"今天下午有一点烦闷","kind":"emotion","persona_key":"brain","importance":.1}).json()
+        with app_module.closing(app_module.db()) as connection:
+            connection.execute("UPDATE memories SET strength=.2,last_confirmed_at='2020-01-01T00:00:00+00:00' WHERE id=?", (memory["id"],))
+            connection.commit()
+        lifecycle = self.client.post("/api/memories/lifecycle?persona_key=brain").json()
+        self.assertEqual(lifecycle["forgotten"], 1)
+        stable = self.client.post("/api/memories", json={"title":"重要约定","content":"每年生日都要一起吃蛋糕","kind":"promise","persona_key":"brain","importance":.95}).json()
+        with app_module.closing(app_module.db()) as connection:
+            connection.execute("UPDATE memories SET strength=.4,last_confirmed_at='2020-01-01T00:00:00+00:00' WHERE id=?", (stable["id"],))
+            connection.commit()
+            before_row = connection.execute("SELECT * FROM memories WHERE id=?", (stable["id"],)).fetchone()
+            before = app_module.memory_effective_strength(before_row)
+            recalled = app_module.retrieve_memories(connection, "生日蛋糕", persona_key="brain")
+            after = connection.execute("SELECT strength FROM memories WHERE id=?", (stable["id"],)).fetchone()["strength"]
+        self.assertTrue(recalled)
+        self.assertGreater(after, before)
+
+    def test_memory_candidates_shared_scope_detail_restore_and_auto_conflict(self):
+        candidate = self.client.post("/api/memories", json={"title":"也许喜欢爵士","content":"从语气推测用户可能喜欢爵士乐","kind":"preference","persona_key":"p-a","source_type":"inferred","confidence":.5}).json()
+        self.assertEqual(candidate["memory_status"], "candidate")
+        confirmed = self.client.post(f"/api/memories/{candidate['id']}/confirm?accept=true").json()
+        self.assertEqual(confirmed["memory_status"], "active")
+        shared = self.client.post("/api/memories", json={"title":"公共称呼","content":"所有人格都称呼用户为枔枔","kind":"fact","persona_key":"__shared__"}).json()
+        with app_module.closing(app_module.db()) as connection:
+            recalled = app_module.retrieve_memories(connection,"称呼枔枔",persona_key="p-a")
+        self.assertIn(shared["id"],[item["id"] for item in recalled])
+        original = self.client.post("/api/memories", json={"title":"当前居住地","content":"目前住在上海","kind":"fact","persona_key":"p-a"}).json()
+        replacement = self.client.post("/api/memories", json={"title":"当前居住地","content":"目前已经搬到杭州","kind":"fact","persona_key":"p-a"}).json()
+        with app_module.closing(app_module.db()) as connection:
+            old=connection.execute("SELECT * FROM memories WHERE id=?",(original["id"],)).fetchone()
+        self.assertEqual(old["superseded_by"],replacement["id"])
+        edited = self.client.put(f"/api/memories/{replacement['id']}",json={"title":"当前居住地","content":"目前住在杭州西湖区","kind":"fact","persona_key":"p-a"}).json()
+        detail=self.client.get(f"/api/memories/{edited['id']}/detail").json()
+        audit=next(item for item in detail["audit"] if item["action"]=="edit")
+        restored=self.client.post(f"/api/memories/{edited['id']}/restore/{audit['id']}").json()
+        self.assertEqual(restored["content"],"目前已经搬到杭州")
+        stats=self.client.get("/api/memory-stats?persona_key=p-a").json()
+        self.assertEqual(stats["candidate"],0)
+        self.assertGreaterEqual(stats["superseded"],1)
+
+    def test_memory_consolidation_creates_reviewable_candidate(self):
+        texts=[("雨夜散步","雨夜沿着外滩散步，心情慢慢平静"),("江边灯光","外滩江边灯光让人安定"),("散步之后","沿江散步以后不再焦虑")]
+        created=[self.client.post("/api/memories",json={"title":title,"content":content,"kind":"event","persona_key":"cluster"}).json() for title,content in texts]
+        with app_module.closing(app_module.db()) as connection:
+            stamp=app_module.now_iso()
+            for left in created:
+                for right in created:
+                    if left["id"]!=right["id"]: connection.execute("INSERT OR REPLACE INTO memory_links VALUES (?,?, 'associated',.8,?,?)",(left["id"],right["id"],stamp,stamp))
+            connection.commit()
+        result=self.client.post("/api/memories/consolidate?persona_key=cluster").json()
+        self.assertGreaterEqual(result["candidates_created"],1)
+        with app_module.closing(app_module.db()) as connection:
+            summary=connection.execute("SELECT * FROM memories WHERE id=?",(result["memory_ids"][0],)).fetchone()
+        self.assertEqual(summary["memory_status"],"candidate")
 
     def test_memory_recall_has_an_absolute_honesty_boundary_and_use_weight(self):
         memory = self.client.post("/api/memories", json={
