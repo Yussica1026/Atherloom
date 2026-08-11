@@ -50,8 +50,15 @@ class FrontendRegressionContracts(unittest.TestCase):
         self.assertIn("具体位置请查看浏览器下载记录", APP)
 
     def test_versioned_script_is_current(self):
-        self.assertIn('assets/app.js?v=0542', INDEX)
-        self.assertIn('assets/standalone.js?v=0520', INDEX)
+        self.assertIn('assets/app.js?v=0543', INDEX)
+        self.assertIn('assets/standalone.js?v=0521', INDEX)
+
+    def test_android_autonomy_wake_is_user_controlled(self):
+        self.assertIn('id="autonomyEnabled"', INDEX)
+        self.assertIn('window.AtherloomRunAutonomyWake', APP)
+        self.assertIn('configureAutonomy', APP)
+        self.assertIn('approvedPermissions:["diary_write"', APP)
+        self.assertIn('configureAutonomy(String raw)', ANDROID)
 
     def test_desire_state_is_consistent_between_web_and_android(self):
         self.assertIn('motivationData.offline_mode||"limited"', APP)
