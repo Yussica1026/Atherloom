@@ -9,6 +9,7 @@ CSS = (ROOT / "frontend/assets/app.css").read_text(encoding="utf-8")
 STANDALONE = (ROOT / "frontend/assets/standalone.js").read_text(encoding="utf-8")
 ANDROID = (ROOT / "android/app/src/main/java/app/atherloom/mobile/MainActivity.java").read_text(encoding="utf-8")
 INLINE = (ROOT / "frontend/inline.html").read_text(encoding="utf-8")
+NOWHERE = (ROOT / "frontend/assets/nowhere/index.html").read_text(encoding="utf-8")
 
 
 class FrontendRegressionContracts(unittest.TestCase):
@@ -95,6 +96,8 @@ class FrontendRegressionContracts(unittest.TestCase):
         self.assertIn('id="nowhereActionLog"', INDEX)
         self.assertIn('function updateNowhereLive(event)', APP)
         self.assertIn('type:"nowhere"', STANDALONE)
+        self.assertIn('id="nowtoggle"', NOWHERE)
+        self.assertIn('setNowCollapsed(matchMedia("(max-width:700px)").matches)', NOWHERE)
 
     def test_chat_enter_is_newline_only(self):
         self.assertNotIn('$("#prompt").addEventListener("keydown"', APP)
