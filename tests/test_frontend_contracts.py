@@ -51,7 +51,7 @@ class FrontendRegressionContracts(unittest.TestCase):
         self.assertIn("具体位置请查看浏览器下载记录", APP)
 
     def test_versioned_script_is_current(self):
-        self.assertIn('assets/app.js?v=0548', INDEX)
+        self.assertIn('assets/app.js?v=0549', INDEX)
         self.assertIn('assets/standalone.js?v=0525', INDEX)
 
     def test_manual_compression_keeps_original_messages_but_reduces_hot_context(self):
@@ -72,6 +72,8 @@ class FrontendRegressionContracts(unittest.TestCase):
     def test_nowhere_context_is_compact_and_auto_compression_is_configurable(self):
         self.assertIn("counts:{path:", STANDALONE)
         self.assertNotIn("const boundedToolResult", STANDALONE)
+        self.assertIn("你去玩乌有乡", APP)
+        self.assertIn("nowhereRequested", APP)
         self.assertIn('id="summaryTokenEnabled"', INDEX)
         self.assertIn('id="summaryTokenThreshold"', INDEX)
         self.assertIn('id="summaryProvider"', INDEX)
