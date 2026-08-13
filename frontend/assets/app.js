@@ -415,6 +415,12 @@ function parseGameRequest(content){
   return {gameId,turns:autonomous?9:turns,autonomous};
 }
 async function prepareChatGameContext(content){
+  const nowhereText=String(content||"").replace(/\s+/g,"");
+  const nowhereRequested=/乌有乡/.test(nowhereText)&&/(?:去|玩|旅行|旅游|出发|走走|走一走|逛逛|看看|探索|开门|继续|接着|自主|自己)/.test(nowhereText);
+  if(nowhereRequested){
+    const stepsMatch=nowhereText.match(/(\d{1,2})\s*(?:步|次)/),steps=Math.max(1,Math.min(12,Number(stepsMatch?.[1]||10)));
+    return `用户明确要求你进入 Atherloom 内置游戏“乌有乡”旅行。请调用 atherloom_nowhere 工具真实执行，不要只用文字想象；可连续行动，最多 ${steps} 步，并在结束后用简短自然语言告诉用户实际去了哪里、看见了什么。类似“你去玩乌有乡”“你去乌有乡旅行”“去乌有乡自己走走”都属于这个意图。`;
+  }
   const request=parseGameRequest(content),text=String(content||""),mentioned=/(?:迷宫|雾径|探路)/.test(text)?"mist_maze":/(?:地牢|打怪|冒险|余烬)/.test(text)?"ember_dungeon":/(?:2048|星潮|合成游戏|数字合成)/.test(text)?"star_merge":/(?:抓娃娃|娃娃机|下爪)/.test(text)?"claw_machine":/(?:老虎机|拉杆|转盘|摇奖)/.test(text)?"cloud_slots":/(?:钓鱼|抛竿|鱼塘)/.test(text)?"quiet_fishing":null;
   if(!request){const gameId=mentioned||gameState.current||localStorage.getItem("atherloom:last-game");if(!gameId)return /游戏库|小游戏/.test(text)?"Atherloom 内置游戏库目前包含：云汀钓记、抓娃娃机、云纹老虎机、星潮合成、雾径迷宫和余烬地牢。它们支持用户亲自操作、交给当前人格和独立共玩对话。":"";try{const payload=await api(`/api/games/${gameId}/state${personaQuery()}`),current=payload.state,recent=(current.journal||[]).slice(-5).join("；")||"还没有动作",visible=Object.fromEntries(Object.entries(current).filter(([key])=>!["history","room_messages"].includes(key)));return `用户最近正在 Atherloom 内置游戏「${gameNames[gameId]}」中和当前人格一起玩。当前应用存档：${JSON.stringify(visible)}。最近动作：${recent}。这是应用内真实状态，不是需要联网搜索的外部游戏。`;}catch{return "";}}
   const provider=activeProvider();if(!provider)return "";
@@ -697,6 +703,8 @@ function createStreamPresenter(message, animated, messages=state.messages, conve
 async function generateReply(content, reuseUserMessageId = null, attachments = [], mediaContext = "", runOptions = {}) {
   const conversationId=state.current,messages=state.messages,provider=activeProvider(),personaId=state.persona,worldbookIds=selectedWorldbookIds(),controller=new AbortController();
   if (!provider) return openSettings("providers");
+  state.generating.add(conversationId);state.generation_controllers.set(conversationId,controller);state.message_cache.set(conversationId,messages);streamFollow=true;renderHistory();renderCurrentTitle();updateComposerState();
+  await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));
   if(!reuseUserMessageId)try{await maybeAutoCompress();}catch(error){console.warn("automatic compression",error);}
   if(reuseUserMessageId){
     for(let index=messages.length-1;index>=0;index--){
@@ -704,7 +712,6 @@ async function generateReply(content, reuseUserMessageId = null, attachments = [
       if(item.role==="assistant"&&!item.id&&item.parent_message_id===reuseUserMessageId)messages.splice(index,1);
     }
   }
-  state.generating.add(conversationId);state.generation_controllers.set(conversationId,controller);state.message_cache.set(conversationId,messages);streamFollow=true;renderHistory();renderCurrentTitle();updateComposerState();
   if(reuseUserMessageId)delete state.version_selection[reuseUserMessageId];
     messages.push({ role: "assistant", content: "", reasoning: "", tool_events:[], model: provider.model, parent_message_id: reuseUserMessageId, pending: true, streaming: provider.stream_enabled!==false&&provider.stream_enabled!==0 });if(state.current===conversationId)renderMessages();
   const assistant = messages[messages.length - 1];
@@ -717,7 +724,7 @@ async function generateReply(content, reuseUserMessageId = null, attachments = [
     const reader=response.body.getReader(),decoder=new TextDecoder();presenter=createStreamPresenter(assistant,assistant.streaming,messages,conversationId);let pending="";
     while(true){const {value,done}=await reader.read();if(done)break;pending+=decoder.decode(value,{stream:true});const lines=pending.split("\n");pending=lines.pop();for(const line of lines){if(!line)continue;const event=JSON.parse(line);if(event.error)throw new Error(event.error);let structureUpdated=false;if(event.memory_sources){assistant.memory_sources=event.memory_sources;structureUpdated=true;}if(event.tool_event){assistant.tool_events.push(event.tool_event);updateNowhereLive(event.tool_event);structureUpdated=true;}if(typeof event.delta==="string"&&event.delta!=="null")presenter.push(event.delta);if(typeof event.reasoning_delta==="string"&&event.reasoning_delta!=="null"){assistant.reasoning+=event.reasoning_delta;structureUpdated=true;}if(event.done){assistant.usage=event.usage||null;structureUpdated=true;await presenter.finish();assistant.pending=false;assistant.streaming=false;assistant.id=event.assistant_id;assistant.parent_message_id=event.user_id;const pendingUser=[...messages].reverse().find(m=>m.role==="user"&&!m.id);if(pendingUser)pendingUser.id=event.user_id;if(event.title){const conversation=state.conversations.find(c=>c.id===conversationId);if(conversation)conversation.title=event.title;}if(state.current===conversationId){renderCurrentTitle();renderMessages({stickToBottom:streamFollow});}renderHistory();}if(structureUpdated)updateStreamingMessage(assistant,messages,conversationId);}}
   } catch (error) {presenter?.cancel();assistant.pending=false;assistant.streaming=false;if(error.name==="AbortError"){if(!assistant.content)assistant.content="已停止生成";}else{assistant.retry_content=content;assistant.retry_media_context=mediaContext;assistant.content=`生成未完成：${error.message}`;if(!reuseUserMessageId){try{const fresh=await api(`/api/conversations/${conversationId}/messages`),persisted=[...fresh].reverse().find(item=>item.role==="user"&&item.content===content);if(persisted)persisted.attachments=attachments;messages.splice(0,messages.length,...fresh,assistant);}catch{}}}if(state.current===conversationId)renderMessages({stickToBottom:streamFollow});}
-  finally{state.generating.delete(conversationId);state.generation_controllers.delete(conversationId);renderHistory();if(state.current===conversationId){renderCurrentTitle();updateComposerState();state.memories=await api(`/api/memories?persona_key=${encodeURIComponent(memoryPersonaKey())}`).catch(()=>state.memories);renderSettings();}}
+  finally{state.generating.delete(conversationId);state.generation_controllers.delete(conversationId);renderHistory();if(state.current===conversationId){renderCurrentTitle();updateComposerState();setTimeout(async()=>{state.memories=await api(`/api/memories?persona_key=${encodeURIComponent(memoryPersonaKey())}`).catch(()=>state.memories);if(state.current===conversationId)renderSettings();},0);}}
 }
 
 function motivationPersonaKey(){return state.persona||"__default__";}
