@@ -424,6 +424,9 @@ class AppSettingsIn(BaseModel):
     title_provider_id: str = ""
     summary_enabled: bool = True
     summary_trigger_rounds: int = Field(default=24, ge=4, le=200)
+    summary_token_enabled: bool = False
+    summary_token_threshold: int = Field(default=32000, ge=1000, le=1000000)
+    summary_provider_id: str = ""
     summary_prompt: str = Field(default=DEFAULT_SUMMARY_PROMPT, min_length=20, max_length=10000)
     display_name: str = Field(default="", max_length=40)
     proactive_questions: bool = False
@@ -747,6 +750,9 @@ def bootstrap() -> dict[str, Any]:
         "title_provider_id": settings_rows.get("title_provider_id", ""),
         "summary_enabled": settings_rows.get("summary_enabled", "true") == "true",
         "summary_trigger_rounds": int(settings_rows.get("summary_trigger_rounds", "24")),
+        "summary_token_enabled": settings_rows.get("summary_token_enabled", "false") == "true",
+        "summary_token_threshold": int(settings_rows.get("summary_token_threshold", "32000")),
+        "summary_provider_id": settings_rows.get("summary_provider_id", ""),
         "summary_prompt": settings_rows.get("summary_prompt", DEFAULT_SUMMARY_PROMPT),
         "default_summary_prompt": DEFAULT_SUMMARY_PROMPT,
         "display_name": settings_rows.get("display_name", ""),
@@ -777,6 +783,9 @@ def save_settings(body: AppSettingsIn) -> dict[str, Any]:
             "title_provider_id": body.title_provider_id,
             "summary_enabled": "true" if body.summary_enabled else "false",
             "summary_trigger_rounds": str(body.summary_trigger_rounds),
+            "summary_token_enabled": "true" if body.summary_token_enabled else "false",
+            "summary_token_threshold": str(body.summary_token_threshold),
+            "summary_provider_id": body.summary_provider_id,
             "summary_prompt": body.summary_prompt,
             "display_name": body.display_name,
             "proactive_questions": "true" if body.proactive_questions else "false",
