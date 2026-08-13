@@ -272,6 +272,7 @@ class LocalClientTests(unittest.TestCase):
             connection.commit()
         created = asyncio.run(app_module.invoke_builtin_tool("memory_create", {
             "title":"饮品", "content":"用户喜欢热牛奶", "kind":"preference",
+            "importance": .8,
             "source_message_id": source_message_id,
         }))
         found = asyncio.run(app_module.invoke_builtin_tool("memory_search", {"query":"热牛奶"}))
@@ -789,6 +790,30 @@ class LocalClientTests(unittest.TestCase):
         for index, left in enumerate(contents):
             for right in contents[index + 1:]:
                 self.assertLess(app_module.memory_similarity(left, right), .68)
+
+    def test_ai_memory_importance_is_required_and_breaks_relevance_ties(self):
+        tools, _ = app_module.builtin_tool_catalog({"memory_read":"allow","memory_write":"allow"})
+        create = next(tool for tool in tools if tool["name"] == "atherloom_memory_create")
+        self.assertIn("importance", create["input_schema"]["required"])
+        self.assertIn("不要把所有记忆都设成1", create["input_schema"]["properties"]["importance"]["description"])
+        with self.assertRaisesRegex(ValueError, "必须由 AI 判断 importance"):
+            asyncio.run(app_module.invoke_builtin_tool("memory_create", {"title":"遗漏重要度","content":"不应静默使用默认值","kind":"fact"}))
+        high = self.client.post("/api/memories", json={"title":"项目代号核心约定","content":"项目代号月桂关系到长期交付承诺","kind":"promise","persona_key":"priority","importance":1}).json()
+        self.client.post("/api/memories", json={"title":"项目代号随手记录","content":"项目代号月桂曾在午后被随口提起","kind":"event","persona_key":"priority","importance":.1})
+        with app_module.closing(app_module.db()) as connection:
+            recalled = app_module.retrieve_memories(connection, "项目代号月桂", persona_key="priority")
+        self.assertEqual(recalled[0]["id"], high["id"])
+
+    def test_memory_regrade_requires_confirmation_and_records_audit(self):
+        memory = self.client.post("/api/memories", json={"title":"旧记忆","content":"等待重新判断长期价值","kind":"event","persona_key":"regrade","importance":.5}).json()
+        result = self.client.post("/api/memories/regrade-apply", json={"persona_key":"regrade","items":[{"memory_id":memory["id"],"importance":.8,"reason":"未来仍会经常用到"}]}).json()
+        self.assertEqual(result["updated"], 1)
+        with app_module.closing(app_module.db()) as connection:
+            row = connection.execute("SELECT importance FROM memories WHERE id=?", (memory["id"],)).fetchone()
+            audit = connection.execute("SELECT action,detail FROM memory_audit WHERE memory_id=? ORDER BY created_at DESC", (memory["id"],)).fetchone()
+        self.assertEqual(row["importance"], .8)
+        self.assertEqual(audit["action"], "regrade")
+        self.assertIn("未来仍会经常用到", audit["detail"])
 
     def test_vector_recall_finds_semantic_match_and_ignores_stale_content(self):
         semantic = self.client.post("/api/memories", json={

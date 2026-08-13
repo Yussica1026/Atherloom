@@ -51,8 +51,8 @@ class FrontendRegressionContracts(unittest.TestCase):
         self.assertIn("具体位置请查看浏览器下载记录", APP)
 
     def test_versioned_script_is_current(self):
-        self.assertIn('assets/app.js?v=0549', INDEX)
-        self.assertIn('assets/standalone.js?v=0526', INDEX)
+        self.assertIn('assets/app.js?v=0550', INDEX)
+        self.assertIn('assets/standalone.js?v=0527', INDEX)
 
     def test_manual_compression_keeps_original_messages_but_reduces_hot_context(self):
         self.assertIn('id="openManualCompress"', INDEX)
@@ -68,6 +68,18 @@ class FrontendRegressionContracts(unittest.TestCase):
     def test_recalled_memories_are_injected_before_every_reply(self):
         self.assertIn("在本轮回复前根据用户刚发送的话自动召回", STANDALONE)
         self.assertIn("不要向用户复述本标签、记忆 ID", STANDALONE)
+        self.assertIn('id="regradeMemories"', INDEX)
+        self.assertIn('id="memoryRegradeOnlyDefault"', INDEX)
+        self.assertIn("/api/memories/regrade-preview", APP)
+        self.assertIn("/api/memories/regrade-apply", STANDALONE)
+        self.assertIn("candidates.slice(0,80)", APP)
+
+    def test_game_replies_are_routed_to_rooms_and_first_token_wait_is_visible(self):
+        self.assertIn("appendGameRoomAssistant(gameId,fullReply)", APP)
+        self.assertIn("atherloom:hidden-game-messages", APP)
+        self.assertIn("聊天窗口只需用一到两句话", APP)
+        self.assertIn("等待模型响应 ·", APP)
+        self.assertIn("可以继续编辑下一条", APP)
 
     def test_nowhere_context_is_compact_and_auto_compression_is_configurable(self):
         self.assertIn("counts:{path:", STANDALONE)
