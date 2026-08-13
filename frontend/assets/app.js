@@ -404,6 +404,7 @@ async function playGame(action, amount = 1, target = "") {
 }
 async function playMiniGame(gameId,action,amount=1){try{const payload=await api(`/api/games/${gameId}/action${personaQuery()}`,{method:"POST",body:JSON.stringify({action,amount})});storeGameState(gameId,payload.state);renderCurrentGame(gameId);}catch(error){alert(error.message);}}
 let aiGameRun=0;
+function appendGameRoomAssistant(gameId,content){const current=currentGameSave();if(!current||gameState.current!==gameId||!String(content||"").trim())return;current.room_messages=[...(current.room_messages||[]),{role:"assistant",content:String(content).trim(),created_at:new Date().toISOString()}].slice(-40);current.last_thought=String(content).trim();storeGameState(gameId,current);renderGameRoom();}
 async function aiPlayGame(mode){const provider=activeProvider()||state.providers[0],name=activePersonaName();if(!provider){$("#aiGameStatus").textContent="还没有可用线路；游戏会留在这里，请先到设置里添加线路。";return;}state.provider||=provider.id;const run=++aiGameRun,buttons=[...document.querySelectorAll("[data-ai-game-turns]")],stop=$("#stopAiGame"),gameId=gameState.current,autonomous=mode==="auto",turns=autonomous?9:Number(mode);buttons.forEach(button=>button.disabled=true);stop.hidden=false;let completed=0,spent=0,lastComment="";try{for(let turn=0;turn<turns&&run===aiGameRun;turn++){const remaining=30-spent;if(remaining<=0&&!["star_merge","mist_maze","ember_dungeon"].includes(gameId))break;$("#aiGameStatus").textContent=autonomous?`${name} 正在决定第 ${turn+1} 回合，还可以随时停止…`:`${name} 正在进行第 ${turn+1}/${turns} 回合…`;const payload=await api(`/api/games/${gameId}/ai-turn`,{method:"POST",body:JSON.stringify({provider_id:provider.id,persona_id:state.persona,turns:1,autonomous,max_spend:remaining}),timeout:45000});if(run!==aiGameRun)break;spent+=payload.spent||0;if(payload.decisions.length){completed++;lastComment=payload.decisions.at(-1)?.comment||lastComment;}storeGameState(gameId,payload.state);renderCurrentGame(gameId);$("#aiGameStatus").textContent=`${name} 已完成 ${completed}${autonomous?"/最多 9":`/${turns}`} 回合。${lastComment?`心里话：${lastComment}`:"正在看看下一步…"}`;if(!payload.decisions.length||(autonomous&&payload.continue_playing===false))break;}if(run===aiGameRun)$("#aiGameStatus").textContent=completed?`${name}${autonomous?"自己选择并":""}完成 ${completed} 回合${spent?`，花费 ${spent} 云贝`:""}。心里话：${lastComment||"专心操作中"}`:`${name} 因预算或局面限制没有执行动作。`;}catch(error){if(run===aiGameRun)$("#aiGameStatus").textContent=`${completed?`已完成 ${completed} 回合；`:""}${name} 游玩失败：${error.message}`;}finally{if(run===aiGameRun){buttons.forEach(button=>button.disabled=false);stop.hidden=true;}}}
 
 function parseGameRequest(content){
@@ -583,6 +584,10 @@ async function bootstrap() {
   $("#summaryEnabled").checked = state.settings.summary_enabled;
   $("#summaryRounds").value = state.settings.summary_trigger_rounds;
   $("#summaryRoundsValue").textContent = `${state.settings.summary_trigger_rounds} 轮`;
+  $("#summaryTokenEnabled").checked = !!state.settings.summary_token_enabled;
+  $("#summaryTokenThreshold").value = state.settings.summary_token_threshold || 32000;
+  $("#summaryProvider").innerHTML = `<option value="">跟随当前聊天线路</option>` + state.providers.map(provider=>`<option value="${provider.id}">${escapeHtml(provider.name)} · ${escapeHtml(provider.model)}</option>`).join("");
+  $("#summaryProvider").value = state.providers.some(provider=>provider.id===state.settings.summary_provider_id)?state.settings.summary_provider_id:"";
   $("#summaryPrompt").value = state.settings.summary_prompt;
   $("#summaryPrompt").dataset.defaultPrompt = state.settings.default_summary_prompt;
   $("#fontScale").value = state.settings.font_scale || 100;
@@ -660,6 +665,9 @@ async function sendMessage() {
   await generateReply(visibleContent,null,attachments);
 }
 
+function estimatedHotContextTokens(){return Math.ceil(state.messages.filter(item=>item.role==="user"||item.role==="assistant").reduce((sum,item)=>sum+String(item.content||"").length,0)*.9);}
+async function maybeAutoCompress(){const threshold=Math.max(1000,Number(state.settings.summary_token_threshold||32000)),estimated=estimatedHotContextTokens(),userRounds=state.messages.filter(item=>item.role==="user").length;if(!state.settings.summary_token_enabled||estimated<threshold||userRounds<2)return null;const provider=state.providers.find(item=>item.id===state.settings.summary_provider_id)||activeProvider();if(!provider)return null;const result=await api(`/api/conversations/${state.current}/compress`,{method:"POST",timeout:150000,body:JSON.stringify({rounds:Math.max(1,userRounds-1),provider_id:provider.id})});const conversation=state.conversations.find(item=>item.id===state.current);if(conversation)conversation.summary=result.summary;return result;}
+
 let streamScrollFrame=0,streamScrollDue=0,streamFollow=true;
 function chatIsNearBottom(){const area=$("#chatScroll");return area.scrollHeight-area.scrollTop-area.clientHeight<96;}
 function scheduleStreamingScroll(){if(!streamFollow)return;const now=performance.now();if(streamScrollFrame||now<streamScrollDue)return;streamScrollFrame=requestAnimationFrame(()=>{streamScrollFrame=0;streamScrollDue=performance.now()+120;if(streamFollow){const area=$("#chatScroll");area.scrollTop=area.scrollHeight;}});}
@@ -681,7 +689,7 @@ function createStreamPresenter(message, animated, messages=state.messages, conve
   const tick=()=>{if(!queue.length){if(ended)finishTimer();return;}const count=!animated?queue.length:1;message.content+=queue.splice(0,count).join("");message.pending=false;updateStreamingMessage(message,messages,conversationId);if(ended&&!queue.length)finishTimer();};
   return {
     push(text){if(!text||!state.generating.has(conversationId))return;queue.push(...Array.from(text));if(!animated){tick();return;}if(!timer){tick();const delay={slow:90,standard:55,fast:30}[state.settings.stream_speed]||55;timer=setInterval(tick,delay);}},
-    finish(){ended=true;tick();if(!timer&&!queue.length)return Promise.resolve();return new Promise(resolve=>{resolveFinished=resolve;});},
+    finish(flush=true){ended=true;if(flush&&queue.length){message.content+=queue.join("");queue=[];updateStreamingMessage(message,messages,conversationId);}else tick();if(!timer&&!queue.length){finishTimer();return Promise.resolve();}return new Promise(resolve=>{resolveFinished=resolve;});},
     cancel(){queue=[];ended=true;finishTimer();}
   };
 }
@@ -689,6 +697,7 @@ function createStreamPresenter(message, animated, messages=state.messages, conve
 async function generateReply(content, reuseUserMessageId = null, attachments = [], mediaContext = "", runOptions = {}) {
   const conversationId=state.current,messages=state.messages,provider=activeProvider(),personaId=state.persona,worldbookIds=selectedWorldbookIds(),controller=new AbortController();
   if (!provider) return openSettings("providers");
+  if(!reuseUserMessageId)try{await maybeAutoCompress();}catch(error){console.warn("automatic compression",error);}
   if(reuseUserMessageId){
     for(let index=messages.length-1;index>=0;index--){
       const item=messages[index];
@@ -891,7 +900,7 @@ async function restoreLocalBackup(file) {
 let settingsSaveTimer;
 function updateSearchRouteFields(){const provider=$("#searchProvider").value,keyField=$("#searchApiKeyField"),endpointField=$("#searchEndpointField"),help=$("#searchRouteHelp");keyField.hidden=provider==="builtin";endpointField.hidden=provider!=="custom";help.textContent={builtin:"免费线路无需 Key；实时性与覆盖面受公开索引限制。",tavily:"需要 Tavily API Key；适合给 AI 提供带链接的实时网页结果。",brave:"需要 Brave Search API Key；使用独立网页索引并返回标题、链接与摘要。",custom:"向自定义地址 POST {query,max_results}；可用 Bearer Key，响应需包含 results 数组。"}[provider];}
 function appSettingsPayload(){
-  return {auto_title_mode:$("#autoTitleMode").value,summary_enabled:$("#summaryEnabled").checked,summary_trigger_rounds:Number($("#summaryRounds").value),summary_prompt:$("#summaryPrompt").value,display_name:$("#displayName").value.trim(),proactive_questions:$("#proactiveQuestions").checked,typing_presence_enabled:$("#typingPresenceEnabled").checked,tool_timeout_seconds:Math.max(30,Math.min(Number($("#toolTimeoutSeconds").value||180),900)),font_scale:Number($("#fontScale").value),message_density:$("#messageDensity").value,code_theme:$("#codeTheme").value,memory_strategy:$("#memoryStrategy").value,vector_memory_enabled:$("#vectorMemoryEnabled").checked,embedding_provider_id:$("#embeddingProvider").value,embedding_model:$("#embeddingModel").value.trim(),vision_provider_id:$("#visionProvider").value,search_provider:$("#searchProvider").value,search_api_key:$("#searchApiKey").value.trim(),search_endpoint:$("#searchEndpoint").value.trim(),stream_speed:$("#streamSpeed").value,tool_permissions:Object.fromEntries([...document.querySelectorAll("[data-permission]")].map(select=>[select.dataset.permission,select.value]))};
+  return {auto_title_mode:$("#autoTitleMode").value,summary_enabled:$("#summaryEnabled").checked,summary_trigger_rounds:Number($("#summaryRounds").value),summary_token_enabled:$("#summaryTokenEnabled").checked,summary_token_threshold:Number($("#summaryTokenThreshold").value||32000),summary_provider_id:$("#summaryProvider").value,summary_prompt:$("#summaryPrompt").value,display_name:$("#displayName").value.trim(),proactive_questions:$("#proactiveQuestions").checked,typing_presence_enabled:$("#typingPresenceEnabled").checked,tool_timeout_seconds:Math.max(30,Math.min(Number($("#toolTimeoutSeconds").value||180),900)),font_scale:Number($("#fontScale").value),message_density:$("#messageDensity").value,code_theme:$("#codeTheme").value,memory_strategy:$("#memoryStrategy").value,vector_memory_enabled:$("#vectorMemoryEnabled").checked,embedding_provider_id:$("#embeddingProvider").value,embedding_model:$("#embeddingModel").value.trim(),vision_provider_id:$("#visionProvider").value,search_provider:$("#searchProvider").value,search_api_key:$("#searchApiKey").value.trim(),search_endpoint:$("#searchEndpoint").value.trim(),stream_speed:$("#streamSpeed").value,tool_permissions:Object.fromEntries([...document.querySelectorAll("[data-permission]")].map(select=>[select.dataset.permission,select.value]))};
 }
 async function refreshVectorMemoryStatus(){
   try{const status=await api(`/api/memories/vector/status?persona_key=${encodeURIComponent(memoryPersonaKey())}`);$("#vectorMemoryStatus").textContent=status.total?`已索引 ${status.indexed}/${status.total}${status.stale?` · ${status.stale} 条待更新`:""}`:"当前人格记忆库为空";return status;}catch(error){$("#vectorMemoryStatus").textContent=`状态读取失败：${error.message}`;return null;}
@@ -912,6 +921,9 @@ function saveAppSettings() {
       auto_title_mode: $("#autoTitleMode").value,
       summary_enabled: $("#summaryEnabled").checked,
       summary_trigger_rounds: Number($("#summaryRounds").value),
+      summary_token_enabled: $("#summaryTokenEnabled").checked,
+      summary_token_threshold: Number($("#summaryTokenThreshold").value||32000),
+      summary_provider_id: $("#summaryProvider").value,
       summary_prompt: $("#summaryPrompt").value,
       display_name: $("#displayName").value.trim(),
       proactive_questions: $("#proactiveQuestions").checked,
@@ -1056,6 +1068,9 @@ let searchTimer;
 $("#conversationSearch").oninput = event => { clearTimeout(searchTimer); searchTimer = setTimeout(async () => { const query = event.target.value.trim(); if (!query) { const fresh = await api("/api/bootstrap"); state.conversations = fresh.conversations; } else { state.conversations = await api(`/api/search?q=${encodeURIComponent(query)}`); } renderHistory(); }, 180); };
 $("#autoTitleMode").onchange = saveAppSettings;
 $("#summaryEnabled").onchange = saveAppSettings;
+$("#summaryTokenEnabled").onchange = saveAppSettings;
+$("#summaryTokenThreshold").onchange = saveAppSettings;
+$("#summaryProvider").onchange = saveAppSettings;
 $("#proactiveQuestions").onchange = saveAppSettings;
 $("#typingPresenceEnabled").onchange = ()=>{saveAppSettings();updateTypingPresence();};
 $("#searchProvider").onchange=()=>{updateSearchRouteFields();saveAppSettings();};

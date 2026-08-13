@@ -320,7 +320,11 @@ function dot(g,x,y,r,fill,stroke){const c=document.createElementNS(NS,"circle");
   g.appendChild(c);return c;}
 
 /* ── 数据图层(每轮重画) ─────────────────────── */
+let lastMapSignature="";
 function renderMap(hist,marks,sights,cards){
+  const signature=JSON.stringify([hist.path||[],hist.landings||[],marks||[],sights||[],(cards||[]).map(card=>[card.id,card.stamp])]);
+  if(signature===lastMapSignature)return;
+  lastMapSignature=signature;
   for(const id of["lg-terrain","lg-path","lg-sight","lg-card","lg-mark","lg-pin"])
     $(id).replaceChildren();
   // 落点地貌(先画,垫在图钉下)

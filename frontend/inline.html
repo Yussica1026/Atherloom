@@ -130,6 +130,14 @@ html,body{width:100%;min-width:0;overflow:hidden}.app-shell{height:100vh;height:
 .nowhere-stage{height:100%;min-height:560px;display:grid;grid-template-rows:1fr auto auto;background:#f5f0e6;border:1px solid var(--border);border-radius:16px;overflow:hidden}.nowhere-stage[hidden]{display:none}.nowhere-stage iframe{width:100%;height:100%;min-height:420px;border:0;background:#f5f0e6}.nowhere-thoughts{padding:10px 14px;border-top:1px solid #d8cbb0;background:#fffaf0;color:#4a3b2c}.nowhere-thoughts strong{font:700 12px var(--sans);letter-spacing:.08em}.nowhere-thoughts p{margin:5px 0 0;font-size:12px;line-height:1.5}.nowhere-thoughts ol{display:flex;gap:7px;margin:8px 0 0;padding:0;overflow:auto;list-style:none}.nowhere-thoughts li{flex:0 0 min(260px,75vw);padding:7px 9px;border:1px solid #e1d5bd;border-radius:9px;background:#fffdf7;font-size:10px}.nowhere-thoughts li b,.nowhere-thoughts li span{display:block}.nowhere-thoughts li span{margin-top:3px;opacity:.75;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.nowhere-stage footer{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:9px 14px;border-top:1px solid #d8cbb0;background:#f5f0e6;color:#4a3b2c;font-size:11px}.nowhere-stage footer span,.nowhere-stage footer small{display:block}.nowhere-stage footer b{font-size:12px}.nowhere-stage footer small{margin-top:3px;opacity:.7}.nowhere-stage footer>div{display:flex;flex-wrap:wrap;gap:7px}.nowhere-stage footer select{border:1px solid #d8cbb0;border-radius:8px;background:#fffdf7;color:#4a3b2c;padding:8px}@media(max-width:760px){.nowhere-stage{min-height:calc(100dvh - 180px);border-radius:8px}.nowhere-stage iframe{min-height:calc(100dvh - 390px)}.nowhere-stage footer{align-items:flex-start;flex-direction:column}}
 .autonomy-card{border-left:3px solid #8576d8}.autonomy-activities{display:flex;flex-wrap:wrap;gap:9px 18px;margin:12px 0}.autonomy-log{max-height:190px;overflow:auto}.autonomy-log article{padding:9px 11px;border:1px solid var(--border);border-radius:11px;background:var(--surface-2)}.autonomy-log time{display:block;margin-bottom:3px;color:var(--muted);font:10px var(--mono)}
 .manual-compress-dialog{width:min(92vw,430px)}.manual-compress-dialog input{width:100%}.manual-compress-dialog>small{display:block;margin-top:8px;color:var(--muted)}
+/* Mobile game dialogue must remain readable while boards and maps keep updating. */
+.nowhere-thoughts{max-height:240px;overflow-y:auto;overscroll-behavior:contain}
+.nowhere-thoughts p{white-space:pre-wrap;overflow-wrap:anywhere}
+.nowhere-thoughts ol{display:flex;flex-direction:column;overflow:visible}
+.nowhere-thoughts li{flex:none;width:100%}
+.nowhere-thoughts li span{white-space:normal;overflow:visible;text-overflow:clip;overflow-wrap:anywhere}
+.game-room-thought{max-height:180px;overflow-y:auto;overscroll-behavior:contain}
+.game-room-thought blockquote,.game-room-message{overflow-wrap:anywhere}
 
   </style>
   <script>document.documentElement.dataset.launchMode=performance.getEntriesByType("navigation")[0]?.type==="reload"?"refresh":"full";</script>
@@ -522,6 +530,9 @@ html,body{width:100%;min-width:0;overflow:hidden}.app-shell{height:100vh;height:
           <div class="setting-row"><div><strong>启用滚动摘要</strong><small>达到设定轮数后整理较早上下文</small></div><label class="switch"><input id="summaryEnabled" type="checkbox" checked><span></span></label></div>
           <div class="setting-row"><div><strong>长期记忆需确认</strong><small>模型提取的记忆先进入待确认区</small></div><label class="switch"><input type="checkbox" checked><span></span></label></div>
           <label class="range-label">触发轮数<input id="summaryRounds" type="range" min="4" max="80" value="24"><span id="summaryRoundsValue">24 轮</span></label>
+          <div class="setting-row"><div><strong>超过 Token 阈值自动压缩</strong><small>发送前估算热上下文；达到阈值时先压缩旧对话并保留最近一轮</small></div><label class="switch"><input id="summaryTokenEnabled" type="checkbox"><span></span></label></div>
+          <label>自动压缩阈值（Token）<input id="summaryTokenThreshold" type="number" min="1000" max="1000000" step="1000" value="32000"></label>
+          <label>自动压缩线路<select id="summaryProvider"><option value="">跟随当前聊天线路</option></select><small class="muted">只用于自动压缩，不改变聊天线路。</small></label>
           <label class="summary-prompt-label">自动总结提示词<textarea id="summaryPrompt" rows="14"></textarea></label>
           <div class="prompt-help"><span>可用变量（点击插入）：<button type="button" data-summary-variable="{{title}}"><code>{{title}}</code></button> <button type="button" data-summary-variable="{{existing_summary}}"><code>{{existing_summary}}</code></button> <button type="button" data-summary-variable="{{conversation}}"><code>{{conversation}}</code></button></span><button class="ghost" id="resetSummaryPrompt" type="button">恢复默认</button></div>
           <p class="save-state" id="summarySaveState"></p>
@@ -865,7 +876,7 @@ html,body{width:100%;min-width:0;overflow:hidden}.app-shell{height:100vh;height:
   const nowhereGeocode=async query=>{query=String(query||"").trim();if(nowhereFallbacks[query]){const [lat,lon,name]=nowhereFallbacks[query];return {lat,lon,name};}try{const response=await originalFetch(`https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(query)}&count=1&language=zh&format=json`),data=await response.json(),row=data.results?.[0];if(row)return {lat:row.latitude,lon:row.longitude,name:[row.country,row.admin1,row.name].filter(Boolean).join("·")};}catch{}throw new Error(`没有找到“${query}”，可以换成城市或著名地点`);};
   const nowhereWeather=async state=>{try{const url=`https://api.open-meteo.com/v1/forecast?latitude=${state.lat}&longitude=${state.lon}&current=temperature_2m,apparent_temperature,precipitation,wind_speed_10m,weather_code&timezone=auto`,response=await originalFetch(url),data=await response.json(),c=data.current;if(c)return {temperature:c.temperature_2m,feels_like:c.apparent_temperature,precipitation:c.precipitation,wind:c.wind_speed_10m,code:c.weather_code,source:"Open-Meteo"};}catch{}const seasonal=18-18*Math.abs(Number(state.lat||0))/90;return {temperature:Number(seasonal.toFixed(1)),feels_like:Number(seasonal.toFixed(1)),precipitation:0,wind:6,code:0,source:"离线气候估算"};};
   const nowhereScene=async state=>{const weather=await nowhereWeather(state),hour=new Date(state.virtual_time).getHours(),light=hour<6?"天还黑着":hour<11?"晨光斜落":hour<17?"日光铺在地面":hour<20?"太阳正在变低":"夜色已经落下",ground=Math.abs(state.lat)>60?"冻土与碎石":Math.abs(state.lat)<24?"带着热气的地面":"微凉的土石与道路",rain=weather.precipitation>0?`雨落下来，强度 ${weather.precipitation} 毫米。`:"空气里没有正在落下的雨。";const text=`【${state.place}】${light}。脚下是${ground}。气温 ${weather.temperature}℃，体感 ${weather.feels_like}℃。风速 ${weather.wind} km/h。${rain}`;state.last_weather=weather;state.last_text=text;return {weather,text};};
-  const runNowhereTool=async call=>{
+  const runNowhereToolRaw=async call=>{
     const args=call.arguments||{},personaKey=args._persona_key||window.__atherloomToolPersona||"__default__",action=String(args.action||""),state=nowhereState(personaKey);
     const needBody=()=>{if(!state.active)throw new Error("旅程还没有开始，请先调用 open_door");};
     if(action==="open_door"){
@@ -896,6 +907,10 @@ html,body{width:100%;min-width:0;overflow:hidden}.app-shell{height:100vh;height:
     if(action==="souvenir")return {text:state.souvenirs.length?`你一路收着 ${state.souvenirs.length} 件纪念品。`:"口袋里还没有纪念品。",data:{souvenirs:state.souvenirs}};
     if(action==="give_souvenir"){const item=state.souvenirs.shift();saveNowhere(personaKey,state);return {text:item?`你把${item.name}留在${state.place}。`:"口袋里没有可以留下的纪念品。",data:{given:item||null}};}
     throw new Error("未知的乌有乡动作");
+  };
+  const runNowhereTool=async call=>{
+    const result=await runNowhereToolRaw(call),args=call.arguments||{},personaKey=args._persona_key||window.__atherloomToolPersona||"__default__",state=nowhereState(personaKey),data=result?.data||{};
+    return {text:String(result?.text||"").slice(0,1200),data:{action:String(args.action||""),active:!!state.active,place:state.place,lat:state.lat,lon:state.lon,virtual_time:state.virtual_time,distance_km:state.distance_km,last_weather:state.last_weather||null,mark:data.mark||null,postcard:data.postcard||null,given:data.given||null,counts:{path:(state.path||[]).length,marks:(state.marks||[]).length,postcards:(state.postcards||[]).length,souvenirs:(state.souvenirs||[]).length}}};
   };
   const memoryLifecycleFields={importance:{type:"number",minimum:0,maximum:1,description:"长期重要程度"},confidence:{type:"number",minimum:0,maximum:1,description:"明确原话接近1，推断必须低于0.7"},source_type:{type:"string",enum:["explicit","inferred","manual","imported"],description:"来源性质"},valid_from:{type:"string"},valid_until:{type:"string"},supersedes_memory_id:{type:"string",description:"被新事实替代的旧记忆ID，必须来自搜索"}};
   const enhanceMemoryTools=tools=>tools.map(tool=>{if(tool.name==="atherloom_memory_create")tool.input_schema.properties={...tool.input_schema.properties,...memoryLifecycleFields};if(tool.name==="atherloom_memory_update")tool.input_schema.properties={...tool.input_schema.properties,importance:memoryLifecycleFields.importance,confidence:memoryLifecycleFields.confidence,valid_from:memoryLifecycleFields.valid_from,valid_until:memoryLifecycleFields.valid_until};return tool;});
@@ -1658,6 +1673,7 @@ async function playGame(action, amount = 1, target = "") {
 }
 async function playMiniGame(gameId,action,amount=1){try{const payload=await api(`/api/games/${gameId}/action${personaQuery()}`,{method:"POST",body:JSON.stringify({action,amount})});storeGameState(gameId,payload.state);renderCurrentGame(gameId);}catch(error){alert(error.message);}}
 let aiGameRun=0;
+function appendGameRoomAssistant(gameId,content){const current=currentGameSave();if(!current||gameState.current!==gameId||!String(content||"").trim())return;current.room_messages=[...(current.room_messages||[]),{role:"assistant",content:String(content).trim(),created_at:new Date().toISOString()}].slice(-40);current.last_thought=String(content).trim();storeGameState(gameId,current);renderGameRoom();}
 async function aiPlayGame(mode){const provider=activeProvider()||state.providers[0],name=activePersonaName();if(!provider){$("#aiGameStatus").textContent="还没有可用线路；游戏会留在这里，请先到设置里添加线路。";return;}state.provider||=provider.id;const run=++aiGameRun,buttons=[...document.querySelectorAll("[data-ai-game-turns]")],stop=$("#stopAiGame"),gameId=gameState.current,autonomous=mode==="auto",turns=autonomous?9:Number(mode);buttons.forEach(button=>button.disabled=true);stop.hidden=false;let completed=0,spent=0,lastComment="";try{for(let turn=0;turn<turns&&run===aiGameRun;turn++){const remaining=30-spent;if(remaining<=0&&!["star_merge","mist_maze","ember_dungeon"].includes(gameId))break;$("#aiGameStatus").textContent=autonomous?`${name} 正在决定第 ${turn+1} 回合，还可以随时停止…`:`${name} 正在进行第 ${turn+1}/${turns} 回合…`;const payload=await api(`/api/games/${gameId}/ai-turn`,{method:"POST",body:JSON.stringify({provider_id:provider.id,persona_id:state.persona,turns:1,autonomous,max_spend:remaining}),timeout:45000});if(run!==aiGameRun)break;spent+=payload.spent||0;if(payload.decisions.length){completed++;lastComment=payload.decisions.at(-1)?.comment||lastComment;}storeGameState(gameId,payload.state);renderCurrentGame(gameId);$("#aiGameStatus").textContent=`${name} 已完成 ${completed}${autonomous?"/最多 9":`/${turns}`} 回合。${lastComment?`心里话：${lastComment}`:"正在看看下一步…"}`;if(!payload.decisions.length||(autonomous&&payload.continue_playing===false))break;}if(run===aiGameRun)$("#aiGameStatus").textContent=completed?`${name}${autonomous?"自己选择并":""}完成 ${completed} 回合${spent?`，花费 ${spent} 云贝`:""}。心里话：${lastComment||"专心操作中"}`:`${name} 因预算或局面限制没有执行动作。`;}catch(error){if(run===aiGameRun)$("#aiGameStatus").textContent=`${completed?`已完成 ${completed} 回合；`:""}${name} 游玩失败：${error.message}`;}finally{if(run===aiGameRun){buttons.forEach(button=>button.disabled=false);stop.hidden=true;}}}
 
 function parseGameRequest(content){
@@ -1837,6 +1853,10 @@ async function bootstrap() {
   $("#summaryEnabled").checked = state.settings.summary_enabled;
   $("#summaryRounds").value = state.settings.summary_trigger_rounds;
   $("#summaryRoundsValue").textContent = `${state.settings.summary_trigger_rounds} 轮`;
+  $("#summaryTokenEnabled").checked = !!state.settings.summary_token_enabled;
+  $("#summaryTokenThreshold").value = state.settings.summary_token_threshold || 32000;
+  $("#summaryProvider").innerHTML = `<option value="">跟随当前聊天线路</option>` + state.providers.map(provider=>`<option value="${provider.id}">${escapeHtml(provider.name)} · ${escapeHtml(provider.model)}</option>`).join("");
+  $("#summaryProvider").value = state.providers.some(provider=>provider.id===state.settings.summary_provider_id)?state.settings.summary_provider_id:"";
   $("#summaryPrompt").value = state.settings.summary_prompt;
   $("#summaryPrompt").dataset.defaultPrompt = state.settings.default_summary_prompt;
   $("#fontScale").value = state.settings.font_scale || 100;
@@ -1914,6 +1934,9 @@ async function sendMessage() {
   await generateReply(visibleContent,null,attachments);
 }
 
+function estimatedHotContextTokens(){return Math.ceil(state.messages.filter(item=>item.role==="user"||item.role==="assistant").reduce((sum,item)=>sum+String(item.content||"").length,0)*.9);}
+async function maybeAutoCompress(){const threshold=Math.max(1000,Number(state.settings.summary_token_threshold||32000)),estimated=estimatedHotContextTokens(),userRounds=state.messages.filter(item=>item.role==="user").length;if(!state.settings.summary_token_enabled||estimated<threshold||userRounds<2)return null;const provider=state.providers.find(item=>item.id===state.settings.summary_provider_id)||activeProvider();if(!provider)return null;const result=await api(`/api/conversations/${state.current}/compress`,{method:"POST",timeout:150000,body:JSON.stringify({rounds:Math.max(1,userRounds-1),provider_id:provider.id})});const conversation=state.conversations.find(item=>item.id===state.current);if(conversation)conversation.summary=result.summary;return result;}
+
 let streamScrollFrame=0,streamScrollDue=0,streamFollow=true;
 function chatIsNearBottom(){const area=$("#chatScroll");return area.scrollHeight-area.scrollTop-area.clientHeight<96;}
 function scheduleStreamingScroll(){if(!streamFollow)return;const now=performance.now();if(streamScrollFrame||now<streamScrollDue)return;streamScrollFrame=requestAnimationFrame(()=>{streamScrollFrame=0;streamScrollDue=performance.now()+120;if(streamFollow){const area=$("#chatScroll");area.scrollTop=area.scrollHeight;}});}
@@ -1935,7 +1958,7 @@ function createStreamPresenter(message, animated, messages=state.messages, conve
   const tick=()=>{if(!queue.length){if(ended)finishTimer();return;}const count=!animated?queue.length:1;message.content+=queue.splice(0,count).join("");message.pending=false;updateStreamingMessage(message,messages,conversationId);if(ended&&!queue.length)finishTimer();};
   return {
     push(text){if(!text||!state.generating.has(conversationId))return;queue.push(...Array.from(text));if(!animated){tick();return;}if(!timer){tick();const delay={slow:90,standard:55,fast:30}[state.settings.stream_speed]||55;timer=setInterval(tick,delay);}},
-    finish(){ended=true;tick();if(!timer&&!queue.length)return Promise.resolve();return new Promise(resolve=>{resolveFinished=resolve;});},
+    finish(flush=true){ended=true;if(flush&&queue.length){message.content+=queue.join("");queue=[];updateStreamingMessage(message,messages,conversationId);}else tick();if(!timer&&!queue.length){finishTimer();return Promise.resolve();}return new Promise(resolve=>{resolveFinished=resolve;});},
     cancel(){queue=[];ended=true;finishTimer();}
   };
 }
@@ -1943,6 +1966,7 @@ function createStreamPresenter(message, animated, messages=state.messages, conve
 async function generateReply(content, reuseUserMessageId = null, attachments = [], mediaContext = "", runOptions = {}) {
   const conversationId=state.current,messages=state.messages,provider=activeProvider(),personaId=state.persona,worldbookIds=selectedWorldbookIds(),controller=new AbortController();
   if (!provider) return openSettings("providers");
+  if(!reuseUserMessageId)try{await maybeAutoCompress();}catch(error){console.warn("automatic compression",error);}
   if(reuseUserMessageId){
     for(let index=messages.length-1;index>=0;index--){
       const item=messages[index];
@@ -2145,7 +2169,7 @@ async function restoreLocalBackup(file) {
 let settingsSaveTimer;
 function updateSearchRouteFields(){const provider=$("#searchProvider").value,keyField=$("#searchApiKeyField"),endpointField=$("#searchEndpointField"),help=$("#searchRouteHelp");keyField.hidden=provider==="builtin";endpointField.hidden=provider!=="custom";help.textContent={builtin:"免费线路无需 Key；实时性与覆盖面受公开索引限制。",tavily:"需要 Tavily API Key；适合给 AI 提供带链接的实时网页结果。",brave:"需要 Brave Search API Key；使用独立网页索引并返回标题、链接与摘要。",custom:"向自定义地址 POST {query,max_results}；可用 Bearer Key，响应需包含 results 数组。"}[provider];}
 function appSettingsPayload(){
-  return {auto_title_mode:$("#autoTitleMode").value,summary_enabled:$("#summaryEnabled").checked,summary_trigger_rounds:Number($("#summaryRounds").value),summary_prompt:$("#summaryPrompt").value,display_name:$("#displayName").value.trim(),proactive_questions:$("#proactiveQuestions").checked,typing_presence_enabled:$("#typingPresenceEnabled").checked,tool_timeout_seconds:Math.max(30,Math.min(Number($("#toolTimeoutSeconds").value||180),900)),font_scale:Number($("#fontScale").value),message_density:$("#messageDensity").value,code_theme:$("#codeTheme").value,memory_strategy:$("#memoryStrategy").value,vector_memory_enabled:$("#vectorMemoryEnabled").checked,embedding_provider_id:$("#embeddingProvider").value,embedding_model:$("#embeddingModel").value.trim(),vision_provider_id:$("#visionProvider").value,search_provider:$("#searchProvider").value,search_api_key:$("#searchApiKey").value.trim(),search_endpoint:$("#searchEndpoint").value.trim(),stream_speed:$("#streamSpeed").value,tool_permissions:Object.fromEntries([...document.querySelectorAll("[data-permission]")].map(select=>[select.dataset.permission,select.value]))};
+  return {auto_title_mode:$("#autoTitleMode").value,summary_enabled:$("#summaryEnabled").checked,summary_trigger_rounds:Number($("#summaryRounds").value),summary_token_enabled:$("#summaryTokenEnabled").checked,summary_token_threshold:Number($("#summaryTokenThreshold").value||32000),summary_provider_id:$("#summaryProvider").value,summary_prompt:$("#summaryPrompt").value,display_name:$("#displayName").value.trim(),proactive_questions:$("#proactiveQuestions").checked,typing_presence_enabled:$("#typingPresenceEnabled").checked,tool_timeout_seconds:Math.max(30,Math.min(Number($("#toolTimeoutSeconds").value||180),900)),font_scale:Number($("#fontScale").value),message_density:$("#messageDensity").value,code_theme:$("#codeTheme").value,memory_strategy:$("#memoryStrategy").value,vector_memory_enabled:$("#vectorMemoryEnabled").checked,embedding_provider_id:$("#embeddingProvider").value,embedding_model:$("#embeddingModel").value.trim(),vision_provider_id:$("#visionProvider").value,search_provider:$("#searchProvider").value,search_api_key:$("#searchApiKey").value.trim(),search_endpoint:$("#searchEndpoint").value.trim(),stream_speed:$("#streamSpeed").value,tool_permissions:Object.fromEntries([...document.querySelectorAll("[data-permission]")].map(select=>[select.dataset.permission,select.value]))};
 }
 async function refreshVectorMemoryStatus(){
   try{const status=await api(`/api/memories/vector/status?persona_key=${encodeURIComponent(memoryPersonaKey())}`);$("#vectorMemoryStatus").textContent=status.total?`已索引 ${status.indexed}/${status.total}${status.stale?` · ${status.stale} 条待更新`:""}`:"当前人格记忆库为空";return status;}catch(error){$("#vectorMemoryStatus").textContent=`状态读取失败：${error.message}`;return null;}
@@ -2166,6 +2190,9 @@ function saveAppSettings() {
       auto_title_mode: $("#autoTitleMode").value,
       summary_enabled: $("#summaryEnabled").checked,
       summary_trigger_rounds: Number($("#summaryRounds").value),
+      summary_token_enabled: $("#summaryTokenEnabled").checked,
+      summary_token_threshold: Number($("#summaryTokenThreshold").value||32000),
+      summary_provider_id: $("#summaryProvider").value,
       summary_prompt: $("#summaryPrompt").value,
       display_name: $("#displayName").value.trim(),
       proactive_questions: $("#proactiveQuestions").checked,
@@ -2310,6 +2337,9 @@ let searchTimer;
 $("#conversationSearch").oninput = event => { clearTimeout(searchTimer); searchTimer = setTimeout(async () => { const query = event.target.value.trim(); if (!query) { const fresh = await api("/api/bootstrap"); state.conversations = fresh.conversations; } else { state.conversations = await api(`/api/search?q=${encodeURIComponent(query)}`); } renderHistory(); }, 180); };
 $("#autoTitleMode").onchange = saveAppSettings;
 $("#summaryEnabled").onchange = saveAppSettings;
+$("#summaryTokenEnabled").onchange = saveAppSettings;
+$("#summaryTokenThreshold").onchange = saveAppSettings;
+$("#summaryProvider").onchange = saveAppSettings;
 $("#proactiveQuestions").onchange = saveAppSettings;
 $("#typingPresenceEnabled").onchange = ()=>{saveAppSettings();updateTypingPresence();};
 $("#searchProvider").onchange=()=>{updateSearchRouteFields();saveAppSettings();};
