@@ -754,6 +754,7 @@ class LocalClientTests(unittest.TestCase):
             "title": "河边散步", "content": "傍晚沿着河边散步后平静下来", "kind": "event"
         }).json()
         with app_module.closing(app_module.db()) as connection:
+            confirmed_before = connection.execute("SELECT last_confirmed_at FROM memories WHERE id=?", (memory["id"],)).fetchone()[0]
             connection.execute(
                 "INSERT INTO memory_embeddings VALUES (?,?,?,?,?,?,?)",
                 (memory["id"], "route", "embed", app_module.memory_content_hash(memory["title"], memory["content"]), 2, "[1,0]", app_module.now_iso()),
@@ -771,6 +772,23 @@ class LocalClientTests(unittest.TestCase):
             self.assertEqual(recalled[0]["id"], memory["id"])
             usage = connection.execute("SELECT recall_count FROM memory_usage WHERE memory_id=?", (memory["id"],)).fetchone()
             self.assertEqual(usage["recall_count"], 1)
+            confirmed_after = connection.execute("SELECT last_confirmed_at FROM memories WHERE id=?", (memory["id"],)).fetchone()[0]
+            self.assertEqual(confirmed_after, confirmed_before)
+
+    def test_memory_recall_prefers_keyword_coverage_over_near_duplicates(self):
+        rows = [
+            self.client.post("/api/memories", json={"title":"上海咖啡店","content":"喜欢上海安静的咖啡店和拿铁","kind":"preference","persona_key":"coverage"}).json(),
+            self.client.post("/api/memories", json={"title":"上海咖啡偏好","content":"在上海喜欢安静咖啡馆里的拿铁咖啡","kind":"preference","persona_key":"coverage"}).json(),
+            self.client.post("/api/memories", json={"title":"杭州散步","content":"喜欢在杭州西湖边散步看荷花","kind":"preference","persona_key":"coverage"}).json(),
+        ]
+        with app_module.closing(app_module.db()) as connection:
+            recalled = app_module.retrieve_memories(connection, "上海咖啡拿铁和杭州西湖散步", persona_key="coverage")
+        contents = [f"{item['title']} {item['content']}" for item in recalled]
+        self.assertTrue(any("上海" in item for item in contents))
+        self.assertTrue(any("杭州" in item for item in contents))
+        for index, left in enumerate(contents):
+            for right in contents[index + 1:]:
+                self.assertLess(app_module.memory_similarity(left, right), .68)
 
     def test_vector_recall_finds_semantic_match_and_ignores_stale_content(self):
         semantic = self.client.post("/api/memories", json={
