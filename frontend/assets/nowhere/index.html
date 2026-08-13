@@ -31,10 +31,18 @@
   #now{position:fixed;left:24px;bottom:24px;max-width:420px;z-index:6;
     background:var(--card);backdrop-filter:blur(2px);
     border:1px solid var(--line);border-radius:3px;padding:16px 18px;
-    box-shadow:2px 3px 0 #0001;transition:background 2s}
-  #now .meta{font-size:13px;letter-spacing:1px;opacity:.75;margin-bottom:8px}
+    box-shadow:2px 3px 0 #0001;transition:background 2s,padding .25s}
+  #nowtoggle{display:flex;align-items:center;justify-content:space-between;gap:14px;width:100%;
+    color:inherit;background:none;border:0;padding:0;font:inherit;text-align:left;cursor:pointer}
+  #now .meta{font-size:13px;letter-spacing:1px;opacity:.75}
+  #nowchevron{font-size:13px;opacity:.65;transition:transform .2s}
   #now .text{font-size:15px;line-height:1.9;max-height:38vh;overflow:auto}
   #now .stats{margin-top:10px;font-size:12px;opacity:.7}
+  #nowbody{display:grid;grid-template-rows:1fr;opacity:1;transition:grid-template-rows .25s,opacity .2s}
+  #nowbody>div{overflow:hidden;padding-top:8px}
+  #now.collapsed{padding:10px 14px}
+  #now.collapsed #nowbody{grid-template-rows:0fr;opacity:0}
+  #now.collapsed #nowchevron{transform:rotate(-90deg)}
   #wallbtn{position:fixed;right:0;top:45%;z-index:6;writing-mode:vertical-rl;
     background:var(--card);border:1px solid var(--line);border-right:none;
     padding:14px 8px;cursor:pointer;font-size:14px;letter-spacing:4px;border-radius:3px 0 0 3px}
@@ -71,6 +79,11 @@
     font:inherit;cursor:pointer}
   .flipbar{display:flex;justify-content:space-between;margin-top:12px;font-size:13px}
   .flipbar span{cursor:pointer;text-decoration:underline;opacity:.8}
+  @media(max-width:700px){
+    #brand{top:10px;left:14px;padding:7px 14px 6px}
+    #now{left:12px;right:48px;bottom:12px;max-width:none}
+    #legend{display:none}
+  }
 </style>
 </head>
 <body>
@@ -85,9 +98,8 @@
   <div><b style="color:#b5442c">✉</b>明信片</div>
 </div>
 <div id="now">
-  <div class="meta" id="nowmeta">还没开门</div>
-  <div class="text" id="nowtext">他在路上的时候,这里会写着他在哪。</div>
-  <div class="stats" id="nowstats"></div>
+  <button id="nowtoggle" type="button" aria-expanded="true"><span class="meta" id="nowmeta">还没开门</span><span id="nowchevron" aria-hidden="true">⌄</span></button>
+  <div id="nowbody"><div><div class="text" id="nowtext">他在路上的时候,这里会写着他在哪。</div><div class="stats" id="nowstats"></div></div></div>
 </div>
 <div id="wallbtn">明信片墙</div>
 <div id="wall">
@@ -493,6 +505,12 @@ function setWall(open){
 $("wallbtn").onclick=()=>setWall(true);
 $("wallback").onclick=()=>setWall(false);
 $("flip").onclick=e=>{if(e.target.id==="flip")closeFlip();};
+function setNowCollapsed(collapsed){
+  $("now").classList.toggle("collapsed",collapsed);
+  $("nowtoggle").setAttribute("aria-expanded",String(!collapsed));
+}
+$("nowtoggle").onclick=()=>setNowCollapsed(!$("now").classList.contains("collapsed"));
+setNowCollapsed(matchMedia("(max-width:700px)").matches);
 drawLand();
 load();
 setInterval(load,4000);
