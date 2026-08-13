@@ -81,6 +81,11 @@ class FrontendRegressionContracts(unittest.TestCase):
         self.assertIn("等待模型响应 ·", APP)
         self.assertIn("可以继续编辑下一条", APP)
 
+    def test_android_plain_chat_does_not_wait_for_non_streaming_tool_probe(self):
+        self.assertIn("const toolIntent=", STANDALONE)
+        self.assertIn("if(tools.length&&toolIntent)", STANDALONE)
+        self.assertIn("return nativeStreamResponse(request,persistStreamEvent)", STANDALONE)
+
     def test_nowhere_context_is_compact_and_auto_compression_is_configurable(self):
         self.assertIn("counts:{path:", STANDALONE)
         self.assertNotIn("const boundedToolResult", STANDALONE)
