@@ -3770,7 +3770,11 @@ def local_title(content: str) -> str:
 
 def text_bigrams(value: str) -> set[str]:
     compact = "".join(value.lower().split())
-    return {compact[index:index + 2] for index in range(max(0, len(compact) - 1))}
+    terms = {compact[index:index + 2] for index in range(max(0, len(compact) - 1))}
+    terms.update(re.findall(r"[a-z0-9][a-z0-9_.+-]*", value.lower()))
+    if len(compact) == 1:
+        terms.add(compact)
+    return terms
 
 
 def memory_type_hints(query: str) -> set[str]:
@@ -3817,12 +3821,13 @@ def retrieve_memories(
             )
         }
     documents = [Counter(text_bigrams(f"{row['title']} {row['content']}")) for row in rows]
+    title_documents = [text_bigrams(row["title"]) for row in rows]
     frequencies = Counter(term for terms in documents for term in terms)
     average_length = sum(sum(terms.values()) for terms in documents) / len(documents)
     type_hints = memory_type_hints(query)
     usage_rows = {row["memory_id"]: row for row in connection.execute("SELECT * FROM memory_usage")}
     ranked = []
-    for row, terms in zip(rows, documents):
+    for row, terms, title_terms in zip(rows, documents, title_documents):
         effective_strength = memory_effective_strength(row)
         if effective_strength < .06 and not row["starred"]:
             continue
@@ -3834,6 +3839,8 @@ def retrieve_memories(
             idf = math.log(1 + (len(rows) - document_frequency + .5) / (document_frequency + .5))
             frequency = terms[term]
             lexical_score += idf * (frequency * 2.2) / (frequency + 1.2 * (.25 + .75 * length / max(1, average_length)))
+            if term in title_terms:
+                lexical_score += idf * .55
             if idf > .35:
                 matched.append(term)
         semantic_score: float | None = None
@@ -3884,7 +3891,16 @@ def retrieve_memories(
     selected = []
     used_chars = 0
     while ranked and len(selected) < limit:
-        best = max(ranked, key=lambda item: item["score"] - .45 * max(
+        covered = set().union(*(chosen["terms"] & query_terms for chosen in selected)) if selected else set()
+        eligible = [item for item in ranked if not any(
+            memory_similarity(
+                f"{item['row']['title']} {item['row']['content']}",
+                f"{chosen['row']['title']} {chosen['row']['content']}",
+            ) >= .68 for chosen in selected
+        )]
+        if not eligible:
+            break
+        best = max(eligible, key=lambda item: item["score"] + .22 * len((item["terms"] & query_terms) - covered) - .6 * max(
             (len(item["terms"] & chosen["terms"]) / max(1, len(item["terms"] | chosen["terms"])) for chosen in selected),
             default=0,
         ))
@@ -3899,7 +3915,7 @@ def retrieve_memories(
         connection.executemany("""INSERT INTO memory_usage(memory_id,recall_count,last_recalled_at) VALUES (?,1,?)
           ON CONFLICT(memory_id) DO UPDATE SET recall_count=recall_count+1,last_recalled_at=excluded.last_recalled_at""",
           [(item["row"]["id"], recalled_at) for item in selected])
-        connection.executemany("UPDATE memories SET strength=?,last_confirmed_at=? WHERE id=?", [(min(1.0, memory_effective_strength(item["row"]) + (1.0-memory_effective_strength(item["row"]))* .10), recalled_at, item["row"]["id"]) for item in selected])
+        connection.executemany("UPDATE memories SET strength=? WHERE id=?", [(min(1.0, memory_effective_strength(item["row"]) + (1.0-memory_effective_strength(item["row"]))* .06), item["row"]["id"]) for item in selected])
         connection.commit()
     return [{
         "id": item["row"]["id"], "title": item["row"]["title"], "kind": item["row"]["kind"],

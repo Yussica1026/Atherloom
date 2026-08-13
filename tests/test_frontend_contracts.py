@@ -52,7 +52,7 @@ class FrontendRegressionContracts(unittest.TestCase):
 
     def test_versioned_script_is_current(self):
         self.assertIn('assets/app.js?v=0549', INDEX)
-        self.assertIn('assets/standalone.js?v=0525', INDEX)
+        self.assertIn('assets/standalone.js?v=0526', INDEX)
 
     def test_manual_compression_keeps_original_messages_but_reduces_hot_context(self):
         self.assertIn('id="openManualCompress"', INDEX)
