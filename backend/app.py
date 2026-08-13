@@ -419,6 +419,23 @@ class ManualCompressIn(BaseModel):
     provider_id: str | None = None
 
 
+class MemoryRegradePreviewIn(BaseModel):
+    provider_id: str
+    persona_key: str = Field(default="__unassigned__", min_length=1, max_length=120)
+    memory_ids: list[str] = Field(default_factory=list, max_length=80)
+
+
+class MemoryRegradeItem(BaseModel):
+    memory_id: str
+    importance: float = Field(ge=.1, le=1)
+    reason: str = Field(default="", max_length=300)
+
+
+class MemoryRegradeApplyIn(BaseModel):
+    persona_key: str = Field(default="__unassigned__", min_length=1, max_length=120)
+    items: list[MemoryRegradeItem] = Field(min_length=1, max_length=80)
+
+
 class AppSettingsIn(BaseModel):
     auto_title_mode: str = Field(default="local", pattern="^(off|local|model)$")
     title_provider_id: str = ""
@@ -878,8 +895,71 @@ def list_memories(persona_key: str = "__unassigned__", q: str = "", include_arch
         params.extend([f"%{q.strip()}%", f"%{q.strip()}%"])
     where = " AND ".join(clauses) or "1=1"
     with closing(db()) as connection:
-        rows = connection.execute(f"SELECT * FROM memories WHERE {where} ORDER BY starred DESC, updated_at DESC", params).fetchall()
+        rows = connection.execute(f"SELECT * FROM memories WHERE {where} ORDER BY starred DESC, importance DESC, updated_at DESC", params).fetchall()
     return [memory_dict(row) for row in rows]
+
+
+@app.post("/api/memories/regrade-preview")
+async def preview_memory_regrade(body: MemoryRegradePreviewIn) -> dict[str, Any]:
+    with closing(db()) as connection:
+        provider = connection.execute("SELECT * FROM providers WHERE id=? AND enabled=1", (body.provider_id,)).fetchone()
+        if not provider:
+            raise HTTPException(400, "请选择可用的 AI 分级线路")
+        clauses = ["persona_key=?", "memory_status='active'", "archived=0", "deleted_at IS NULL"]
+        params: list[Any] = [body.persona_key]
+        if body.memory_ids:
+            placeholders = ",".join("?" for _ in body.memory_ids)
+            clauses.append(f"id IN ({placeholders})")
+            params.extend(body.memory_ids)
+        rows = connection.execute(f"SELECT id,title,content,kind,importance FROM memories WHERE {' AND '.join(clauses)} ORDER BY importance DESC,updated_at DESC LIMIT 80", params).fetchall()
+    if not rows:
+        raise HTTPException(409, "当前范围没有可重新评估的有效记忆")
+    source = [{"memory_id": row["id"], "title": row["title"], "content": row["content"], "kind": row["kind"], "current_importance": row["importance"]} for row in rows]
+    prompt = """你是长期记忆分级器。逐条独立判断重要度，不修改原文，不因为语气强烈而夸大，也不要把所有项目设成高分。
+分级只能使用0.1步进：1.0=身份、安全、核心关系或不可忘承诺；0.8-0.9=长期偏好、边界、重要关系事实；0.6-0.7=经常有用的个人事实；0.3-0.5=一般经历与阶段信息；0.1-0.2=低价值细节。
+只返回JSON数组，每项严格包含 memory_id、importance、reason。reason用不超过30字中文说明。不得遗漏或增加ID。
+待评估记忆：\n""" + json.dumps(source, ensure_ascii=False)
+    headers = provider_headers(provider["protocol"], provider["api_key"], provider["custom_headers"])
+    payload: dict[str, Any] = {"model": provider["model"], "max_tokens": min(3000, max(800, int(provider["max_tokens"]))), "temperature": 0.1}
+    if provider["protocol"] == "anthropic":
+        payload["messages"] = [{"role": "user", "content": prompt}]
+    else:
+        payload["messages"] = [{"role": "system", "content": "只输出有效JSON。"}, {"role": "user", "content": prompt}]
+        payload["response_format"] = {"type": "json_object"}
+    try:
+        async with httpx.AsyncClient(timeout=150) as client:
+            response = await client.post(provider_endpoint(provider["base_url"], provider["protocol"]), headers=headers, json=payload)
+        response.raise_for_status();data = response.json()
+        raw = ("".join(block.get("text", "") for block in data.get("content", []) if block.get("type") == "text") if provider["protocol"] == "anthropic" else data.get("choices", [{}])[0].get("message", {}).get("content", "")).strip()
+        match = re.search(r"\[[\s\S]*\]", raw)
+        parsed = json.loads(match.group(0) if match else raw)
+        if isinstance(parsed, dict):
+            parsed = parsed.get("items") or parsed.get("memories") or []
+    except (httpx.HTTPError, json.JSONDecodeError, KeyError, TypeError, AttributeError) as error:
+        raise HTTPException(502, f"AI 记忆分级失败：{error}") from error
+    allowed = {row["id"]: row for row in rows};suggestions=[];seen=set()
+    for item in parsed if isinstance(parsed, list) else []:
+        memory_id = str(item.get("memory_id") or "")
+        if memory_id not in allowed or memory_id in seen: continue
+        importance = round(max(.1, min(1, float(item.get("importance", allowed[memory_id]["importance"])))) * 10) / 10
+        suggestions.append({"memory_id": memory_id, "title": allowed[memory_id]["title"], "current_importance": allowed[memory_id]["importance"], "importance": importance, "reason": str(item.get("reason") or "AI 综合长期价值判断")[:300]});seen.add(memory_id)
+    if len(suggestions) != len(rows):
+        raise HTTPException(502, "AI 分级结果不完整，请换一条线路重试")
+    return {"items": suggestions, "count": len(suggestions), "applied": False}
+
+
+@app.post("/api/memories/regrade-apply")
+def apply_memory_regrade(body: MemoryRegradeApplyIn) -> dict[str, Any]:
+    stamp=now_iso();updated=0
+    with closing(db()) as connection:
+        for item in body.items:
+            row=connection.execute("SELECT * FROM memories WHERE id=? AND persona_key=? AND deleted_at IS NULL",(item.memory_id,body.persona_key)).fetchone()
+            if not row: continue
+            importance=round(item.importance*10)/10
+            connection.execute("UPDATE memories SET importance=?,updated_at=? WHERE id=?",(importance,stamp,item.memory_id))
+            connection.execute("INSERT INTO memory_audit VALUES (?,?,'regrade',?,?)",(str(uuid.uuid4()),item.memory_id,json.dumps({"before":{"importance":row["importance"]},"after":{"importance":importance},"reason":item.reason},ensure_ascii=False),stamp));updated+=1
+        connection.commit()
+    return {"ok":True,"updated":updated}
 
 
 @app.get("/api/memory-stats")
@@ -1864,14 +1944,14 @@ BUILTIN_TOOL_SPECS = {
                 "content": {"type": "string", "description": "忠实、完整且不臆测的记忆内容"},
                 "kind": {"type": "string", "enum": ["fact", "preference", "relationship", "promise", "event", "emotion", "summary", "diary", "other"], "description": "必选分类：fact稳定事实；preference偏好习惯；relationship人物关系；promise承诺约定；event具体事件；emotion持续情绪感受；summary阶段摘要；diary日记正文；other无法归入以上类型"},
                 "source_message_id": {"type": "string", "description": "如果记忆来自某条具体消息，填写该消息 ID，以便回溯原话"},
-                "importance": {"type": "number", "minimum": 0, "maximum": 1, "description": "对长期关系或未来行为的重要程度"},
+                "importance": {"type": "number", "minimum": 0.1, "maximum": 1, "multipleOf": 0.1, "description": "必须由你判断并填写：1.0=身份、安全、核心关系或不可忘的重要承诺；0.8-0.9=长期稳定偏好、边界与重要关系事实；0.6-0.7=未来经常有用的个人事实；0.3-0.5=一般经历与阶段信息；0.1-0.2=低价值但可能复用的细节；低于0.1则不应写入长期记忆。不要把所有记忆都设成1。"},
                 "confidence": {"type": "number", "minimum": 0, "maximum": 1, "description": "明确原话接近1，合理推断必须低于0.7"},
                 "source_type": {"type": "string", "enum": ["explicit","inferred","manual","imported"], "description": "记忆来源性质"},
                 "valid_from": {"type": "string", "description": "事实开始生效的 ISO 时间，可省略"},
                 "valid_until": {"type": "string", "description": "临时事实结束的 ISO 时间，可省略"},
                 "supersedes_memory_id": {"type": "string", "description": "新事实替代的旧记忆 ID；必须来自搜索结果"},
             },
-            "required": ["title", "content", "kind"],
+            "required": ["title", "content", "kind", "importance"],
         },
     },
     "memory_update": {
@@ -2029,16 +2109,21 @@ async def invoke_builtin_tool(name: str, arguments: dict[str, Any]) -> dict[str,
                 )
                 return {"memories": [{
                     "memory_id": item["id"], "title": item["title"], "content": item["content"],
-                    "kind": item["kind"], "reason": item["reason"],
+                    "kind": item["kind"], "importance": item["importance"], "reason": item["reason"],
                 } for item in recalled]}
             else:
                 rows = connection.execute("SELECT * FROM memories WHERE persona_key=? AND memory_status IN ('active','candidate') AND deleted_at IS NULL ORDER BY starred DESC,updated_at DESC LIMIT 20", (persona_key,)).fetchall()
-        return {"memories": [{"memory_id": row["id"], "title": row["title"], "content": row["content"], "kind": row["kind"], "updated_at": row["updated_at"]} for row in rows]}
+        return {"memories": [{"memory_id": row["id"], "title": row["title"], "content": row["content"], "kind": row["kind"], "importance": row["importance"], "updated_at": row["updated_at"]} for row in rows]}
     if name == "memory_create":
         kind = str(arguments.get("kind") or "").strip()
         allowed_kinds = {"fact", "preference", "relationship", "promise", "event", "emotion", "summary", "diary", "other"}
         if kind not in allowed_kinds:
             raise ValueError("新增记忆必须由 AI 选择有效 kind 分类")
+        if "importance" not in arguments:
+            raise ValueError("新增记忆必须由 AI 判断 importance；1 最重要，依次向下")
+        importance = float(arguments["importance"])
+        if not math.isfinite(importance) or not .1 <= importance <= 1:
+            raise ValueError("importance 必须在 0.1 到 1.0 之间；低于 0.1 的内容不应写入长期记忆")
         source_message_id = str(arguments.get("source_message_id") or arguments.get("_source_message_id") or "").strip() or None
         source_conversation_id = str(arguments.get("_conversation_id") or "").strip() or None
         if source_message_id:
@@ -2054,7 +2139,7 @@ async def invoke_builtin_tool(name: str, arguments: dict[str, Any]) -> dict[str,
             source_conversation_id=source_conversation_id,
             source_message_id=source_message_id,
             persona_key=str(arguments.get("_persona_key") or "__unassigned__"),
-            importance=float(arguments.get("importance", .5)), confidence=float(arguments.get("confidence", 1)),
+            importance=round(importance, 1), confidence=float(arguments.get("confidence", 1)),
             source_type=str(arguments.get("source_type") or "explicit"), valid_from=arguments.get("valid_from"), valid_until=arguments.get("valid_until"), supersedes_memory_id=arguments.get("supersedes_memory_id"),
         )
         saved = create_memory(body)
@@ -3407,7 +3492,7 @@ def load_chat_context(connection: sqlite3.Connection, body: ChatIn, cutoff: str 
 1. 触发：用户明确说“记住/以后别忘/改一下记忆”，或内容会长期影响称呼、偏好、关系、承诺与未来协作时，先调用 atherloom_memory_search。普通寒暄、临时任务、敏感猜测和一次性信息不要写入。
 2. 搜索后决策：搜到同一事项，纠正、补充、状态变化或重新分类一律调用 atherloom_memory_update；只有确认没有同一事项才调用 atherloom_memory_create。不要口头声称“记住了”却不调用工具，也不要重复新增。
 3. 分类：fact=稳定事实；preference=偏好习惯；relationship=人物关系；promise=承诺约定；event=具体经历；emotion=持续感受；summary=阶段总结；diary=日记正文；other=确实无法归类。kind 不可省略。
-4. 可信与来源：用户明确原话用 source_type=explicit、confidence 接近 1；你的推断用 inferred 且 confidence<0.7，使其进入“待确认”，不得把推断伪装成事实。importance 表示未来影响与长期保留价值，不是语气强烈程度。
+4. 可信、来源与重要度：用户明确原话用 source_type=explicit、confidence 接近 1；你的推断用 inferred 且 confidence<0.7，使其进入“待确认”，不得把推断伪装成事实。新增时 importance 必须由你判断：1.0=身份、安全、核心关系或不可忘的重要承诺；0.8-0.9=长期偏好、边界与重要关系事实；0.6-0.7=未来经常有用的个人事实；0.3-0.5=一般经历与阶段信息；0.1-0.2=低价值但可能复用的细节；0=不应写入。不要把所有记忆都设成 1；重要度表示未来影响，不是语气强烈程度。
 5. 时间与变化：临时事实填写 valid_from/valid_until。全新的替代事实可在 create 中填写搜索得到的 supersedes_memory_id；普通补充直接 update。工具结果成功后再自然告诉用户已新增、已更新或已进入待确认。
 记忆会随时间衰减，真实召回会加固，也会沿关联记忆扩散；不得删除、隐藏或绕过用户的候选确认。"""
     tool_names = [name for name, enabled in persona_config["tools"].items() if enabled]
@@ -3861,7 +3946,7 @@ def retrieve_memories(
         score += min(.5, math.log1p((usage_rows.get(row["id"])["recall_count"] if usage_rows.get(row["id"]) else 0)) * .08)
         score *= .35 + effective_strength * .65
         score *= .55 + float(row["confidence"] or 0) * .45
-        score += float(row["importance"] or .5) * .12
+        score *= .72 + float(row["importance"] or 0) * .56
         ranked.append({"score": score, "lexical_score": lexical_score, "semantic_score": semantic_score, "row": row, "terms": set(terms), "matched": matched})
     ranked.sort(key=lambda item: item["score"], reverse=True)
     ranked_ids = {item["row"]["id"] for item in ranked}
@@ -3919,7 +4004,7 @@ def retrieve_memories(
         connection.commit()
     return [{
         "id": item["row"]["id"], "title": item["row"]["title"], "kind": item["row"]["kind"],
-        "content": item["row"]["content"], "score": round(item["score"], 4),
+        "content": item["row"]["content"], "importance": item["row"]["importance"], "score": round(item["score"], 4),
         "reason": "联想唤起" if item.get("associated") else ("类型与主题匹配" if item["row"]["kind"] in type_hints else "主题相关"),
         "strength": round(memory_effective_strength(item["row"]), 4), "confidence": item["row"]["confidence"],
     } for item in selected]
