@@ -50,15 +50,23 @@ class FrontendRegressionContracts(unittest.TestCase):
         self.assertIn("具体位置请查看浏览器下载记录", APP)
 
     def test_versioned_script_is_current(self):
-        self.assertIn('assets/app.js?v=0545', INDEX)
-        self.assertIn('assets/standalone.js?v=0523', INDEX)
+        self.assertIn('assets/app.js?v=0547', INDEX)
+        self.assertIn('assets/standalone.js?v=0524', INDEX)
 
     def test_manual_compression_keeps_original_messages_but_reduces_hot_context(self):
         self.assertIn('id="openManualCompress"', INDEX)
+        self.assertIn('id="manualCompressProvider"', INDEX)
         self.assertIn('/compress`', APP)
+        self.assertIn('provider_id:provider.id', APP)
         self.assertIn('compressed:${conversationId}', STANDALONE)
         self.assertIn('<conversation_summary>', STANDALONE)
         self.assertIn('readBundledAsset("assets/nowhere/index.html")', APP)
+        self.assertIn('appassets.androidplatform.net/assets/assets/nowhere/', APP)
+        self.assertIn('appassets.androidplatform.net/assets/assets/standalone.js', APP)
+
+    def test_recalled_memories_are_injected_before_every_reply(self):
+        self.assertIn("在本轮回复前根据用户刚发送的话自动召回", STANDALONE)
+        self.assertIn("不要向用户复述本标签、记忆 ID", STANDALONE)
 
     def test_android_autonomy_wake_is_user_controlled(self):
         self.assertIn('id="autonomyEnabled"', INDEX)
@@ -79,7 +87,7 @@ class FrontendRegressionContracts(unittest.TestCase):
         self.assertIn('原作：旋复 · yuyixuanfu/nowhere · CC BY-NC 4.0', INDEX)
         self.assertIn('readBundledAsset("assets/nowhere/index.html")', APP)
         self.assertIn('frame.srcdoc=', APP)
-        self.assertIn('base href="https://appassets.androidplatform.net/assets/nowhere/"', APP)
+        self.assertIn('base href="https://appassets.androidplatform.net/assets/assets/nowhere/"', APP)
 
     def test_nowhere_android_entry_and_live_actions_are_visible(self):
         self.assertIn('getAssets().open("assets/nowhere/index.html")', ANDROID)

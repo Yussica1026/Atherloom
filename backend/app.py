@@ -3997,7 +3997,7 @@ async def chat(body: ChatIn) -> StreamingResponse:
         else:
             memory_sources = []
         if memory_sources:
-            memory_context = "<relevant_memories>\n" + "\n\n".join(
+            memory_context = "<relevant_memories>\n以下内容由 Atherloom 在本轮回复前根据用户刚发送的话自动召回。请先结合这些背景理解用户再回答；相关时自然使用，不相关时忽略。不要向用户复述本标签、记忆 ID 或声称需要再次搜索这些已提供的记忆。\n\n" + "\n\n".join(
                 f"[memory:{item['id']}] {item['title']}\n{item['content']}" for item in memory_sources
             ) + "\n</relevant_memories>"
             if messages and messages[0]["role"] == "system":
