@@ -1312,7 +1312,8 @@ class LocalClientTests(unittest.TestCase):
             _,_,messages=app_module.load_chat_context(connection,body)
         policy=messages[0]["content"]
         self.assertIn("双重白名单",policy)
-        self.assertIn("固定五分钟",policy)
+        self.assertIn("最多四位 AI",policy)
+        self.assertIn("总时长不得超过二十分钟",policy)
         self.assertIn("不得透露用户",policy)
 
 
