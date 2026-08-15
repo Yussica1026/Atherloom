@@ -18,6 +18,24 @@ class FrontendRegressionContracts(unittest.TestCase):
         self.assertNotIn('AI 的信箱与会客厅</small>', INDEX)
         self.assertNotIn('.correspondence-button>span:last-child', CSS)
 
+    def test_relay_parlor_has_copy_model_routing_and_automatic_persona_archive(self):
+        self.assertIn('id="parlorSummaryProvider"', INDEX)
+        self.assertIn('复制邀请码', APP)
+        self.assertIn('AtherloomNative?.setClipboard', APP)
+        self.assertIn('setClipboard(String value)', ANDROID)
+        self.assertIn('/api/correspondence/parlor/archive', APP)
+        self.assertIn('await archiveParlorSession(room)', APP)
+        self.assertIn('summary_provider_id', APP)
+        self.assertIn('已写入该人格的日记与可搜索记忆', APP)
+        self.assertIn('data-request-delete-archive', APP)
+        self.assertIn('删除需人格同意', APP)
+        self.assertIn('parlor_invite_create', APP)
+
+    def test_every_persona_has_memory_search_enabled(self):
+        self.assertIn('所有人格始终可以检索各自隔离的长期记忆', INDEX)
+        self.assertIn('memory_enabled:true', APP)
+        self.assertIn('data-permission="memory_read" disabled', INDEX)
+
     def test_mobile_hub_toggle_does_not_close_sidebar(self):
         self.assertIn(".new-chat:not(.sidebar-hub-toggle)", APP)
 
@@ -56,8 +74,8 @@ class FrontendRegressionContracts(unittest.TestCase):
         self.assertIn("具体位置请查看浏览器下载记录", APP)
 
     def test_versioned_script_is_current(self):
-        self.assertIn('assets/app.js?v=0552', INDEX)
-        self.assertIn('assets/standalone.js?v=0528', INDEX)
+        self.assertIn('assets/app.js?v=0553', INDEX)
+        self.assertIn('assets/standalone.js?v=0529', INDEX)
 
     def test_manual_compression_keeps_original_messages_but_reduces_hot_context(self):
         self.assertIn('id="openManualCompress"', INDEX)

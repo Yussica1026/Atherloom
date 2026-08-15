@@ -5,6 +5,7 @@ import android.app.Activity;
 import android.content.Intent;
 import android.content.Context;
 import android.content.ContentValues;
+import android.content.ClipData;
 import android.content.ClipboardManager;
 import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
@@ -205,6 +206,13 @@ public class MainActivity extends Activity {
             if (clipboard == null || !clipboard.hasPrimaryClip() || clipboard.getPrimaryClip() == null || clipboard.getPrimaryClip().getItemCount() == 0) return "";
             CharSequence value = clipboard.getPrimaryClip().getItemAt(0).coerceToText(context);
             return value == null ? "" : value.toString();
+        }
+
+        @JavascriptInterface public boolean setClipboard(String value) {
+            ClipboardManager clipboard = (ClipboardManager) context.getSystemService(Context.CLIPBOARD_SERVICE);
+            if (clipboard == null) return false;
+            clipboard.setPrimaryClip(ClipData.newPlainText("Atherloom 邀请码", value == null ? "" : value));
+            return true;
         }
 
         @JavascriptInterface public String readBundledAsset(String path) {
