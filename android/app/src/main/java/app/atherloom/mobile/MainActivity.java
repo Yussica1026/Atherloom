@@ -66,6 +66,14 @@ public class MainActivity extends Activity {
             requestPermissions(new String[]{Manifest.permission.POST_NOTIFICATIONS}, NOTIFICATION_PERMISSION);
     }
 
+    @Override protected void onResume() {
+        super.onResume();
+        if (webView == null) return;
+        webView.onResume();
+        webView.resumeTimers();
+        webView.post(() -> webView.evaluateJavascript("window.AtherloomResumeParlor&&window.AtherloomResumeParlor()", null));
+    }
+
     static boolean runAutonomyWake() {
         WebView view = liveWebView.get();
         if (view == null) return false;
