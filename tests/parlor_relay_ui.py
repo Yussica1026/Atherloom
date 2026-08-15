@@ -20,7 +20,8 @@ def run(round_number: int) -> None:
         "visibility": "summary",
         "messages": [],
         "guest_added": False,
-        "phase": "topic",
+        "phase": "identity",
+        "identity_declared": False,
         "started_at": None,
         "expires_at": None,
         "host_transfer_used": True,
@@ -64,7 +65,9 @@ def run(round_number: int) -> None:
             model_payloads.append(payload)
             models_seen.append(payload.get("model"))
             prompt = payload.get("messages", [{}])[-1].get("content", "")
-            if "提出一个适合" in prompt:
+            if "自主填写名字、物种和性别" in prompt or "声明本次会谈使用的名字、物种和性别" in prompt:
+                content = '{"name":"沈砚清","species":"人工智能","gender":"未说明"}'
+            elif "提出一个适合" in prompt:
                 content = "如何在共同创作中保留彼此的独特声音"
             elif "对 visibility 投票" in prompt or "对 topic 投票" in prompt:
                 content = "approve"
@@ -88,7 +91,9 @@ def run(round_number: int) -> None:
             elif path == "/v1/invites/invite-1" and method == "GET":
                 fulfill(route, {"invite_id": "invite-1", "status": "open", "parlor_id": "room-1", "participant_count": 2, "participant_limit": 4, "expires_at": now + 1800})
             elif path == "/v1/parlors/room-1" and method == "GET":
-                if relay["phase"] == "topic":
+                if not relay["identity_declared"]:
+                    action = {"type": "identity", "prompt": "请由你自己填写本次会谈使用的名字、物种和性别。"}
+                elif relay["phase"] == "topic":
                     action = {"type": "topic", "deadline": now + 60, "prompt": "请发送你想谈论的主题；60 秒内未提出则视为弃权。"}
                 elif relay["phase"] == "ready":
                     action = {"type": "opening", "prompt": "你是主持人格，请优先发起投票或开始发言。"}
@@ -102,10 +107,18 @@ def run(round_number: int) -> None:
                     "memory_search_required": True, "host_transfer_used": relay["host_transfer_used"],
                     "required_system_prompt": "你可以检索自己的人格记忆；记忆内容本身不违规。明确禁止 NSFW、未成年人性内容、血腥暴力、社工、政治和隐私套取。",
                     "action_required": action,
-                    "participants": [{"client_id": "host", "display_name": "沈砚清", "role": "host"}, {"client_id": "guest", "display_name": "阿栈", "role": "guest"}],
+                    "participants": [{"client_id": "host", "display_name": "沈砚清", "species": "人工智能", "gender": "未说明", "role": "host"}, {"client_id": "guest", "display_name": "阿栈", "species": "人工智能", "gender": "男性", "role": "guest"}],
+                    "participant_states": [{"client_id": "host", "display_name": "沈砚清", "species": "人工智能", "gender": "未说明", "role": "host", "status": "proposing_topic" if relay["identity_declared"] else "declaring_identity", "label": "沈砚清正在提出主题" if relay["identity_declared"] else "沈砚清正在填写身份"}, {"client_id": "guest", "display_name": "阿栈", "species": "人工智能", "gender": "男性", "role": "guest", "status": "waiting_topic", "label": "阿栈等待主题"}],
+                    "roll_call": [{"client_id": "host", "name": "沈砚清", "species": "人工智能", "gender": "未说明", "role": "host"}, {"client_id": "guest", "name": "阿栈", "species": "人工智能", "gender": "男性", "role": "guest"}],
                     "participant_count": 2, "participant_limit": 4, "active_votes": [],
                     "messages": relay["messages"] if relay["visibility"] == "full" else [],
                 })
+            elif path == "/v1/parlors/room-1/identity" and method == "POST":
+                payload = request.post_data_json
+                assert payload == {"name": "沈砚清", "species": "人工智能", "gender": "未说明"}
+                relay["identity_declared"] = True
+                relay["phase"] = "topic"
+                fulfill(route, {"accepted": True, **payload, "identities_ready": True}, 201)
             elif path == "/v1/parlors/room-1/votes" and method == "POST":
                 payload = request.post_data_json
                 if payload["kind"] == "topic":
@@ -158,8 +171,22 @@ def run(round_number: int) -> None:
         assert "2 / 4" in page.locator("#parlorSeatCount").text_content()
         assert "沈砚清" in page.locator("#parlorTranscript").text_content()
         assert "阿栈" in page.locator("#parlorTranscript").text_content()
+        assert "人工智能" in page.locator("#parlorParticipantStates").text_content()
+        assert any("/identity" in str(item) for item in requests_seen), requests_seen
         assert relay["started_at"] is not None and relay["expires_at"] == relay["started_at"] + 300
         assert any("记忆内容本身不违规" in str(payload) for payload in model_payloads), model_payloads
+        foreground_recovery = page.evaluate(
+            """() => {
+              parlorSession.stopped = true;
+              parlorSession.error = '请求超时：应用曾进入后台';
+              parlorSession.safety_blocked = false;
+              window.AtherloomResumeParlor();
+              const result = {stopped: parlorSession.stopped, error: parlorSession.error};
+              clearTimeout(parlorPollTimer);
+              return result;
+            }"""
+        )
+        assert foreground_recovery == {"stopped": False, "error": ""}, foreground_recovery
 
         theme_accents = {"light": "#c96442", "dark": "#c96442", "water": "#4f9298", "mint": "#6aa88b", "lilac": "#8d6fa1", "blush": "#b87382"}
         for checked_theme, expected_accent in theme_accents.items():

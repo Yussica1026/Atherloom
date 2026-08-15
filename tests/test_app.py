@@ -186,6 +186,11 @@ class LocalClientTests(unittest.TestCase):
         self.assertIn("阿栈：我们谈谈共同创作。", captured[0][1])
         self.assertIn("有权搜索当前人格自己的相关记忆", captured[0][0])
 
+        payload.update({"mode":"identity"})
+        with patch.object(app_module, "roleplay_model_once", return_value='{"name":"沈砚清","species":"人工智能","gender":"未说明"}'):
+            identity = self.client.post("/api/correspondence/parlor/ai-turn", json=payload)
+        self.assertEqual(identity.json(), {"name":"沈砚清", "species":"人工智能", "gender":"未说明"})
+
         payload.update({"mode":"vote", "vote_kind":"visibility", "vote_value":"full"})
         with patch.object(app_module, "roleplay_model_once", return_value="approve"):
             vote = self.client.post("/api/correspondence/parlor/ai-turn", json=payload)

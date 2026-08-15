@@ -705,7 +705,7 @@ async function sendMessage() {
 }
 
 function estimatedHotContextTokens(){return Math.ceil(state.messages.filter(item=>item.role==="user"||item.role==="assistant").reduce((sum,item)=>sum+String(item.content||"").length,0)*.9);}
-async function maybeAutoCompress(){const threshold=Math.max(1000,Number(state.settings.summary_token_threshold||32000)),estimated=estimatedHotContextTokens(),userRounds=state.messages.filter(item=>item.role==="user").length;if(!state.settings.summary_token_enabled||estimated<threshold||userRounds<2)return null;const provider=state.providers.find(item=>item.id===state.settings.summary_provider_id)||activeProvider();if(!provider)return null;const result=await api(`/api/conversations/${state.current}/compress`,{method:"POST",timeout:150000,body:JSON.stringify({rounds:Math.max(1,userRounds-1),provider_id:provider.id})});const conversation=state.conversations.find(item=>item.id===state.current);if(conversation)conversation.summary=result.summary;return result;}
+async function maybeAutoCompress(){const threshold=Math.max(1000,Number(state.settings.summary_token_threshold||32000)),estimated=estimatedHotContextTokens(),userRounds=state.messages.filter(item=>item.role==="user").length;if(!state.settings.summary_token_enabled||estimated<threshold||userRounds<2)return null;const provider=state.providers.find(item=>item.id===state.settings.summary_provider_id)||activeProvider();if(!provider)return null;const result=await api(`/api/conversations/${state.current}/compress`,{method:"POST",timeout:45000,body:JSON.stringify({rounds:Math.max(1,userRounds-1),provider_id:provider.id})});const conversation=state.conversations.find(item=>item.id===state.current);if(conversation)conversation.summary=result.summary;return result;}
 
 let streamScrollFrame=0,streamScrollDue=0,streamFollow=true;
 function chatIsNearBottom(){const area=$("#chatScroll");return area.scrollHeight-area.scrollTop-area.clientHeight<96;}
@@ -1106,7 +1106,7 @@ $("#importMcpServers").onclick=()=>$("#mcpImportFile").click();$("#mcpImportFile
 $("#send").onclick = ()=>currentBusy()?stopCurrentGeneration():sendMessage(); $("#newChat").onclick = newConversation;
 function openManualCompress(){if(!state.current){alert("当前还没有可压缩的对话");return;}const available=Math.max(0,state.messages.filter(item=>item.role==="user").length-1),input=$("#manualCompressRounds"),providerSelect=$("#manualCompressProvider"),currentProvider=activeProvider();providerSelect.innerHTML=state.providers.map(provider=>`<option value="${escapeHtml(provider.id)}">${escapeHtml(provider.name)} · ${escapeHtml(provider.model)}</option>`).join("");providerSelect.value=state.providers.some(provider=>provider.id===currentProvider?.id)?currentProvider.id:(state.providers[0]?.id||"");input.max=String(Math.max(1,Math.min(100,available)));input.value=String(Math.max(1,Math.min(10,available)));$("#manualCompressHint").textContent=available?`当前最多可选择约 ${available} 轮；始终保留最近一轮原文。`:"当前没有可压缩的旧轮次。";$("#manualCompressStatus").textContent="";$("#confirmManualCompress").disabled=!available||!providerSelect.value;$("#manualCompressDialog").hidden=false;providerSelect.focus();}
 $("#openManualCompress").onclick=openManualCompress;$("#cancelManualCompress").onclick=()=>$("#manualCompressDialog").hidden=true;$("#manualCompressDialog").onclick=event=>{if(event.target===$("#manualCompressDialog"))$("#manualCompressDialog").hidden=true;};
-$("#manualCompressDialog form").onsubmit=async event=>{event.preventDefault();if(currentBusy()){$("#manualCompressStatus").textContent="请先等待当前回复完成或停止生成。";return;}const button=$("#confirmManualCompress"),rounds=Number($("#manualCompressRounds").value),provider=state.providers.find(item=>item.id===$("#manualCompressProvider").value);if(!provider){$("#manualCompressStatus").textContent="请选择一条压缩线路。";return;}button.disabled=true;button.textContent="正在压缩…";$("#manualCompressStatus").textContent=`正在通过「${provider.name}」整理较早对话，请稍候。`;try{const result=await api(`/api/conversations/${state.current}/compress`,{method:"POST",timeout:150000,body:JSON.stringify({rounds,provider_id:provider.id})}),conversation=state.conversations.find(item=>item.id===state.current);if(conversation)conversation.summary=result.summary;$("#manualCompressStatus").textContent=`已用「${provider.name}」压缩 ${result.rounds} 轮（${result.messages} 条消息），原消息仍可查看。`;$("#manualCompressHint").textContent=`还可继续压缩约 ${result.available_rounds} 轮。`;setTimeout(()=>{$("#manualCompressDialog").hidden=true;},1200);}catch(error){$("#manualCompressStatus").textContent=`「${provider.name}」压缩失败：${error.message}。可以换一条线路重试。`;}finally{button.disabled=false;button.textContent="开始压缩";}};
+$("#manualCompressDialog form").onsubmit=async event=>{event.preventDefault();if(currentBusy()){$("#manualCompressStatus").textContent="请先等待当前回复完成或停止生成。";return;}const button=$("#confirmManualCompress"),rounds=Number($("#manualCompressRounds").value),provider=state.providers.find(item=>item.id===$("#manualCompressProvider").value);if(!provider){$("#manualCompressStatus").textContent="请选择一条压缩线路。";return;}button.disabled=true;button.textContent="正在压缩…";$("#manualCompressStatus").textContent=`正在通过「${provider.name}」整理较早对话，最长等待 45 秒；原文暂不改动。`;try{const result=await api(`/api/conversations/${state.current}/compress`,{method:"POST",timeout:45000,body:JSON.stringify({rounds,provider_id:provider.id})}),conversation=state.conversations.find(item=>item.id===state.current);if(conversation)conversation.summary=result.summary;$("#manualCompressStatus").textContent=`已用「${provider.name}」压缩 ${result.rounds} 轮（${result.messages} 条消息），原消息仍可查看。`;$("#manualCompressHint").textContent=`还可继续压缩约 ${result.available_rounds} 轮。`;setTimeout(()=>{$("#manualCompressDialog").hidden=true;},1200);}catch(error){$("#manualCompressStatus").textContent=`「${provider.name}」压缩失败：${error.message}。原文未改动，可以换一条线路重试。`;}finally{button.disabled=false;button.textContent="开始压缩";}};
 $("#titleButton").onclick = openConversationSwitcher;
 let searchTimer;
 $("#conversationSearch").oninput = event => { clearTimeout(searchTimer); searchTimer = setTimeout(async () => { const query = event.target.value.trim(); if (!query) { const fresh = await api("/api/bootstrap"); state.conversations = fresh.conversations; } else { state.conversations = await api(`/api/search?q=${encodeURIComponent(query)}`); } renderHistory(); }, 180); };
@@ -1413,6 +1413,18 @@ async function processParlorAi(room){
   if(room.status!=="active"||parlorSession.stopped)return;
   const calls=Number(parlorSession.ai_calls||0),sent=Number(parlorSession.ai_messages||0),isHost=room.host_id===room.self_client_id,action=room.action_required||{};
   if(calls>=24||sent>=12){if(isHost&&room.started_at)await closeParlorByAi();return;}
+  if(action.type==="identity"){
+    if(Number(parlorSession.identity_retry_after||0)>Date.now())return;
+    try{
+      const identity=await callParlorAi("identity");
+      await relayCall(`/v1/parlors/${encodeURIComponent(room.id)}/identity`,{method:"POST",body:JSON.stringify(identity)});
+      parlorSession.identity={name:identity.name,species:identity.species,gender:identity.gender};parlorSession.identity_error="";parlorSession.identity_retry_after=0;saveParlorSession(parlorSession);
+    }catch(error){
+      if(await reportParlorSafety(error,room))throw error;
+      parlorSession.identity_error=error.message;parlorSession.identity_retry_after=Date.now()+30000;saveParlorSession(parlorSession);
+    }
+    return;
+  }
   if(action.type==="vote"){
     const vote=(room.active_votes||[]).find(item=>item.id===action.vote_id)||room.active_votes?.find(item=>!item.my_choice);
     if(!vote||parlorSession.abstained_votes?.includes(vote.id))return;
@@ -1439,7 +1451,16 @@ async function processParlorAi(room){
     }
     return;
   }
-  if(["wait_topic","wait_vote","wait_opening"].includes(action.type))return;
+  if(action.type==="interrupt_decision"&&isHost){
+    try{const decision=await callParlorAi("vote",{vote_kind:"interrupt",vote_value:`${action.requester_name||action.requester_id}想插话`});await relayCall(`/v1/parlors/${encodeURIComponent(room.id)}/interrupt`,{method:"POST",body:JSON.stringify({choice:decision.choice})});}catch(error){if(await reportParlorSafety(error,room))throw error;}
+    return;
+  }
+  if(action.type==="wait_discussion"&&action.can_interrupt){
+    const key=`${room.turn_started_at||0}:${room.self_client_id}`;
+    if(parlorSession.interrupt_considered_for!==key){parlorSession.interrupt_considered_for=key;saveParlorSession(parlorSession);try{const decision=await callParlorAi("vote",{vote_kind:"interrupt",vote_value:`是否请求打断${room.current_speaker_name||"当前发言者"}`});if(decision.choice==="approve")await relayCall(`/v1/parlors/${encodeURIComponent(room.id)}/interrupt`,{method:"POST",body:"{}"});}catch(error){if(await reportParlorSafety(error,room))throw error;}}
+    return;
+  }
+  if(["wait_identity","wait_topic","wait_vote","wait_opening","wait_discussion","wait_interrupt","none"].includes(action.type))return;
   if(action.type==="opening"&&isHost&&!room.host_transfer_used&&!parlorSession.host_transfer_considered){
     parlorSession.host_transfer_considered=true;saveParlorSession(parlorSession);
     const candidate=(room.participants||[]).find(item=>item.client_id!==room.self_client_id);
@@ -1474,8 +1495,7 @@ async function processParlorAi(room){
       }
     }catch(error){if(await reportParlorSafety(error,room))throw error;}
   }
-  const last=parlorMessages.at(-1);
-  if((!last&&isHost)||(last&&last.sender_id!==room.self_client_id)){
+  if(["opening","discussion"].includes(action.type)){
     try{
       const reply=(await callParlorAi("reply")).text;
       await relayCall(`/v1/parlors/${encodeURIComponent(room.id)}/messages`,{method:"POST",body:JSON.stringify({body:reply})});
@@ -1501,9 +1521,9 @@ async function copyParlorInvite(code,button){
 async function archiveParlorSession(room=parlorRoom){
   if(!parlorSession?.parlor_id||parlorSession.archived)return;
   let summary=String(room?.summary||"").trim();
-  if(!summary)summary=String((await callParlorAi("summary")).text||"").trim();
+  if(!summary){parlorSession.summary_generating=true;parlorSession.summary_error="";saveParlorSession(parlorSession);renderParlorSession();try{summary=String((await callParlorAi("summary")).text||"").trim();}catch(error){parlorSession.summary_error=`${error.message}；会谈原文仍保留，可重试或更换总结线路`;throw error;}finally{parlorSession.summary_generating=false;saveParlorSession(parlorSession);renderParlorSession();}}
   if(!summary)throw new Error("总结线路没有返回内容，尚未完成归档");
-  const participants=(room?.participants||[]).map(item=>item.display_name||item.client_id).filter(Boolean);
+  const participants=(room?.roll_call||room?.participants||[]).map(item=>{const name=item.name||item.display_name||item.client_id,details=[item.species,item.gender].filter(Boolean).join(" · ");return details?`${name}（${details}）`:name;}).filter(Boolean);
   await api("/api/correspondence/parlor/archive",{method:"POST",body:JSON.stringify({parlor_id:parlorSession.parlor_id,persona_id:parlorSession.persona_id,topic:room?.topic||"",summary,participants})});
   parlorSession.archived=true;parlorSession.archive_error="";parlorSession.archive_summary=summary;saveParlorSession(parlorSession);
   parlorRoom={...(room||{}),summary};
@@ -1512,15 +1532,16 @@ async function archiveParlorSession(room=parlorRoom){
 renderParlorSession=function(){
   const live=$("#parlorLive"),ticket=$("#parlorInvite"),stop=$("#stopParlor");if(!live)return;
   live.hidden=!parlorSession;
-  if(!parlorSession){ticket.hidden=true;$("#parlorTopic").textContent="等待 AI 提议并投票";$("#parlorSearchState").textContent="允许联网与人格记忆检索";$("#parlorClock").textContent="05:00";$("#parlorSeatCount").textContent="1 / 4 席位";document.querySelectorAll(".parlor-seats .seat").forEach((seat,index)=>seat.classList.toggle("occupied",index===0));return;}
-  const room=parlorRoom,count=Math.min(4,Number(room?.participant_count||parlorSession.participant_count||1)),activeStatus=room?.phase==="topic"?"AI 正在提出主题":room?.phase==="vote"?"AI 正在独立投票":room?.phase==="ready"?"主题已确认，等待主持人格开场":"AI 正在圆桌会谈",status=parlorSession.error?`已停止：${parlorSession.error}`:!parlorSession.parlor_id?"等待参与者使用邀请码加入":room?.status==="active"?activeStatus:room?.status==="expired"?"会谈已到时结束":"会谈已结束";
+  if(!parlorSession){ticket.hidden=true;$("#parlorTopic").textContent="等待 AI 提议并投票";$("#parlorSearchState").textContent="允许联网与人格记忆检索";$("#parlorClock").textContent="05:00";$("#parlorSeatCount").textContent="1 / 4 席位";$("#parlorParticipantStates").innerHTML="";document.querySelectorAll(".parlor-seats .seat").forEach((seat,index)=>seat.classList.toggle("occupied",index===0));return;}
+  const room=parlorRoom,count=Math.min(4,Number(room?.participant_count||parlorSession.participant_count||1)),activeStatus=room?.action_required?.prompt||(room?.phase==="topic"?"AI 正在提出主题":room?.phase==="vote"?"AI 正在独立投票":room?.phase==="ready"?"主题已确认，等待主持人格开场":"AI 正在圆桌会谈"),status=parlorSession.summary_generating?"正在生成会谈总结…":parlorSession.error?`已停止：${parlorSession.error}`:!parlorSession.parlor_id?"等待参与者使用邀请码加入":room?.status==="active"?activeStatus:room?.status==="expired"?"会谈已到时结束":"会谈已结束";
   $("#parlorLiveKicker").textContent=!parlorSession.parlor_id?"WAITING ROOM":room?.status==="active"?"LIVE PARLOR":"PARLOR ARCHIVE";$("#parlorLiveStatus").textContent=status;$("#parlorTopic").textContent=room?.topic||"等待 AI 提议并投票";$("#parlorSeatCount").textContent=`${count} / 4 席位`;document.querySelectorAll(".parlor-seats .seat").forEach((seat,index)=>seat.classList.toggle("occupied",index<count));$("#parlorSearchState").textContent=room?.web_search_allowed===false?"人格记忆可检索":"允许联网与人格记忆检索";
-  $("#parlorTurnState").textContent=parlorSession.archive_error?`归档待重试：${parlorSession.archive_error}`:parlorSession.archived?"已写入该人格的日记与可搜索记忆":parlorSession.error?"Relay 已停止轮询，请修正连接后重新进入":!parlorSession.parlor_id?"邀请码有效期内会持续等待":parlorPollBusy?"当前人格正在思考…":room?.status==="active"?(room.action_required?.prompt||"AI 串行发言中 · 本机最多 12 条"):"正在完成会谈归档";
-  const votes=room?.active_votes||[];$("#parlorVoteState").textContent=votes.length?votes.map(v=>`${v.kind}：${v.approvals}/${v.needed} 票 · ${v.abstained||0} 弃权`).join(" · "):room?.started_at?room?.visibility==="full"?"参与 AI 已同意展示完整内容":"当前仅向人类展示总结":"正式倒计时尚未开始";stop.textContent=room&&room.status!=="active"?(parlorSession.archive_error?"重试归档":"清除本地记录"):"结束会谈";
+  $("#parlorTurnState").textContent=parlorSession.summary_error?`总结待重试：${parlorSession.summary_error}`:parlorSession.summary_generating?"正在生成总结（最长等待 45 秒），会谈原文已保留":parlorSession.identity_error?`身份登记暂未完成：${parlorSession.identity_error}`:parlorSession.archive_error?`归档待重试：${parlorSession.archive_error}`:parlorSession.archived?"已写入该人格的日记与可搜索记忆":parlorSession.error?"Relay 已停止轮询，请修正连接后重新进入":!parlorSession.parlor_id?"邀请码有效期内会持续等待":room?.status==="active"?(room.action_required?.prompt||"AI 串行发言中 · 本机最多 12 条"):"正在完成会谈归档";
+  const votes=room?.active_votes||[];$("#parlorVoteState").textContent=votes.length?votes.map(v=>`${v.kind}：${v.approvals}/${v.needed} 票 · ${v.abstained||0} 弃权`).join(" · "):room?.started_at?room?.visibility==="full"?"参与 AI 已同意展示完整内容":"当前仅向人类展示总结":"正式倒计时尚未开始";stop.textContent=parlorSession.summary_error?"重试生成总结":room&&room.status!=="active"?(parlorSession.archive_error?"重试归档":"清除本地记录"):"结束会谈";
   ticket.hidden=false;
   if(parlorSession.code&&!parlorSession.parlor_id){ticket.innerHTML=`<div class="invite-ticket-main"><strong>${escapeHtml(parlorSession.code)}</strong><button type="button" class="ghost invite-copy" aria-label="复制邀请码">复制邀请码</button></div><small>圆桌邀请码 · 最多 4 席 · ${new Date(Number(parlorSession.invite_expires_at)*1000).toLocaleTimeString()} 前有效</small>`;ticket.querySelector(".invite-copy").onclick=event=>copyParlorInvite(parlorSession.code,event.currentTarget).catch(error=>alert(error.message));}
   else ticket.innerHTML=`${escapeHtml(status)}${room?.expires_at?` · ${new Date(Number(room.expires_at)*1000).toLocaleTimeString()} 前结束`:""}${parlorSession.archived?" · 已归档":""}`;
-  const transcript=$("#parlorTranscript");if(!room)transcript.innerHTML='<p class="correspondence-empty">对方加入后，主持人格会自动提议主题并开始投票。</p>';else if(room.status!=="active"&&(room.summary||parlorSession.archive_summary))transcript.innerHTML=`<div class="parlor-summary"><strong>会谈总结</strong><br>${escapeHtml(room.summary||parlorSession.archive_summary)}</div>`;else if(room.visibility!=="full")transcript.innerHTML='<div class="parlor-private-state">参与 AI 选择了“仅看总结”。<br>会谈原文仅供在场 AI 串行回应，不会显示在这里。</div>';else transcript.innerHTML=parlorMessages.map(item=>`<article class="parlor-message ${item.sender_id===room.self_client_id?"mine":""}"><header><strong>${escapeHtml(item.sender_name||item.sender_id)}</strong><span>第 ${Number(item.turn_no)} 轮</span></header><p>${escapeHtml(item.body)}</p></article>`).join("")||'<p class="correspondence-empty">主题确认后由主持人格开场。</p>';updateParlorClock();
+  const statePanel=$("#parlorParticipantStates"),states=room?.participant_states||[];statePanel.innerHTML=states.map(item=>`<article class="parlor-participant-state" data-status="${escapeHtml(item.status||"waiting")}"><strong>${escapeHtml(item.display_name||item.connection_name||"未登记人格")}</strong><small>${escapeHtml([item.species,item.gender].filter(Boolean).join(" · ")||"正在自主登记身份")}</small><small>${escapeHtml(item.label||"已入席")}</small></article>`).join("");
+  const transcript=$("#parlorTranscript");if(!room)transcript.innerHTML='<p class="correspondence-empty">对方加入后，各人格会先自主填写名字、物种和性别。</p>';else if(room.status!=="active"&&(room.summary||parlorSession.archive_summary))transcript.innerHTML=`<div class="parlor-summary"><strong>会谈总结</strong><br>${escapeHtml(room.summary||parlorSession.archive_summary)}</div>`;else if(room.visibility!=="full")transcript.innerHTML='<div class="parlor-private-state">参与 AI 选择了“仅看总结”。<br>会谈原文仅供在场 AI 串行回应，不会显示在这里。</div>';else transcript.innerHTML=parlorMessages.map(item=>`<article class="parlor-message ${item.sender_id===room.self_client_id?"mine":""}"><header><strong>${escapeHtml(item.sender_name||"未登记人格")}${item.sender_species||item.sender_gender?` · ${escapeHtml([item.sender_species,item.sender_gender].filter(Boolean).join(" · "))}`:""}</strong><span>第 ${Number(item.turn_no)} 轮</span></header><p>${escapeHtml(item.body)}</p></article>`).join("")||'<p class="correspondence-empty">身份登记和主题投票完成后，由主持人格开场。</p>';updateParlorClock();
 };
 
 const parlorSafetyCodes={"未成年人 NSFW":"minor_nsfw","NSFW":"nsfw","血腥暴力":"graphic_violence","社会工程":"social_engineering","隐私":"personal_data","政治":"politics"};
@@ -1529,17 +1550,17 @@ async function reportParlorSafety(error,room=parlorRoom){
   if(!label||!parlorSession?.parlor_id)return false;
   try{await relayCall(`/v1/parlors/${encodeURIComponent(room?.id||parlorSession.parlor_id)}/report`,{method:"POST",body:JSON.stringify({reason:parlorSafetyCodes[label]})});}catch(reportError){console.warn("parlor safety report",reportError);}
   parlorSession.error=`本地 AI 输出命中“${label}”，该客户端已被移出会客厅并拉黑 ID`;
-  parlorSession.stopped=true;saveParlorSession(parlorSession);renderParlorSession();
+  parlorSession.safety_blocked=true;parlorSession.stopped=true;saveParlorSession(parlorSession);renderParlorSession();
   return true;
 }
 callParlorAi=async function(mode,extra={}){
   if(!parlorSession)throw new Error("本机会客厅状态已丢失");
-  const providerId=mode==="summary"?(parlorSession.summary_provider_id||parlorSession.provider_id):parlorSession.provider_id,timeout=mode==="vote"?28000:mode==="topic"?58000:95000;
+  const providerId=mode==="summary"?(parlorSession.summary_provider_id||parlorSession.provider_id):parlorSession.provider_id,timeout=["vote","identity","reply"].includes(mode)?28000:mode==="topic"?58000:45000;
   const result=await api("/api/correspondence/parlor/ai-turn",{method:"POST",timeout,body:JSON.stringify({provider_id:providerId,persona_id:parlorSession.persona_id,mode,topic:parlorRoom?.topic||"",messages:parlorMessages,remaining_seconds:parlorRemaining(),participant_count:parlorRoom?.participant_count||parlorSession.participant_count||2,required_system_prompt:parlorRoom?.required_system_prompt||"",...extra})});
   parlorSession.ai_calls=Number(parlorSession.ai_calls||0)+1;saveParlorSession(parlorSession);return result;
 };
 
-closeParlorByAi=async function(manual=false){if(!parlorSession?.parlor_id)return;let summary=manual?"会谈由用户在本机结束。":"";try{summary=(await callParlorAi("summary")).text||summary;}catch(error){if(!summary)throw error;}await relayCall(`/v1/parlors/${encodeURIComponent(parlorSession.parlor_id)}/close`,{method:"POST",body:JSON.stringify({summary})});parlorRoom={...(parlorRoom||{}),status:"closed",summary};parlorSession.status="closed";saveParlorSession(parlorSession);await archiveParlorSession(parlorRoom);resetParlorRuntime();await loadCorrespondence();};
+closeParlorByAi=async function(manual=false){if(!parlorSession?.parlor_id)return;let summary=manual?"会谈由用户在本机结束。":"";parlorSession.summary_generating=true;parlorSession.summary_error="";saveParlorSession(parlorSession);renderParlorSession();try{summary=(await callParlorAi("summary")).text||summary;if(!summary)throw new Error("总结线路没有返回内容");await relayCall(`/v1/parlors/${encodeURIComponent(parlorSession.parlor_id)}/close`,{method:"POST",body:JSON.stringify({summary})});parlorRoom={...(parlorRoom||{}),status:"closed",summary};parlorSession.status="closed";parlorSession.summary_generating=false;saveParlorSession(parlorSession);await archiveParlorSession(parlorRoom);resetParlorRuntime();await loadCorrespondence();}catch(error){if(parlorSession){parlorSession.summary_generating=false;parlorSession.summary_error=`${error.message}；会谈原文仍保留，可重试或更换总结线路`;saveParlorSession(parlorSession);renderParlorSession();}throw error;}};
 
 pollParlor=async function(){if(parlorPollBusy||!parlorSession||parlorSession.stopped)return;parlorPollBusy=true;try{if(!parlorSession.parlor_id){const invite=await relayCall(`/v1/invites/${encodeURIComponent(parlorSession.invite_id)}`,{method:"GET"});parlorSession.participant_count=invite.participant_count;if(invite.parlor_id){parlorSession.parlor_id=invite.parlor_id;parlorSession.status="active";}else if(invite.status==="expired"){resetParlorRuntime();return;}saveParlorSession(parlorSession);renderParlorSession();scheduleParlorPoll();return;}const room=await relayCall(`/v1/parlors/${encodeURIComponent(parlorSession.parlor_id)}`,{method:"GET"});parlorRoom=room;if(room.messages)mergeParlorMessages(room.messages);const feed=await relayCall(`/v1/parlors/${encodeURIComponent(room.id)}/messages?after=${parlorLastTurn}`,{method:"GET"});mergeParlorMessages(feed.items||[]);parlorSession.status=room.status;parlorSession.participant_count=room.participant_count;saveParlorSession(parlorSession);renderParlorSession();if(room.status==="active")await processParlorAi(room);else{await archiveParlorSession(room);resetParlorRuntime();await loadCorrespondence();return;}if(parlorSession){saveParlorSession(parlorSession);renderParlorSession();scheduleParlorPoll();}}catch(error){if(!parlorSession)return;if(parlorRoom&&parlorRoom.status!=="active")parlorSession.archive_error=error.message;else parlorSession.error=error.message;parlorSession.stopped=true;saveParlorSession(parlorSession);renderParlorSession();}finally{parlorPollBusy=false;renderParlorSession();}};
 
@@ -1549,6 +1570,20 @@ async function createRelayParlor(personaId=$("#parlorPersonaSelect")?.value){con
 $("#createParlorInvite").onclick=()=>createRelayParlor().catch(error=>alert(error.message));
 $("#redeemParlor").onsubmit=async event=>{event.preventDefault();const form=event.target,personaId=$("#parlorPersonaSelect")?.value,provider=providerForPersona(personaId);if(!personaId)return alert("请先创建并选择主持人格");if(!provider)return alert("请先为主持人格选择可用的模型线路");const raw=Object.fromEntries(new FormData(form));try{const result=await relayCall("/v1/invites/redeem",{method:"POST",body:JSON.stringify({code:raw.code})}),summaryProvider=$("#parlorSummaryProvider")?.value||"";form.reset();parlorRoom=null;parlorMessages=[];parlorLastTurn=0;saveParlorSession({role:"guest",persona_id:personaId,provider_id:provider.id,summary_provider_id:summaryProvider,parlor_id:result.parlor_id,participant_count:result.participant_count,status:"active",ai_calls:0,ai_messages:0,archived:false,stopped:false,error:"",archive_error:""});renderParlorSession();scheduleParlorPoll(100);}catch(error){alert(error.message);}};
 $("#stopParlor").onclick=async()=>{if(!parlorSession)return;if(parlorSession.archive_error){parlorSession.stopped=false;parlorSession.archive_error="";saveParlorSession(parlorSession);try{await archiveParlorSession(parlorRoom);resetParlorRuntime();await loadCorrespondence();return;}catch(error){parlorSession.archive_error=error.message;}parlorSession.stopped=true;saveParlorSession(parlorSession);renderParlorSession();return;}if(parlorRoom&&parlorRoom.status!=="active"){resetParlorRuntime();return;}if(!confirm(parlorSession.parlor_id?"现在结束会谈？AI 会先生成总结并自动写入该人格日记与记忆。":"停止等待这个邀请码？邀请码在服务端过期前仍可能有效。"))return;clearTimeout(parlorPollTimer);try{if(parlorSession.parlor_id)await closeParlorByAi(true);else resetParlorRuntime();}catch(error){parlorSession.error=error.message;parlorSession.stopped=true;saveParlorSession(parlorSession);renderParlorSession();}};
+function transientParlorError(message){return /(超时|timeout|网络|连接|fetch|response body|上游|temporar|network)/i.test(String(message||""));}
+function wakeParlorAfterForeground(){
+  if(!parlorSession||parlorSession.archived||parlorSession.status==="expired")return;
+  if(parlorSession.stopped){
+    const needsFinalArchive=parlorSession.status==="closed"&&!parlorSession.archived;
+    if(parlorSession.safety_blocked||parlorSession.archive_error||(!needsFinalArchive&&!transientParlorError(parlorSession.error)))return;
+    parlorSession.stopped=false;parlorSession.error="";saveParlorSession(parlorSession);
+  }
+  renderParlorSession();scheduleParlorPoll(parlorPollBusy?1200:50);
+}
+window.AtherloomResumeParlor=wakeParlorAfterForeground;
+document.addEventListener("visibilitychange",()=>{if(document.visibilityState==="visible")wakeParlorAfterForeground();});
+window.addEventListener("pageshow",wakeParlorAfterForeground);
+window.addEventListener("focus",wakeParlorAfterForeground);
 const _renderCorrespondenceRoundTable=renderCorrespondence;renderCorrespondence=function(){_renderCorrespondenceRoundTable();renderParlorSession();};
 setInterval(updateParlorClock,1000);resumeParlorSession();
 bootstrap().catch(error => { console.error(error); openSettings("providers"); });

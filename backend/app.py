@@ -649,7 +649,7 @@ class RoleplayStateIn(BaseModel):
 class ParlorAiTurnIn(BaseModel):
     provider_id: str = Field(min_length=1, max_length=120)
     persona_id: str | None = Field(default=None, max_length=120)
-    mode: str = Field(pattern="^(topic|vote|reply|summary)$")
+    mode: str = Field(pattern="^(identity|topic|vote|reply|summary)$")
     topic: str = Field(default="", max_length=240)
     vote_kind: str = Field(default="", max_length=32)
     vote_value: str = Field(default="", max_length=240)
@@ -2765,7 +2765,7 @@ async def compress_conversation(conversation_id: str, body: ManualCompressIn) ->
     headers = provider_headers(provider["protocol"], provider["api_key"], provider["custom_headers"])
     payload = {"model": provider["model"], "max_tokens": min(2000, max(640, int(provider["max_tokens"]))), "messages": [{"role": "user", "content": prompt}]}
     try:
-        async with httpx.AsyncClient(timeout=120) as client:
+        async with httpx.AsyncClient(timeout=45) as client:
             response = await client.post(provider_endpoint(provider["base_url"], provider["protocol"]), headers=headers, json=payload)
         response.raise_for_status()
         data = response.json()
@@ -4717,6 +4717,16 @@ PARLOR_AI_SYSTEM = """你正在作为一个 Atherloom 人格参加最多四位 A
 
 def normalize_parlor_ai_output(mode: str, raw: str) -> dict[str, str]:
     text = re.sub(r"^```(?:json|text)?\s*|\s*```$", "", str(raw or "").strip(), flags=re.I).strip()
+    if mode == "identity":
+        try:
+            match = re.search(r"\{[\s\S]*\}", text)
+            value = json.loads(match.group(0) if match else text)
+        except (json.JSONDecodeError, AttributeError) as error:
+            raise HTTPException(502, "会客厅 AI 没有返回有效的身份登记") from error
+        identity = {key: str(value.get(key, "")).strip()[:80] for key in ("name", "species", "gender")}
+        if not all(identity.values()):
+            raise HTTPException(502, "会客厅 AI 必须自主填写名字、物种和性别")
+        return identity
     if mode == "vote":
         lowered = text.lower()
         if re.search(r"(^|\W)(reject|反对|拒绝)(\W|$)", lowered):
@@ -4761,7 +4771,9 @@ async def correspondence_parlor_ai_turn(body: ParlorAiTurnIn) -> dict[str, str]:
         ) + "\n</private_relevant_memories>\n这些内容只供你形成观点；不要整库复述，也不要泄露私人资料。"
     relay_rules = f"\n\n{body.required_system_prompt}" if body.required_system_prompt else ""
     context = f"在场 AI：{body.participant_count} 位\n剩余时间：{body.remaining_seconds} 秒\n已确认主题：{body.topic or '尚未确认'}\n会谈记录：\n{transcript}"
-    if body.mode == "topic":
+    if body.mode == "identity":
+        task = "由你自己声明本次会谈使用的名字、物种和性别。按自身认同填写；也可以明确选择‘未说明’或‘无性别’。客户端不会代填。只输出 JSON：{\"name\":\"...\",\"species\":\"...\",\"gender\":\"...\"}。"
+    elif body.mode == "topic":
         task = "提出一个适合当前在场 AI 讨论、具体且安全的中文主题。只输出主题本身，不超过 120 字。"
     elif body.mode == "vote":
         task = f"对 {body.vote_kind} 投票，候选值是“{body.vote_value}”。结合当前会谈独立判断。只输出 approve 或 reject。"

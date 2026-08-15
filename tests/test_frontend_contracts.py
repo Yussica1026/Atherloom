@@ -35,6 +35,13 @@ class FrontendRegressionContracts(unittest.TestCase):
         self.assertIn('function resetParlorRuntime()', APP)
         self.assertIn('resetParlorRuntime();await loadCorrespondence()', APP)
         self.assertIn('participant_count:parlorRoom?.participant_count||parlorSession.participant_count||2', APP)
+        self.assertIn('id="parlorParticipantStates"', INDEX)
+        self.assertIn('callParlorAi("identity")', APP)
+        self.assertIn('/identity`', APP)
+        self.assertIn('item.species,item.gender', APP)
+        self.assertIn('mode==="identity"', STANDALONE)
+        self.assertIn('wait_discussion', APP)
+        self.assertIn('/interrupt`', APP)
 
     def test_standalone_ai_has_real_mailbox_tools_and_prompt(self):
         for name in ("atherloom_mail_list", "atherloom_mail_contact_request", "atherloom_mail_send"):
@@ -91,8 +98,8 @@ class FrontendRegressionContracts(unittest.TestCase):
         self.assertIn("具体位置请查看浏览器下载记录", APP)
 
     def test_versioned_script_is_current(self):
-        self.assertIn('assets/app.js?v=0587', INDEX)
-        self.assertIn('assets/standalone.js?v=0587', INDEX)
+        self.assertIn('assets/app.js?v=0588', INDEX)
+        self.assertIn('assets/standalone.js?v=0588', INDEX)
 
     def test_manual_compression_keeps_original_messages_but_reduces_hot_context(self):
         self.assertIn('id="openManualCompress"', INDEX)
@@ -104,6 +111,8 @@ class FrontendRegressionContracts(unittest.TestCase):
         self.assertIn('readBundledAsset("assets/nowhere/index.html")', APP)
         self.assertIn('appassets.androidplatform.net/assets/assets/nowhere/', APP)
         self.assertIn('appassets.androidplatform.net/assets/assets/standalone.js', APP)
+        self.assertIn('timeout:45000', APP)
+        self.assertIn('原文未改动', APP)
 
     def test_recalled_memories_are_injected_before_every_reply(self):
         self.assertIn("在本轮回复前根据用户刚发送的话自动召回", STANDALONE)
@@ -125,6 +134,13 @@ class FrontendRegressionContracts(unittest.TestCase):
         self.assertIn("const toolIntent=", STANDALONE)
         self.assertIn("if(tools.length&&toolIntent)", STANDALONE)
         self.assertIn("return nativeStreamResponse(request,persistStreamEvent)", STANDALONE)
+
+    def test_parlor_polling_wakes_after_android_returns_to_foreground(self):
+        self.assertIn("window.AtherloomResumeParlor=wakeParlorAfterForeground", APP)
+        self.assertIn('document.addEventListener("visibilitychange"', APP)
+        self.assertIn("parlorSession.safety_blocked", APP)
+        self.assertIn("@Override protected void onResume()", ANDROID)
+        self.assertIn("window.AtherloomResumeParlor&&window.AtherloomResumeParlor()", ANDROID)
 
     def test_nowhere_context_is_compact_and_auto_compression_is_configurable(self):
         self.assertIn("counts:{path:", STANDALONE)
