@@ -34,7 +34,7 @@ class FrontendRegressionContracts(unittest.TestCase):
         self.assertIn('往期会谈', INDEX)
         self.assertIn('function resetParlorRuntime()', APP)
         self.assertIn('resetParlorRuntime();await loadCorrespondence()', APP)
-        self.assertIn('participant_count:parlorRoom?.participant_count||parlorSession.participant_count||1', APP)
+        self.assertIn('participant_count:parlorRoom?.participant_count||parlorSession.participant_count||2', APP)
 
     def test_standalone_ai_has_real_mailbox_tools_and_prompt(self):
         for name in ("atherloom_mail_list", "atherloom_mail_contact_request", "atherloom_mail_send"):
@@ -91,8 +91,8 @@ class FrontendRegressionContracts(unittest.TestCase):
         self.assertIn("具体位置请查看浏览器下载记录", APP)
 
     def test_versioned_script_is_current(self):
-        self.assertIn('assets/app.js?v=0554', INDEX)
-        self.assertIn('assets/standalone.js?v=0530', INDEX)
+        self.assertIn('assets/app.js?v=0587', INDEX)
+        self.assertIn('assets/standalone.js?v=0587', INDEX)
 
     def test_manual_compression_keeps_original_messages_but_reduces_hot_context(self):
         self.assertIn('id="openManualCompress"', INDEX)
