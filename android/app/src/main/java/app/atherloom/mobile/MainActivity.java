@@ -405,11 +405,17 @@ public class MainActivity extends Activity {
                 if (status >= 400) throw new Exception("HTTP " + status + " · " + response.substring(0, Math.min(300, response.length())));
                 JSONObject data = new JSONObject(response); String content; JSONArray toolCalls=new JSONArray(); Object rawAssistant;
                 if (protocol.equals("anthropic")) { StringBuilder text = new StringBuilder(); JSONArray blocks=data.optJSONArray("content"); rawAssistant=blocks==null?new JSONArray():blocks;if(blocks!=null)for(int i=0;i<blocks.length();i++){JSONObject block=blocks.getJSONObject(i);if("text".equals(block.optString("type")))text.append(block.optString("text"));if("tool_use".equals(block.optString("type")))toolCalls.put(new JSONObject().put("id",block.optString("id")).put("name",block.optString("name")).put("arguments",block.optJSONObject("input")==null?new JSONObject():block.optJSONObject("input")));} content=text.toString(); }
-                else {JSONObject message=data.getJSONArray("choices").getJSONObject(0).getJSONObject("message");rawAssistant=message;content=nullableString(message, "content");JSONArray calls=message.optJSONArray("tool_calls");if(calls!=null)for(int i=0;i<calls.length();i++){JSONObject call=calls.getJSONObject(i),function=call.optJSONObject("function");if(function!=null)toolCalls.put(new JSONObject().put("id",call.optString("id")).put("name",function.optString("name")).put("arguments",new JSONObject(function.optString("arguments","{}"))));}}
+                else {JSONObject message=data.getJSONArray("choices").getJSONObject(0).getJSONObject("message");rawAssistant=message;content=textValue(message.opt("content"));JSONArray calls=message.optJSONArray("tool_calls");if(calls!=null)for(int i=0;i<calls.length();i++){JSONObject call=calls.getJSONObject(i),function=call.optJSONObject("function");if(function!=null)toolCalls.put(new JSONObject().put("id",call.optString("id")).put("name",function.optString("name")).put("arguments",new JSONObject(function.optString("arguments","{}"))));}}
                 if(toolCalls.length()==0)toolCalls=parseDsmlToolCalls(content);
                 JSONObject responseMessage = protocol.equals("anthropic") ? null : data.getJSONArray("choices").getJSONObject(0).getJSONObject("message");
-                String reasoning = protocol.equals("anthropic") ? "" : nullableString(responseMessage, "reasoning_content"); if (reasoning.isEmpty()) reasoning=nullableString(responseMessage, "reasoning");
-                return new JSONObject().put("ok", true).put("content", content).put("reasoning", reasoning).put("model", provider.optString("model")).put("tool_calls",toolCalls).put("raw_assistant",rawAssistant).put("usage",data.optJSONObject("usage")).toString();
+                String reasoning = protocol.equals("anthropic") ? "" : textValue(responseMessage.opt("reasoning_content")); if (reasoning.isEmpty()&&!protocol.equals("anthropic")) reasoning=textValue(responseMessage.opt("reasoning"));
+                String contentSource="content";
+                if(content.trim().isEmpty()&&!protocol.equals("anthropic")){content=textValue(responseMessage.opt("text"));contentSource="message.text";}
+                if(content.trim().isEmpty()&&!protocol.equals("anthropic")){content=textValue(responseMessage.opt("output_text"));contentSource="message.output_text";}
+                if(content.trim().isEmpty()&&!protocol.equals("anthropic")){content=textValue(data.opt("output_text"));contentSource="output_text";}
+                if(content.trim().isEmpty()&&!protocol.equals("anthropic")){content=textValue(data.getJSONArray("choices").getJSONObject(0).opt("text"));contentSource="choice.text";}
+                if(content.trim().isEmpty()&&!reasoning.trim().isEmpty()&&toolCalls.length()==0){content=reasoning.trim();contentSource="reasoning_fallback";}
+                return new JSONObject().put("ok", true).put("content", content).put("content_source",contentSource).put("reasoning", reasoning).put("model", provider.optString("model")).put("tool_calls",toolCalls).put("raw_assistant",rawAssistant).put("usage",data.optJSONObject("usage")).toString();
             } catch (Exception error) { return failure(error); } finally { if (connection != null) connection.disconnect(); }
         }
 
@@ -478,6 +484,22 @@ public class MainActivity extends Activity {
 
         private static String nullableString(JSONObject object, String key) {
             return object == null || !object.has(key) || object.isNull(key) ? "" : object.optString(key, "");
+        }
+
+        private static String textValue(Object value) {
+            if (value == null || value == JSONObject.NULL) return "";
+            if (value instanceof String) return ((String)value).trim();
+            if (value instanceof JSONArray) {
+                StringBuilder text = new StringBuilder(); JSONArray items = (JSONArray)value;
+                for (int i=0;i<items.length();i++) { String part=textValue(items.opt(i)); if(!part.isEmpty()){if(text.length()>0)text.append('\n');text.append(part);} }
+                return text.toString().trim();
+            }
+            if (value instanceof JSONObject) {
+                JSONObject item=(JSONObject)value;
+                for(String key:new String[]{"text","output_text","content","value"}){String part=textValue(item.opt(key));if(!part.isEmpty())return part;}
+                return "";
+            }
+            return String.valueOf(value).trim();
         }
 
         private static JSONArray parseDsmlToolCalls(String content) throws Exception {

@@ -36,12 +36,22 @@ class FrontendRegressionContracts(unittest.TestCase):
         self.assertIn('resetParlorRuntime();await loadCorrespondence()', APP)
         self.assertIn('participant_count:parlorRoom?.participant_count||parlorSession.participant_count||2', APP)
         self.assertIn('id="parlorParticipantStates"', INDEX)
+        self.assertIn('id="parlorElapsed"', INDEX)
+        self.assertIn('id="parlorPrepExcluded"', INDEX)
+        self.assertIn('parlor-time-track', CSS)
+        self.assertIn('/runtime`', APP)
+        self.assertIn('本地模型错误不会再冒充成 Relay 故障', APP)
         self.assertIn('callParlorAi("identity")', APP)
         self.assertIn('/identity`', APP)
         self.assertIn('item.species,item.gender', APP)
         self.assertIn('mode==="identity"', STANDALONE)
         self.assertIn('wait_discussion', APP)
         self.assertIn('/interrupt`', APP)
+        self.assertIn('parlor-archive-toggle', APP)
+        self.assertIn('aria-expanded="false"', APP)
+        self.assertIn('parlor-archive-excerpt', CSS)
+        self.assertIn('content_source', STANDALONE)
+        self.assertIn('reasoning_fallback', ANDROID)
 
     def test_standalone_ai_has_real_mailbox_tools_and_prompt(self):
         for name in ("atherloom_mail_list", "atherloom_mail_contact_request", "atherloom_mail_send"):
@@ -98,8 +108,18 @@ class FrontendRegressionContracts(unittest.TestCase):
         self.assertIn("具体位置请查看浏览器下载记录", APP)
 
     def test_versioned_script_is_current(self):
-        self.assertIn('assets/app.js?v=0588', INDEX)
-        self.assertIn('assets/standalone.js?v=0588', INDEX)
+        self.assertIn('assets/app.js?v=0591', INDEX)
+        self.assertIn('assets/standalone.js?v=0591', INDEX)
+
+    def test_structured_questions_have_android_touch_fallback_and_feedback(self):
+        self.assertIn('function chooseQuestionOption(button)', APP)
+        self.assertIn('function bindQuestionOption(button)', APP)
+        self.assertIn('addEventListener("touchend"', APP)
+        self.assertIn('Math.hypot(point.clientX-touch.x,point.clientY-touch.y)>12', APP)
+        self.assertIn('已填入回复，点右侧发送', APP)
+        self.assertIn('aria-pressed="false"', APP)
+        self.assertIn('touch-action:manipulation', CSS)
+        self.assertIn('min-height:44px', CSS)
 
     def test_manual_compression_keeps_original_messages_but_reduces_hot_context(self):
         self.assertIn('id="openManualCompress"', INDEX)

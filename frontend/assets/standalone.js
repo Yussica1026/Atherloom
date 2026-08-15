@@ -65,6 +65,7 @@
     if(parts.length){ assistant.reasoning=[assistant.reasoning,...parts].filter(Boolean).join("\n\n"); assistant.content=source.replace(/<think>[\s\S]*?<\/think>/gi,"").replace(/<analysis>[\s\S]*?<\/analysis>/gi,"").trim(); }
     return assistant;
   };
+  const responseText=value=>{if(value==null)return "";if(typeof value==="string")return value.trim();if(Array.isArray(value))return value.map(responseText).filter(Boolean).join("\n").trim();if(typeof value==="object")for(const key of ["text","output_text","content","value"]){const text=responseText(value[key]);if(text)return text;}return "";};
   const webModels = async provider => {
     const base=provider.base_url.replace(/\/+$/,""),anthropic=provider.protocol==="anthropic",endpoint=`${base}/models`;
     const headers={...(JSON.parse(provider.custom_headers||"{}"))};if(anthropic){headers["x-api-key"]=provider.api_key||"";headers["anthropic-version"]="2023-06-01";}else headers.Authorization=`Bearer ${provider.api_key||""}`;
@@ -94,10 +95,12 @@
     if(request.tools?.length)payload.tools=anthropic?request.tools.map(tool=>({name:tool.name,description:tool.description,input_schema:tool.input_schema})):request.tools.map(tool=>({type:"function",function:{name:tool.name,description:tool.description,parameters:tool.input_schema}}));
     const response=await originalFetch(endpoint,{method:"POST",headers,body:JSON.stringify(payload)});
     const data=await response.json().catch(()=>({}));if(!response.ok)throw new Error(`HTTP ${response.status} · ${data.error?.message||data.message||"网关请求失败"}`);
-    const rawAssistant=anthropic?(data.content||[]):data.choices?.[0]?.message||{},content=anthropic?rawAssistant.filter(block=>block.type==="text").map(block=>block.text).join(""):rawAssistant.content;
+    const rawAssistant=anthropic?(data.content||[]):data.choices?.[0]?.message||{};let content=anthropic?rawAssistant.filter(block=>block.type==="text").map(block=>block.text).join(""):responseText(rawAssistant.content),contentSource="content";
     const reasoning=anthropic?rawAssistant.filter(block=>block.type==="thinking").map(block=>block.thinking||"").join(""):(rawAssistant.reasoning_content||rawAssistant.reasoning||"");
+    if(!content&&!anthropic){content=responseText(rawAssistant.text);contentSource="message.text";}if(!content&&!anthropic){content=responseText(rawAssistant.output_text);contentSource="message.output_text";}if(!content&&!anthropic){content=responseText(data.output_text);contentSource="output_text";}if(!content&&!anthropic){content=responseText(data.choices?.[0]?.text);contentSource="choice.text";}
     const toolCalls=anthropic?rawAssistant.filter(block=>block.type==="tool_use").map(block=>({id:block.id,name:block.name,arguments:block.input||{}})):(rawAssistant.tool_calls||[]).map(call=>({id:call.id,name:call.function?.name,arguments:JSON.parse(call.function?.arguments||"{}")}));
-    return {ok:true,content:content||"",reasoning,model:provider.model,tool_calls:toolCalls,raw_assistant:rawAssistant,usage:normalizeUsage(data.usage)};
+    if(!content&&reasoning&&!toolCalls.length){content=String(reasoning).trim();contentSource="reasoning_fallback";}
+    return {ok:true,content:content||"",content_source:contentSource,reasoning,model:provider.model,tool_calls:toolCalls,raw_assistant:rawAssistant,usage:normalizeUsage(data.usage)};
   };
   const webStreamResponse = (request, provider, transform) => {
     const encoder=new TextEncoder();

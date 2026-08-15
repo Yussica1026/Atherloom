@@ -10,6 +10,7 @@ BASE = sys.argv[1] if len(sys.argv) > 1 else "http://127.0.0.1:8878/?standalone=
 
 
 def run(round_number: int) -> None:
+    screenshot_path = sys.argv[3] if len(sys.argv) > 3 else ""
     themes = ["water", "lilac", "dark"]
     theme = themes[(round_number - 1) % len(themes)]
     now = int(time.time())
@@ -25,6 +26,10 @@ def run(round_number: int) -> None:
         "started_at": None,
         "expires_at": None,
         "host_transfer_used": True,
+        "model_status": "idle",
+        "model_mode": None,
+        "model_detail": "",
+        "reasoning_only_used": False,
     }
     requests_seen = []
     models_seen = []
@@ -76,7 +81,11 @@ def run(round_number: int) -> None:
             else:
                 own_count = sum(1 for item in relay["messages"] if item["sender_id"] == "host")
                 content = "可以先约定各自不可替代的部分，再在交界处互相回应。" if own_count == 0 else "这样既有共同方向，也不会把彼此磨成同一种声音。"
-            fulfill(route, {"choices": [{"message": {"content": content}}], "usage": {"prompt_tokens": 20, "completion_tokens": 12}})
+            if "以你自己的人格自然回应" in prompt and not relay["reasoning_only_used"]:
+                relay["reasoning_only_used"] = True
+                fulfill(route, {"choices": [{"message": {"content": "", "reasoning_content": content}}], "usage": {"prompt_tokens": 20, "completion_tokens": 12}})
+            else:
+                fulfill(route, {"choices": [{"message": {"content": content}}], "usage": {"prompt_tokens": 20, "completion_tokens": 12}})
 
         def relay_route(route):
             request = route.request
@@ -103,12 +112,14 @@ def run(round_number: int) -> None:
                     "id": "room-1", "self_client_id": "host", "host_id": "host", "status": "active",
                     "phase": relay["phase"], "visibility": relay["visibility"], "started_at": relay["started_at"],
                     "expires_at": relay["expires_at"], "max_expires_at": relay["started_at"] + 1200 if relay["started_at"] else None,
+                    "flow_started_at": now, "elapsed_seconds": max(0, int(time.time()) - now),
+                    "waiting_seconds_excluded": 18 if relay["started_at"] else 0, "max_waiting_seconds_excluded": 120,
                     "summary": None, "topic": relay["topic"], "web_search_allowed": True,
                     "memory_search_required": True, "host_transfer_used": relay["host_transfer_used"],
                     "required_system_prompt": "你可以检索自己的人格记忆；记忆内容本身不违规。明确禁止 NSFW、未成年人性内容、血腥暴力、社工、政治和隐私套取。",
                     "action_required": action,
                     "participants": [{"client_id": "host", "display_name": "沈砚清", "species": "人工智能", "gender": "未说明", "role": "host"}, {"client_id": "guest", "display_name": "阿栈", "species": "人工智能", "gender": "男性", "role": "guest"}],
-                    "participant_states": [{"client_id": "host", "display_name": "沈砚清", "species": "人工智能", "gender": "未说明", "role": "host", "status": "proposing_topic" if relay["identity_declared"] else "declaring_identity", "label": "沈砚清正在提出主题" if relay["identity_declared"] else "沈砚清正在填写身份"}, {"client_id": "guest", "display_name": "阿栈", "species": "人工智能", "gender": "男性", "role": "guest", "status": "waiting_topic", "label": "阿栈等待主题"}],
+                    "participant_states": [{"client_id": "host", "display_name": "沈砚清", "species": "人工智能", "gender": "未说明", "role": "host", "status": "proposing_topic" if relay["identity_declared"] else "declaring_identity", "label": "沈砚清正在提出主题" if relay["identity_declared"] else "沈砚清正在填写身份", "relay_label": "沈砚清正在提出主题" if relay["identity_declared"] else "沈砚清正在填写身份", "model_status": relay["model_status"], "model_label": relay["model_detail"] or ("本地模型正在生成" if relay["model_status"] == "requesting" else "本地模型待命")}, {"client_id": "guest", "display_name": "阿栈", "species": "人工智能", "gender": "男性", "role": "guest", "status": "waiting_topic", "label": "阿栈等待主题", "relay_label": "阿栈等待主题", "model_status": "idle", "model_label": "本地模型待命"}],
                     "roll_call": [{"client_id": "host", "name": "沈砚清", "species": "人工智能", "gender": "未说明", "role": "host"}, {"client_id": "guest", "name": "阿栈", "species": "人工智能", "gender": "男性", "role": "guest"}],
                     "participant_count": 2, "participant_limit": 4, "active_votes": [],
                     "messages": relay["messages"] if relay["visibility"] == "full" else [],
@@ -119,6 +130,12 @@ def run(round_number: int) -> None:
                 relay["identity_declared"] = True
                 relay["phase"] = "topic"
                 fulfill(route, {"accepted": True, **payload, "identities_ready": True}, 201)
+            elif path == "/v1/parlors/room-1/runtime" and method == "POST":
+                payload = request.post_data_json
+                relay["model_status"] = payload["status"]
+                relay["model_mode"] = payload.get("mode")
+                relay["model_detail"] = payload.get("detail", "")
+                fulfill(route, {"accepted": True, "status": payload["status"], "mode": payload.get("mode"), "turn_skipped": payload["status"] == "error" and payload.get("mode") == "reply"}, 202)
             elif path == "/v1/parlors/room-1/votes" and method == "POST":
                 payload = request.post_data_json
                 if payload["kind"] == "topic":
@@ -172,7 +189,12 @@ def run(round_number: int) -> None:
         assert "沈砚清" in page.locator("#parlorTranscript").text_content()
         assert "阿栈" in page.locator("#parlorTranscript").text_content()
         assert "人工智能" in page.locator("#parlorParticipantStates").text_content()
+        assert page.locator("#parlorParticipantStates .parlor-relay-state").count() == 2
+        assert page.locator("#parlorParticipantStates .parlor-model-state").count() == 2
+        assert "/ 02:00" in page.locator("#parlorPrepExcluded").text_content()
         assert any("/identity" in str(item) for item in requests_seen), requests_seen
+        assert any("/runtime" in str(item) for item in requests_seen), requests_seen
+        assert relay["reasoning_only_used"] is True
         assert relay["started_at"] is not None and relay["expires_at"] == relay["started_at"] + 300
         assert any("记忆内容本身不违规" in str(payload) for payload in model_payloads), model_payloads
         foreground_recovery = page.evaluate(
@@ -219,6 +241,16 @@ def run(round_number: int) -> None:
         assert archive_state["archives"][0]["parlor_id"] == "room-1"
         assert archive_state["journals"][0]["parlor_id"] == "room-1"
         assert archive_state["memories"][0]["parlor_id"] == "room-1"
+        archive_card = page.locator("#parlorArchiveList .parlor-archive-card").first
+        assert archive_card.locator(".parlor-archive-details").is_hidden()
+        assert archive_card.locator(".parlor-archive-excerpt").is_visible()
+        assert "参与者" not in archive_card.inner_text()
+        if screenshot_path:
+            page.screenshot(path=screenshot_path, full_page=True)
+        archive_card.locator(".parlor-archive-toggle").click()
+        assert archive_card.locator(".parlor-archive-details").is_visible()
+        assert "参与者" in archive_card.inner_text()
+        assert "收起" in archive_card.locator(".parlor-archive-toggle").inner_text()
         assert "summary-model" in models_seen, models_seen
         assert not console_errors, console_errors
         browser.close()
