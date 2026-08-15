@@ -212,18 +212,27 @@ class LocalClientTests(unittest.TestCase):
         self.assertEqual(created.status_code, 200)
         archive = created.json()
         self.assertTrue(archive["archived"])
+        self.assertTrue(archive["keywords"])
         duplicate = self.client.post("/api/correspondence/parlor/archive", json=payload).json()
         self.assertTrue(duplicate["duplicate"])
+        self.assertEqual(duplicate["keywords"], archive["keywords"])
 
         journals = self.client.get(f"/api/journals/{persona['id']}").json()["entries"]
         self.assertEqual(journals[0]["parlor_id"], "relay-room-1")
         memories = self.client.get(f"/api/memories?persona_key={persona['id']}").json()
         self.assertEqual(len(memories), 1)
         self.assertEqual(memories[0]["kind"], "summary")
+        self.assertIn("关键词：", memories[0]["content"])
+        listed = self.client.get(f"/api/correspondence/parlor/archives/{persona['id']}").json()["items"]
+        self.assertEqual(listed[0]["keywords"], archive["keywords"])
         searched = asyncio.run(app_module.invoke_builtin_tool("parlor_archive_search", {
             "_persona_key": persona["id"], "query": "身份连续性",
         }))
         self.assertEqual(searched["archives"][0]["parlor_id"], "relay-room-1")
+        keyword_searched = asyncio.run(app_module.invoke_builtin_tool("parlor_archive_search", {
+            "_persona_key": persona["id"], "query": archive["keywords"][0],
+        }))
+        self.assertEqual(keyword_searched["archives"][0]["keywords"], archive["keywords"])
         other = asyncio.run(app_module.invoke_builtin_tool("parlor_archive_search", {
             "_persona_key": "another-persona", "query": "身份连续性",
         }))

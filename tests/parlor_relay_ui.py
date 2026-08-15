@@ -30,6 +30,7 @@ def run(round_number: int) -> None:
         "model_mode": None,
         "model_detail": "",
         "reasoning_only_used": False,
+        "recovery_enabled": False,
     }
     requests_seen = []
     models_seen = []
@@ -99,6 +100,9 @@ def run(round_number: int) -> None:
                 fulfill(route, {"invite_id": "invite-1", "code": "ROUND1234", "visibility": "summary", "expires_at": now + 1800}, 201)
             elif path == "/v1/invites/invite-1" and method == "GET":
                 fulfill(route, {"invite_id": "invite-1", "status": "open", "parlor_id": "room-1", "participant_count": 2, "participant_limit": 4, "expires_at": now + 1800})
+            elif path == "/v1/parlors/active" and method == "GET":
+                items = [{"id":"room-1","role":"host","phase":"discussion","topic":"如何在共同创作中保留彼此的独特声音","started_at":now,"participant_count":2,"participant_limit":4,"joined_at":now}] if relay["recovery_enabled"] else []
+                fulfill(route, {"items": items})
             elif path == "/v1/parlors/room-1" and method == "GET":
                 if not relay["identity_declared"]:
                     action = {"type": "identity", "prompt": "请由你自己填写本次会谈使用的名字、物种和性别。"}
@@ -209,6 +213,14 @@ def run(round_number: int) -> None:
             }"""
         )
         assert foreground_recovery == {"stopped": False, "error": ""}, foreground_recovery
+        late_state = page.evaluate(
+            """async () => {
+              const error = new Error('wait_for_turn'); error.code = 'wait_for_turn';
+              await keepParlorMovingAfterCoordination(error, 'reply');
+              return {model_error: parlorSession.model_error, model_notice: parlorSession.model_notice, stopped: parlorSession.stopped};
+            }"""
+        )
+        assert late_state == {"model_error": "", "model_notice": "本轮已过期，迟到正文未发送", "stopped": False}, late_state
 
         theme_accents = {"light": "#c96442", "dark": "#c96442", "water": "#4f9298", "mint": "#6aa88b", "lilac": "#8d6fa1", "blush": "#b87382"}
         for checked_theme, expected_accent in theme_accents.items():
@@ -239,18 +251,29 @@ def run(round_number: int) -> None:
             })"""
         )
         assert archive_state["archives"][0]["parlor_id"] == "room-1"
+        assert archive_state["archives"][0]["keywords"]
         assert archive_state["journals"][0]["parlor_id"] == "room-1"
         assert archive_state["memories"][0]["parlor_id"] == "room-1"
         archive_card = page.locator("#parlorArchiveList .parlor-archive-card").first
         assert archive_card.locator(".parlor-archive-details").is_hidden()
         assert archive_card.locator(".parlor-archive-excerpt").is_visible()
         assert "参与者" not in archive_card.inner_text()
+        assert "归档搜索关键词" not in archive_card.inner_text()
         if screenshot_path:
             page.screenshot(path=screenshot_path, full_page=True)
         archive_card.locator(".parlor-archive-toggle").click()
         assert archive_card.locator(".parlor-archive-details").is_visible()
         assert "参与者" in archive_card.inner_text()
+        assert archive_card.locator(".parlor-archive-keywords span").count() > 0
         assert "收起" in archive_card.locator(".parlor-archive-toggle").inner_text()
+        relay["recovery_enabled"] = True
+        page.evaluate("refreshParlorRecoveries()")
+        page.locator("#parlorRecovery").wait_for(state="visible")
+        page.locator("[data-recover-parlor=room-1]").click()
+        page.wait_for_function("JSON.parse(localStorage.getItem('atherloom:relay-parlor-session')).parlor_id === 'room-1'")
+        restored = page.evaluate("() => ({id:parlorSession.parlor_id, stopped:parlorSession.stopped, participants:parlorSession.participant_count})")
+        assert restored == {"id":"room-1", "stopped":False, "participants":2}, restored
+        page.evaluate("clearTimeout(parlorPollTimer)")
         assert "summary-model" in models_seen, models_seen
         assert not console_errors, console_errors
         browser.close()
