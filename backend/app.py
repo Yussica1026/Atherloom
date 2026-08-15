@@ -2329,9 +2329,13 @@ async def invoke_builtin_tool(name: str, arguments: dict[str, Any]) -> dict[str,
                 contact_id = str(uuid.uuid4())
                 connection.execute("INSERT INTO correspondence_contacts VALUES(?,?,?,?,?,1,0,0,?,?)", (contact_id, persona_key, display_name[:80], platform[:80], stable_id[:240], stamp, stamp))
                 connection.commit()
+                ai_approved, user_approved, blocked = True, False, False
             else:
                 contact_id = row["id"]
-        return {"contact_id": contact_id, "ai_approved": True, "user_approved": False, "status": "等待用户批准"}
+                ai_approved, user_approved, blocked = bool(row["ai_approved"]), bool(row["user_approved"]), bool(row["blocked"])
+        whitelisted = ai_approved and user_approved and not blocked
+        status = "联系人已被屏蔽" if blocked else "联系人已经双重批准" if whitelisted else "等待用户批准"
+        return {"contact_id": contact_id, "ai_approved": ai_approved, "user_approved": user_approved, "whitelisted": whitelisted, "status": status}
     if name == "mail_send":
         persona_key = str(arguments.get("_persona_key") or "__default__")
         contact_id, subject, content = str(arguments.get("contact_id") or ""), str(arguments.get("subject") or "").strip(), str(arguments.get("content") or "").strip()

@@ -1335,6 +1335,9 @@ class LocalClientTests(unittest.TestCase):
         self.assertEqual(self.client.get("/api/dreams/persona-a").json()["entries"][0]["title"], "雾里的门")
 
     def test_ai_mailbox_requires_double_approval_and_is_fully_visible(self):
+        tools, _ = app_module.builtin_tool_catalog({"correspondence":"allow"})
+        names = {tool["name"] for tool in tools}
+        self.assertTrue({"atherloom_mail_list", "atherloom_mail_contact_request", "atherloom_mail_send"}.issubset(names))
         persona = self.client.post("/api/personas", json={"name":"阿澄","prompt":"保持诚实"}).json()
         requested = asyncio.run(app_module.invoke_builtin_tool("mail_contact_request", {
             "_persona_key": persona["id"], "display_name":"远舟", "platform":"AstrBot", "stable_id":"astrbot:remote-1",
@@ -1349,6 +1352,14 @@ class LocalClientTests(unittest.TestCase):
             "_persona_key":persona["id"], "contact_id":requested["contact_id"], "subject":"回信", "content":"愿你今天顺利。",
         }))
         self.assertEqual(sent["status"], "delivered")
+        listed = asyncio.run(app_module.invoke_builtin_tool("mail_list", {"_persona_key":persona["id"]}))
+        self.assertEqual(listed["contacts"][0]["id"], requested["contact_id"])
+        self.assertEqual(listed["mail"][0]["content"], "愿你今天顺利。")
+        repeated = asyncio.run(app_module.invoke_builtin_tool("mail_contact_request", {
+            "_persona_key": persona["id"], "display_name":"远舟", "platform":"AstrBot", "stable_id":"astrbot:remote-1",
+        }))
+        self.assertTrue(repeated["whitelisted"])
+        self.assertEqual(repeated["status"], "联系人已经双重批准")
         overview = self.client.get(f"/api/correspondence/{persona['id']}").json()
         self.assertEqual(overview["mail"][0]["content"], "愿你今天顺利。")
         self.assertTrue(overview["contacts"][0]["ai_approved"] and overview["contacts"][0]["user_approved"])
@@ -1391,6 +1402,10 @@ class LocalClientTests(unittest.TestCase):
         self.assertIn("最多四位 AI",policy)
         self.assertIn("总时长不得超过二十分钟",policy)
         self.assertIn("不得透露用户",policy)
+        self.assertIn("atherloom_mail_list",policy)
+        self.assertIn("atherloom_mail_contact_request",policy)
+        self.assertIn("atherloom_mail_send",policy)
+        self.assertIn("查看信箱",policy)
 
 
 if __name__ == "__main__":

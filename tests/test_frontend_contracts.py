@@ -30,6 +30,23 @@ class FrontendRegressionContracts(unittest.TestCase):
         self.assertIn('data-request-delete-archive', APP)
         self.assertIn('删除需人格同意', APP)
         self.assertIn('parlor_invite_create', APP)
+        self.assertIn('id="parlorArchiveList"', INDEX)
+        self.assertIn('往期会谈', INDEX)
+        self.assertIn('function resetParlorRuntime()', APP)
+        self.assertIn('resetParlorRuntime();await loadCorrespondence()', APP)
+        self.assertIn('participant_count:parlorRoom?.participant_count||parlorSession.participant_count||1', APP)
+
+    def test_standalone_ai_has_real_mailbox_tools_and_prompt(self):
+        for name in ("atherloom_mail_list", "atherloom_mail_contact_request", "atherloom_mail_send"):
+            self.assertIn(name, STANDALONE)
+            self.assertIn(name, INLINE)
+        self.assertIn('const correspondenceTools=', STANDALONE)
+        self.assertIn('const runCorrespondenceTool=', STANDALONE)
+        self.assertIn('call.name.startsWith("atherloom_mail_")', STANDALONE)
+        self.assertIn('用户要求查看信箱、联系人或是否有来信时，必须调用', STANDALONE)
+        self.assertIn('往来|信箱|邮箱|来信|收信|写信|发信|回信|邮件|联系人', STANDALONE)
+        self.assertIn('user_can_view_full_content:true', STANDALONE)
+        self.assertIn('id="parlorArchiveList"', INLINE)
 
     def test_every_persona_has_memory_search_enabled(self):
         self.assertIn('所有人格始终可以检索各自隔离的长期记忆', INDEX)
@@ -74,8 +91,8 @@ class FrontendRegressionContracts(unittest.TestCase):
         self.assertIn("具体位置请查看浏览器下载记录", APP)
 
     def test_versioned_script_is_current(self):
-        self.assertIn('assets/app.js?v=0553', INDEX)
-        self.assertIn('assets/standalone.js?v=0529', INDEX)
+        self.assertIn('assets/app.js?v=0554', INDEX)
+        self.assertIn('assets/standalone.js?v=0530', INDEX)
 
     def test_manual_compression_keeps_original_messages_but_reduces_hot_context(self):
         self.assertIn('id="openManualCompress"', INDEX)
