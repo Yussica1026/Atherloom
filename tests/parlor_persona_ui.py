@@ -42,6 +42,11 @@ def run(round_number: int) -> None:
         page.goto(BASE, wait_until="domcontentloaded", timeout=15000)
         page.wait_for_load_state("networkidle")
         page.locator("#mobileMenu").click()
+        correspondence_button = page.locator("#openCorrespondence")
+        reference_button = page.locator("#openFavorites")
+        assert correspondence_button.locator("small").count() == 0
+        assert correspondence_button.evaluate("element => getComputedStyle(element).fontSize") == reference_button.evaluate("element => getComputedStyle(element).fontSize")
+        assert correspondence_button.bounding_box()["height"] == reference_button.bounding_box()["height"]
         page.locator("#openCorrespondence").click()
         page.locator("#correspondenceSpace").wait_for(state="visible")
         page.wait_for_function("document.querySelector('#correspondenceContacts').textContent.includes('还没有联系人申请')")

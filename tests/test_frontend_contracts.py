@@ -13,6 +13,11 @@ NOWHERE = (ROOT / "frontend/assets/nowhere/index.html").read_text(encoding="utf-
 
 
 class FrontendRegressionContracts(unittest.TestCase):
+    def test_correspondence_is_a_peer_sidebar_entry(self):
+        self.assertIn('<span>✉</span> 往来</button>', INDEX)
+        self.assertNotIn('AI 的信箱与会客厅</small>', INDEX)
+        self.assertNotIn('.correspondence-button>span:last-child', CSS)
+
     def test_mobile_hub_toggle_does_not_close_sidebar(self):
         self.assertIn(".new-chat:not(.sidebar-hub-toggle)", APP)
 

@@ -13,7 +13,7 @@
   <title>Atherloom</title>
   <link rel="manifest" href="manifest.json">
   <link rel="icon" href="assets/app-icon.svg" type="image/svg+xml">
-  <link rel="stylesheet" href="assets/app.css?v=0547">
+  <link rel="stylesheet" href="assets/app.css?v=0548">
   <script>
     // Recovery path for browsers that retained a failed external stylesheet
     // response. This keeps user data untouched and injects only verified CSS.
@@ -59,7 +59,7 @@
         <button class="new-chat game-library-button" id="openHomestead"><span>▧</span> 云芽庭院</button>
         <button class="new-chat game-library-button" id="openFavorites"><span>☆</span> 珍藏</button>
         <button class="new-chat game-library-button life-book-button" id="openLifeBook"><span>▥</span> 生活簿</button>
-        <button class="new-chat correspondence-button" id="openCorrespondence"><span>✉</span><span>往来<small>AI 的信箱与会客厅</small></span></button>
+        <button class="new-chat correspondence-button" id="openCorrespondence"><span>✉</span> 往来</button>
         <div class="sidebar-hub">
           <button class="new-chat game-library-button sidebar-hub-toggle" id="toggleCreateHub" aria-expanded="false"><span>⌘</span> 共创空间 <i>⌄</i></button>
           <div class="sidebar-hub-panel" id="createHubPanel" hidden>
@@ -672,7 +672,7 @@
   <script src="assets/app.js?v=0552" defer></script>
   <script>
     if ('serviceWorker' in navigator) {
-      navigator.serviceWorker.register('service-worker.js?v=151', { updateViaCache: 'none' }).then(registration => registration.update());
+      navigator.serviceWorker.register('service-worker.js?v=152', { updateViaCache: 'none' }).then(registration => registration.update());
       // 新缓存在下次打开时接管；不强制刷新正在聊天、共读或剧场中的页面。
     }
   </script>
