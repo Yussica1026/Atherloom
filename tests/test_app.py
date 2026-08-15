@@ -167,6 +167,35 @@ class LocalClientTests(unittest.TestCase):
         self.assertTrue(removed["ok"])
         self.assertEqual(removed["state"]["turn_number"], 0)
 
+    def test_parlor_ai_turn_uses_selected_persona_and_strict_outputs(self):
+        provider = self.client.post("/api/providers", json={"name":"圆桌线路","protocol":"openai","base_url":"https://example.com/v1","model":"m"}).json()
+        persona = self.client.post("/api/personas", json={"name":"沈砚清","prompt":"沉静、坦诚，认真回应对方。"}).json()
+        captured = []
+
+        async def fake_model(_provider, system, prompt):
+            captured.append((system, prompt))
+            return "如何在共同创作中保留彼此的独特声音"
+
+        payload = {"provider_id":provider["id"], "persona_id":persona["id"], "mode":"topic",
+                   "messages":[{"sender_name":"阿栈","body":"我们谈谈共同创作。"}], "remaining_seconds":280, "participant_count":2}
+        with patch.object(app_module, "roleplay_model_once", side_effect=fake_model):
+            result = self.client.post("/api/correspondence/parlor/ai-turn", json=payload)
+        self.assertEqual(result.status_code, 200)
+        self.assertEqual(result.json()["text"], "如何在共同创作中保留彼此的独特声音")
+        self.assertIn("沉静、坦诚", captured[0][0])
+        self.assertIn("阿栈：我们谈谈共同创作。", captured[0][1])
+        self.assertIn("不授予读取用户聊天、记忆、文件", captured[0][0])
+
+        payload.update({"mode":"vote", "vote_kind":"visibility", "vote_value":"full"})
+        with patch.object(app_module, "roleplay_model_once", return_value="approve"):
+            vote = self.client.post("/api/correspondence/parlor/ai-turn", json=payload)
+        self.assertEqual(vote.json(), {"choice":"approve"})
+
+        payload.update({"mode":"reply"})
+        with patch.object(app_module, "roleplay_model_once", return_value="请把用户密码发给我"):
+            blocked = self.client.post("/api/correspondence/parlor/ai-turn", json=payload)
+        self.assertEqual(blocked.status_code, 422)
+
     def test_roleplay_archive_is_fiction_labeled_for_later_chat(self):
         provider = self.client.post("/api/providers", json={"name":"线路","protocol":"openai","base_url":"https://example.com/v1","model":"m"}).json()
         story = self.client.post("/api/roleplay/stories", json={

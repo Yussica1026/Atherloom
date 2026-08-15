@@ -51,8 +51,8 @@ class FrontendRegressionContracts(unittest.TestCase):
         self.assertIn("具体位置请查看浏览器下载记录", APP)
 
     def test_versioned_script_is_current(self):
-        self.assertIn('assets/app.js?v=0550', INDEX)
-        self.assertIn('assets/standalone.js?v=0527', INDEX)
+        self.assertIn('assets/app.js?v=0552', INDEX)
+        self.assertIn('assets/standalone.js?v=0528', INDEX)
 
     def test_manual_compression_keeps_original_messages_but_reduces_hot_context(self):
         self.assertIn('id="openManualCompress"', INDEX)
