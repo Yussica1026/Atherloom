@@ -5,6 +5,7 @@ import android.app.Activity;
 import android.content.Intent;
 import android.content.Context;
 import android.content.ContentValues;
+import android.content.ClipData;
 import android.content.ClipboardManager;
 import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
@@ -12,6 +13,7 @@ import android.net.Uri;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
+import android.os.Build;
 import android.provider.MediaStore;
 import android.view.ViewGroup;
 import android.webkit.GeolocationPermissions;
@@ -42,9 +44,11 @@ import java.nio.charset.StandardCharsets;
 import java.util.Iterator;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+import java.lang.ref.WeakReference;
 
 public class MainActivity extends Activity {
-    private static final int FILE_CHOOSER = 41, AUDIO_PERMISSION = 42;
+    private static final int FILE_CHOOSER = 41, AUDIO_PERMISSION = 42, NOTIFICATION_PERMISSION = 43;
+    private static WeakReference<WebView> liveWebView = new WeakReference<>(null);
     private WebView webView;
     private ValueCallback<Uri[]> fileCallback;
     private Uri pendingCameraUri;
@@ -53,10 +57,28 @@ public class MainActivity extends Activity {
     @Override public void onCreate(Bundle state) {
         super.onCreate(state);
         webView = new WebView(this);
+        liveWebView = new WeakReference<>(webView);
         webView.setLayoutParams(new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
         setContentView(webView);
         configureWebView();
         webView.loadUrl("https://appassets.androidplatform.net/assets/index.html?standalone=1");
+        if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED)
+            requestPermissions(new String[]{Manifest.permission.POST_NOTIFICATIONS}, NOTIFICATION_PERMISSION);
+    }
+
+    @Override protected void onResume() {
+        super.onResume();
+        if (webView == null) return;
+        webView.onResume();
+        webView.resumeTimers();
+        webView.post(() -> webView.evaluateJavascript("window.AtherloomResumeParlor&&window.AtherloomResumeParlor()", null));
+    }
+
+    static boolean runAutonomyWake() {
+        WebView view = liveWebView.get();
+        if (view == null) return false;
+        view.post(() -> view.evaluateJavascript("window.AtherloomRunAutonomyWake&&window.AtherloomRunAutonomyWake()", null));
+        return true;
     }
 
     private void configureWebView() {
@@ -194,8 +216,31 @@ public class MainActivity extends Activity {
             return value == null ? "" : value.toString();
         }
 
+        @JavascriptInterface public boolean setClipboard(String value) {
+            ClipboardManager clipboard = (ClipboardManager) context.getSystemService(Context.CLIPBOARD_SERVICE);
+            if (clipboard == null) return false;
+            clipboard.setPrimaryClip(ClipData.newPlainText("Atherloom 邀请码", value == null ? "" : value));
+            return true;
+        }
+
+        @JavascriptInterface public String readBundledAsset(String path) {
+            if (!"assets/nowhere/index.html".equals(path)) return "";
+            try { return read(context.getAssets().open("assets/nowhere/index.html")); }
+            catch (Exception error) { return ""; }
+        }
+
         @JavascriptInterface public void showNotice(String message) {
             new Handler(Looper.getMainLooper()).post(() -> Toast.makeText(context, message, Toast.LENGTH_LONG).show());
+        }
+
+        @JavascriptInterface public String configureAutonomy(String raw) {
+            try {
+                JSONObject config = new JSONObject(raw);
+                context.getSharedPreferences("atherloom_runtime", Context.MODE_PRIVATE).edit().putString("autonomy_config", config.toString()).apply();
+                Intent intent = new Intent(context, AutonomyService.class).setAction(config.optBoolean("enabled") ? AutonomyService.ACTION_START : AutonomyService.ACTION_STOP);
+                if (config.optBoolean("enabled") && Build.VERSION.SDK_INT >= 26) context.startForegroundService(intent); else context.startService(intent);
+                return "{\"ok\":true}";
+            } catch (Exception error) { return failure(error); }
         }
 
         @JavascriptInterface public String listModels(String raw) {
@@ -360,11 +405,17 @@ public class MainActivity extends Activity {
                 if (status >= 400) throw new Exception("HTTP " + status + " · " + response.substring(0, Math.min(300, response.length())));
                 JSONObject data = new JSONObject(response); String content; JSONArray toolCalls=new JSONArray(); Object rawAssistant;
                 if (protocol.equals("anthropic")) { StringBuilder text = new StringBuilder(); JSONArray blocks=data.optJSONArray("content"); rawAssistant=blocks==null?new JSONArray():blocks;if(blocks!=null)for(int i=0;i<blocks.length();i++){JSONObject block=blocks.getJSONObject(i);if("text".equals(block.optString("type")))text.append(block.optString("text"));if("tool_use".equals(block.optString("type")))toolCalls.put(new JSONObject().put("id",block.optString("id")).put("name",block.optString("name")).put("arguments",block.optJSONObject("input")==null?new JSONObject():block.optJSONObject("input")));} content=text.toString(); }
-                else {JSONObject message=data.getJSONArray("choices").getJSONObject(0).getJSONObject("message");rawAssistant=message;content=nullableString(message, "content");JSONArray calls=message.optJSONArray("tool_calls");if(calls!=null)for(int i=0;i<calls.length();i++){JSONObject call=calls.getJSONObject(i),function=call.optJSONObject("function");if(function!=null)toolCalls.put(new JSONObject().put("id",call.optString("id")).put("name",function.optString("name")).put("arguments",new JSONObject(function.optString("arguments","{}"))));}}
+                else {JSONObject message=data.getJSONArray("choices").getJSONObject(0).getJSONObject("message");rawAssistant=message;content=textValue(message.opt("content"));JSONArray calls=message.optJSONArray("tool_calls");if(calls!=null)for(int i=0;i<calls.length();i++){JSONObject call=calls.getJSONObject(i),function=call.optJSONObject("function");if(function!=null)toolCalls.put(new JSONObject().put("id",call.optString("id")).put("name",function.optString("name")).put("arguments",new JSONObject(function.optString("arguments","{}"))));}}
                 if(toolCalls.length()==0)toolCalls=parseDsmlToolCalls(content);
                 JSONObject responseMessage = protocol.equals("anthropic") ? null : data.getJSONArray("choices").getJSONObject(0).getJSONObject("message");
-                String reasoning = protocol.equals("anthropic") ? "" : nullableString(responseMessage, "reasoning_content"); if (reasoning.isEmpty()) reasoning=nullableString(responseMessage, "reasoning");
-                return new JSONObject().put("ok", true).put("content", content).put("reasoning", reasoning).put("model", provider.optString("model")).put("tool_calls",toolCalls).put("raw_assistant",rawAssistant).toString();
+                String reasoning = protocol.equals("anthropic") ? "" : textValue(responseMessage.opt("reasoning_content")); if (reasoning.isEmpty()&&!protocol.equals("anthropic")) reasoning=textValue(responseMessage.opt("reasoning"));
+                String contentSource="content";
+                if(content.trim().isEmpty()&&!protocol.equals("anthropic")){content=textValue(responseMessage.opt("text"));contentSource="message.text";}
+                if(content.trim().isEmpty()&&!protocol.equals("anthropic")){content=textValue(responseMessage.opt("output_text"));contentSource="message.output_text";}
+                if(content.trim().isEmpty()&&!protocol.equals("anthropic")){content=textValue(data.opt("output_text"));contentSource="output_text";}
+                if(content.trim().isEmpty()&&!protocol.equals("anthropic")){content=textValue(data.getJSONArray("choices").getJSONObject(0).opt("text"));contentSource="choice.text";}
+                if(content.trim().isEmpty()&&!reasoning.trim().isEmpty()&&toolCalls.length()==0){content=reasoning.trim();contentSource="reasoning_fallback";}
+                return new JSONObject().put("ok", true).put("content", content).put("content_source",contentSource).put("reasoning", reasoning).put("model", provider.optString("model")).put("tool_calls",toolCalls).put("raw_assistant",rawAssistant).put("usage",data.optJSONObject("usage")).toString();
             } catch (Exception error) { return failure(error); } finally { if (connection != null) connection.disconnect(); }
         }
 
@@ -400,12 +451,15 @@ public class MainActivity extends Activity {
                     try (OutputStream output = connection.getOutputStream()) { output.write(payload.toString().getBytes(StandardCharsets.UTF_8)); }
                     int status = connection.getResponseCode();
                     if (status >= 400) { String response = read(connection.getErrorStream()); throw new Exception("HTTP " + status + " · " + response.substring(0, Math.min(300, response.length()))); }
+                    JSONObject usage = new JSONObject();
                     try (BufferedReader reader = new BufferedReader(new InputStreamReader(connection.getInputStream(), StandardCharsets.UTF_8))) {
                         String line;
                         while ((line = reader.readLine()) != null) {
                             if (!line.startsWith("data:")) continue;
                             String rawEvent = line.substring(5).trim(); if (rawEvent.isEmpty() || rawEvent.equals("[DONE]")) continue;
-                            JSONObject event = new JSONObject(rawEvent), output = new JSONObject();
+                            JSONObject event = new JSONObject(rawEvent), output = new JSONObject(), eventUsage = event.optJSONObject("usage");
+                            JSONObject message = event.optJSONObject("message"); if (eventUsage == null && message != null) eventUsage = message.optJSONObject("usage");
+                            if (eventUsage != null) for (Iterator<String> keys = eventUsage.keys(); keys.hasNext();) { String key = keys.next(); usage.put(key, eventUsage.get(key)); }
                             if (protocol.equals("anthropic")) {
                                 JSONObject delta = event.optJSONObject("delta");
                                 if (delta != null && event.optString("type").equals("content_block_delta")) { if (!delta.optString("text").isEmpty()) output.put("delta", delta.optString("text")); if (!delta.optString("thinking").isEmpty()) output.put("reasoning_delta", delta.optString("thinking")); }
@@ -416,7 +470,7 @@ public class MainActivity extends Activity {
                             if (output.length() > 0) emitStream(callbackId, output);
                         }
                     }
-                    emitStream(callbackId, new JSONObject().put("done", true).put("model", provider.optString("model")));
+                    emitStream(callbackId, new JSONObject().put("done", true).put("model", provider.optString("model")).put("usage", usage.length() > 0 ? usage : JSONObject.NULL));
                 } catch (Exception error) {
                     try { emitStream(callbackId, new JSONObject().put("error", error.getMessage())); } catch (Exception ignored) {}
                 } finally { if (connection != null) connection.disconnect(); }
@@ -430,6 +484,22 @@ public class MainActivity extends Activity {
 
         private static String nullableString(JSONObject object, String key) {
             return object == null || !object.has(key) || object.isNull(key) ? "" : object.optString(key, "");
+        }
+
+        private static String textValue(Object value) {
+            if (value == null || value == JSONObject.NULL) return "";
+            if (value instanceof String) return ((String)value).trim();
+            if (value instanceof JSONArray) {
+                StringBuilder text = new StringBuilder(); JSONArray items = (JSONArray)value;
+                for (int i=0;i<items.length();i++) { String part=textValue(items.opt(i)); if(!part.isEmpty()){if(text.length()>0)text.append('\n');text.append(part);} }
+                return text.toString().trim();
+            }
+            if (value instanceof JSONObject) {
+                JSONObject item=(JSONObject)value;
+                for(String key:new String[]{"text","output_text","content","value"}){String part=textValue(item.opt(key));if(!part.isEmpty())return part;}
+                return "";
+            }
+            return String.valueOf(value).trim();
         }
 
         private static JSONArray parseDsmlToolCalls(String content) throws Exception {
@@ -473,6 +543,10 @@ public class MainActivity extends Activity {
         webView.evaluateJavascript("window.AtherloomHandleBack ? window.AtherloomHandleBack() : false", handled -> {
             if (!"true".equals(handled)) { if (webView.canGoBack()) webView.goBack(); else MainActivity.super.onBackPressed(); }
         });
+    }
+    @Override protected void onDestroy() {
+        if (liveWebView.get() == webView) liveWebView.clear();
+        super.onDestroy();
     }
     @Override protected void onActivityResult(int request, int result, Intent data) {
         super.onActivityResult(request, result, data);
