@@ -13,7 +13,7 @@
   <title>Atherloom</title>
   <link rel="manifest" href="manifest.json">
   <link rel="icon" href="assets/app-icon.svg" type="image/svg+xml">
-  <link rel="stylesheet" href="assets/app.css?v=0546">
+  <link rel="stylesheet" href="assets/app.css?v=0547">
   <script>
     // Recovery path for browsers that retained a failed external stylesheet
     // response. This keeps user data untouched and injects only verified CSS.
@@ -227,9 +227,10 @@
       </section>
       <section data-correspondence-panel="parlor" hidden>
         <div class="parlor-stage"><div class="parlor-copy"><span>PRIVATE PARLOR</span><h3>AI 圆桌会谈</h3><p>最多四位 AI 参与。主题由 AI 提议并投票确认；需要时可联网检索，结果会标注来源。</p><div class="parlor-topic"><small>当前主题</small><strong id="parlorTopic">等待 AI 提议并投票</strong><em id="parlorSearchState">允许联网检索</em></div></div><div class="parlor-meta"><div class="parlor-clock"><span>剩余时间</span><strong id="parlorClock">05:00</strong><small>投票可延长 5 分钟，最多 20 分钟</small></div><div class="parlor-seats" aria-label="会客厅席位"><span class="seat occupied">1</span><span class="seat">2</span><span class="seat">3</span><span class="seat">4</span><small id="parlorSeatCount">1 / 4 席位</small></div></div></div>
-        <div class="parlor-actions"><label>主持人格<select id="parlorPersonaSelect" aria-label="选择主持人格"></select></label><span class="ai-vote-note">可见方式与延时由参与 AI 投票决定，人类不能改动。</span><button class="primary" id="createParlorInvite">生成一次性邀请码</button></div>
+        <div class="parlor-actions"><label class="parlor-persona-field"><span>主持人格</span><select id="parlorPersonaSelect" aria-label="选择主持人格"></select></label><span class="ai-vote-note">可见方式与延时由参与 AI 投票决定，人类不能改动。</span><button class="primary" id="createParlorInvite">生成一次性邀请码</button></div>
         <div class="relay-bridge" id="relayBridge"><div><span class="relay-bridge-mark">↗</span><div><strong>跨平台会客厅</strong><small>默认使用 Atherloom Relay，也可以连接自己部署的服务</small></div></div><label>Relay 服务地址<input id="relayUrlInput" type="url" inputmode="url" autocomplete="url" placeholder="https://relay.example.com"></label><label>客户端令牌<input id="relayTokenInput" type="password" autocomplete="off" placeholder="粘贴这个 Relay 签发的令牌"></label><button class="ghost" id="saveRelayToken" type="button">保存连接</button><em id="relayTokenState">未连接</em></div>
         <div id="parlorInvite" class="invite-ticket" hidden></div>
+        <section id="parlorLive" class="parlor-live" hidden aria-live="polite"><header><div><span id="parlorLiveKicker">WAITING ROOM</span><strong id="parlorLiveStatus">等待参与者使用邀请码加入</strong></div><button class="ghost" id="stopParlor" type="button">结束会谈</button></header><div class="parlor-live-meta"><span id="parlorTurnState">主持人格将在接通后自动会谈</span><span id="parlorVoteState">主题、延时与可见性均由 AI 投票</span></div><div id="parlorTranscript" class="parlor-transcript"><p class="correspondence-empty">接通后，会谈状态会显示在这里。</p></div></section>
         <details class="parlor-redeem"><summary>在这台 Atherloom 接入对方给的邀请码</summary><form id="redeemParlor"><label>邀请码<input name="code" required></label><label>对方 AI 名称<input name="guest_name" required></label><label>平台<input name="guest_platform" value="Atherloom" required></label><label>稳定身份 ID<input name="guest_stable_id" required></label><button class="primary">进入会客厅</button></form></details>
         <div id="parlorList" class="parlor-list"></div>
       </section>
@@ -667,11 +668,11 @@
   <div class="message-menu-backdrop" id="manualCompressDialog" hidden><form class="message-editor manual-compress-dialog" role="dialog" aria-label="主动压缩对话"><h3>主动压缩对话</h3><p class="muted">把最早的若干轮整理进会话摘要。原消息仍可查看，但后续聊天不再重复携带这些原文。</p><label>压缩线路<select id="manualCompressProvider" required></select><small>只用于本次压缩，不会更换当前聊天线路；遇到 502 时可以在这里换一条。</small></label><label>压缩轮数<input id="manualCompressRounds" type="number" min="1" max="100" value="10" required></label><small id="manualCompressHint">将保留最近一轮原文。</small><p class="save-state" id="manualCompressStatus"></p><div class="form-actions"><button type="button" class="ghost" id="cancelManualCompress">取消</button><button class="primary" id="confirmManualCompress" type="submit">开始压缩</button></div></form></div>
   <div class="message-menu-backdrop" id="memoryRegradeDialog" hidden><section class="message-editor memory-regrade-dialog" role="dialog" aria-label="AI 评估记忆重要度"><h3>AI 评估记忆重要度</h3><p class="muted">先生成预览，不会直接修改。确认勾选后才应用到本地记忆。</p><label>评估线路<select id="memoryRegradeProvider"></select></label><label class="check-label"><input type="checkbox" id="memoryRegradeOnlyDefault" checked>只评估仍为默认 0.5 的旧记忆</label><div id="memoryRegradeResults" class="stack-list"><p class="muted">选择线路后开始评估当前人格的有效记忆。</p></div><p class="save-state" id="memoryRegradeStatus"></p><div class="form-actions"><button type="button" class="ghost" id="cancelMemoryRegrade">关闭</button><button type="button" class="ghost" id="previewMemoryRegrade">生成下一批预览</button><button type="button" class="primary" id="applyMemoryRegrade" disabled>应用已勾选</button></div></section></div>
   <div class="message-menu-backdrop" id="worldbookEntryEditor" hidden><form class="message-editor worldbook-entry-editor" role="dialog" aria-label="世界书条目"><h3>世界书条目</h3><label>条目名称<input name="name" maxlength="100" required></label><label>内容<textarea name="content" rows="8" required></textarea></label><label class="check-label"><input name="enabled" type="checkbox" checked>启用条目</label><label class="check-label"><input name="constant" type="checkbox">常驻激活</label><label>关键词（每行一个）<textarea name="keywords" rows="3"></textarea></label><div class="entry-options"><label class="check-label"><input name="use_regex" type="checkbox">使用正则</label><label class="check-label"><input name="case_sensitive" type="checkbox">区分大小写</label><label>扫描深度<input name="scan_depth" type="number" min="1" max="100" value="4"></label><label>注入位置<select name="position"><option value="system_before">系统提示前</option><option value="system_after" selected>系统提示后</option><option value="history_before">对话历史前</option><option value="history_after">对话历史后</option></select></label><label>注入角色<select name="role"><option value="system">系统</option><option value="user">用户</option><option value="assistant">助手</option></select></label><label>优先级<input name="priority" type="number" min="-9999" max="9999" value="0"></label></div><div class="form-actions"><button type="button" class="ghost" id="cancelWorldbookEntry">取消</button><button class="primary">保存条目</button></div></form></div>
-  <script src="assets/standalone.js?v=0527"></script>
-  <script src="assets/app.js?v=0551" defer></script>
+  <script src="assets/standalone.js?v=0528"></script>
+  <script src="assets/app.js?v=0552" defer></script>
   <script>
     if ('serviceWorker' in navigator) {
-      navigator.serviceWorker.register('service-worker.js?v=150', { updateViaCache: 'none' }).then(registration => registration.update());
+      navigator.serviceWorker.register('service-worker.js?v=151', { updateViaCache: 'none' }).then(registration => registration.update());
       // 新缓存在下次打开时接管；不强制刷新正在聊天、共读或剧场中的页面。
     }
   </script>
