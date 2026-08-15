@@ -2769,7 +2769,14 @@ async def compress_conversation(conversation_id: str, body: ManualCompressIn) ->
             response = await client.post(provider_endpoint(provider["base_url"], provider["protocol"]), headers=headers, json=payload)
         response.raise_for_status()
         data = response.json()
-        summary = ("".join(block.get("text", "") for block in data.get("content", []) if block.get("type") == "text") if provider["protocol"] == "anthropic" else data.get("choices", [{}])[0].get("message", {}).get("content", "")).strip()
+        if provider["protocol"] == "anthropic":
+            summary = "".join(block.get("text", "") for block in data.get("content", []) if block.get("type") == "text").strip()
+        else:
+            choice = (data.get("choices") or [{}])[0]
+            message = choice.get("message") or {}
+            summary = compatible_model_text(message.get("content")) or compatible_model_text(message.get("text")) or compatible_model_text(message.get("output_text")) or compatible_model_text(data.get("output_text")) or compatible_model_text(choice.get("text"))
+            if not summary and not message.get("tool_calls"):
+                summary = compatible_model_text(message.get("reasoning_content")) or compatible_model_text(message.get("reasoning"))
     except (httpx.HTTPError, json.JSONDecodeError, KeyError, TypeError) as error:
         raise HTTPException(502, f"压缩模型请求失败：{error}") from error
     if not summary:
@@ -4676,6 +4683,21 @@ def roleplay_worldbook_context(connection: sqlite3.Connection, worldbook_ids: li
     return "\n\n".join(parts)
 
 
+def compatible_model_text(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value.strip()
+    if isinstance(value, list):
+        return "\n".join(filter(None, (compatible_model_text(item) for item in value))).strip()
+    if isinstance(value, dict):
+        for key in ("text", "output_text", "content", "value"):
+            text = compatible_model_text(value.get(key))
+            if text:
+                return text
+    return ""
+
+
 async def roleplay_model_once(provider: sqlite3.Row, system: str, prompt: str) -> str:
     headers = provider_headers(provider["protocol"], provider["api_key"], provider["custom_headers"])
     messages = [{"role": "user", "content": prompt}]
@@ -4702,7 +4724,15 @@ async def roleplay_model_once(provider: sqlite3.Row, system: str, prompt: str) -
     if provider["protocol"] == "anthropic":
         result = "".join(block.get("text", "") for block in data.get("content", []) if block.get("type") == "text")
     else:
-        result = data.get("choices", [{}])[0].get("message", {}).get("content", "")
+        choice = (data.get("choices") or [{}])[0]
+        message = choice.get("message") or {}
+        result = compatible_model_text(message.get("content"))
+        if not result:
+            result = compatible_model_text(message.get("text")) or compatible_model_text(message.get("output_text"))
+        if not result:
+            result = compatible_model_text(data.get("output_text")) or compatible_model_text(choice.get("text"))
+        if not result and not message.get("tool_calls"):
+            result = compatible_model_text(message.get("reasoning_content")) or compatible_model_text(message.get("reasoning"))
     if not str(result).strip():
         raise HTTPException(502, "角色剧场线路没有返回正文")
     return str(result).strip()
