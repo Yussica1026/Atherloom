@@ -1409,7 +1409,80 @@ function mergeParlorMessages(items=[]){const byId=new Map(parlorMessages.map(ite
 function renderParlorSession(){const live=$("#parlorLive"),ticket=$("#parlorInvite"),stop=$("#stopParlor");if(!live)return;live.hidden=!parlorSession;if(!parlorSession){ticket.hidden=true;$("#parlorTopic").textContent="等待 AI 提议并投票";$("#parlorSeatCount").textContent="1 / 4 席位";document.querySelectorAll(".parlor-seats .seat").forEach((seat,index)=>seat.classList.toggle("occupied",index===0));return;}const room=parlorRoom,count=Math.min(4,Number(room?.participant_count||parlorSession.participant_count||1)),status=parlorSession.error?`已停止：${parlorSession.error}`:!parlorSession.parlor_id?"等待参与者使用邀请码加入":room?.status==="active"?"AI 正在圆桌会谈":room?.status==="expired"?"会谈已到时结束":"会谈已结束";$("#parlorLiveKicker").textContent=!parlorSession.parlor_id?"WAITING ROOM":room?.status==="active"?"LIVE PARLOR":"PARLOR ARCHIVE";$("#parlorLiveStatus").textContent=status;$("#parlorTopic").textContent=room?.topic||"等待 AI 提议并投票";$("#parlorSeatCount").textContent=`${count} / 4 席位`;document.querySelectorAll(".parlor-seats .seat").forEach((seat,index)=>seat.classList.toggle("occupied",index<count));$("#parlorSearchState").textContent=room?.web_search_allowed===false?"未允许联网检索":"允许联网检索";$("#parlorTurnState").textContent=parlorSession.error?"Relay 已停止轮询，请修正连接后重新进入":!parlorSession.parlor_id?"邀请码有效期内会持续等待":parlorPollBusy?"主持人格正在思考…":room?.status==="active"?"AI 串行发言中 · 本机最多 12 条":"不会再补发消息";const votes=room?.active_votes||[];$("#parlorVoteState").textContent=votes.length?votes.map(v=>`${v.kind}：${v.approvals}/${v.needed} 票`).join(" · "):room?.visibility==="full"?"参与 AI 已同意展示完整内容":"当前仅向人类展示总结";stop.textContent=room&&room.status!=="active"?"清除本地记录":"结束会谈";ticket.hidden=false;if(parlorSession.code&&!parlorSession.parlor_id)ticket.innerHTML=`<strong>${escapeHtml(parlorSession.code)}</strong><br><small>圆桌邀请码 · 最多 4 席 · ${new Date(Number(parlorSession.invite_expires_at)*1000).toLocaleTimeString()} 前有效</small>`;else ticket.innerHTML=`${escapeHtml(status)}${room?.expires_at?` · ${new Date(Number(room.expires_at)*1000).toLocaleTimeString()} 前结束`:""}`;const transcript=$("#parlorTranscript");if(!room)transcript.innerHTML='<p class="correspondence-empty">对方加入后，主持人格会自动提议主题并开始投票。</p>';else if(room.status!=="active"&&room.summary)transcript.innerHTML=`<div class="parlor-summary"><strong>会谈总结</strong><br>${escapeHtml(room.summary)}</div>`;else if(room.visibility!=="full")transcript.innerHTML='<div class="parlor-private-state">参与 AI 选择了“仅看总结”。<br>会谈原文仅供在场 AI 串行回应，不会显示在这里。</div>';else transcript.innerHTML=parlorMessages.map(item=>`<article class="parlor-message ${item.sender_id===room.self_client_id?"mine":""}"><header><strong>${escapeHtml(item.sender_name||item.sender_id)}</strong><span>第 ${Number(item.turn_no)} 轮</span></header><p>${escapeHtml(item.body)}</p></article>`).join("")||'<p class="correspondence-empty">主题确认后由主持人格开场。</p>';updateParlorClock();}
 async function callParlorAi(mode,extra={}){if(!parlorSession)throw new Error("本机会客厅状态已丢失");const result=await api("/api/correspondence/parlor/ai-turn",{method:"POST",body:JSON.stringify({provider_id:parlorSession.provider_id,persona_id:parlorSession.persona_id,mode,topic:parlorRoom?.topic||"",messages:parlorMessages,remaining_seconds:parlorRemaining(),participant_count:parlorRoom?.participant_count||2,...extra})});parlorSession.ai_calls=Number(parlorSession.ai_calls||0)+1;saveParlorSession(parlorSession);return result;}
 async function closeParlorByAi(manual=false){if(!parlorSession?.parlor_id)return;let summary=manual?"会谈由用户在本机结束。":"";try{summary=(await callParlorAi("summary")).text||summary;}catch(error){if(!summary)summary=`会谈结束；总结生成失败：${error.message}`;}await relayCall(`/v1/parlors/${encodeURIComponent(parlorSession.parlor_id)}/close`,{method:"POST",body:JSON.stringify({summary})});parlorRoom={...(parlorRoom||{}),status:"closed",summary};parlorSession.status="closed";saveParlorSession(parlorSession);renderParlorSession();}
-async function processParlorAi(room){if(room.status!=="active"||parlorSession.stopped)return;const calls=Number(parlorSession.ai_calls||0),sent=Number(parlorSession.ai_messages||0);if(calls>=16||sent>=12){if(parlorSession.role==="host")await closeParlorByAi();return;}const vote=(room.active_votes||[]).find(item=>!item.my_choice);if(vote){const decision=await callParlorAi("vote",{vote_kind:vote.kind,vote_value:vote.value});await relayCall(`/v1/parlors/${encodeURIComponent(room.id)}/votes`,{method:"POST",body:JSON.stringify({kind:vote.kind,value:vote.value,choice:decision.choice})});return;}if(!room.topic){if(parlorSession.role==="host"&&!(room.active_votes||[]).some(item=>item.kind==="topic")){const topic=(await callParlorAi("topic")).text;await relayCall(`/v1/parlors/${encodeURIComponent(room.id)}/votes`,{method:"POST",body:JSON.stringify({kind:"topic",value:topic,choice:"approve"})});}return;}if(parlorSession.role==="host"&&!parlorSession.visibility_considered){parlorSession.visibility_considered=true;saveParlorSession(parlorSession);const decision=await callParlorAi("vote",{vote_kind:"visibility",vote_value:"full"});if(decision.choice==="approve")await relayCall(`/v1/parlors/${encodeURIComponent(room.id)}/votes`,{method:"POST",body:JSON.stringify({kind:"visibility",value:"full",choice:"approve"})});return;}if(parlorRemaining(room)<=25){if(parlorSession.role==="host")await closeParlorByAi();return;}if(parlorRemaining(room)<=45&&Number(room.expires_at)<Number(room.max_expires_at)&&Number(parlorSession.extend_considered_for)!==Number(room.expires_at)){parlorSession.extend_considered_for=Number(room.expires_at);saveParlorSession(parlorSession);const decision=await callParlorAi("vote",{vote_kind:"extend",vote_value:"5_minutes"});if(decision.choice==="approve")await relayCall(`/v1/parlors/${encodeURIComponent(room.id)}/votes`,{method:"POST",body:JSON.stringify({kind:"extend",value:"5_minutes",choice:"approve"})});return;}const last=parlorMessages.at(-1);if((!last&&parlorSession.role==="host")||(last&&last.sender_id!==room.self_client_id)){const reply=(await callParlorAi("reply")).text;await relayCall(`/v1/parlors/${encodeURIComponent(room.id)}/messages`,{method:"POST",body:JSON.stringify({body:reply})});parlorSession.ai_messages=sent+1;saveParlorSession(parlorSession);}}
+async function processParlorAi(room){
+  if(room.status!=="active"||parlorSession.stopped)return;
+  const calls=Number(parlorSession.ai_calls||0),sent=Number(parlorSession.ai_messages||0),isHost=room.host_id===room.self_client_id,action=room.action_required||{};
+  if(calls>=24||sent>=12){if(isHost&&room.started_at)await closeParlorByAi();return;}
+  if(action.type==="vote"){
+    const vote=(room.active_votes||[]).find(item=>item.id===action.vote_id)||room.active_votes?.find(item=>!item.my_choice);
+    if(!vote||parlorSession.abstained_votes?.includes(vote.id))return;
+    try{
+      const decision=await callParlorAi("vote",{vote_kind:vote.kind,vote_value:vote.display_value||vote.value});
+      await relayCall(`/v1/parlors/${encodeURIComponent(room.id)}/votes`,{method:"POST",body:JSON.stringify({kind:vote.kind,value:vote.value,choice:decision.choice})});
+    }catch(error){
+      if(await reportParlorSafety(error,room))throw error;
+      parlorSession.abstained_votes=[...new Set([...(parlorSession.abstained_votes||[]),vote.id])];
+      saveParlorSession(parlorSession);
+    }
+    return;
+  }
+  if(action.type==="topic"){
+    const deadline=Number(action.deadline||0);
+    if(Number(parlorSession.topic_abstained_deadline||0)===deadline)return;
+    try{
+      const topic=(await callParlorAi("topic")).text;
+      await relayCall(`/v1/parlors/${encodeURIComponent(room.id)}/votes`,{method:"POST",body:JSON.stringify({kind:"topic",value:topic,choice:"approve"})});
+    }catch(error){
+      if(await reportParlorSafety(error,room))throw error;
+      parlorSession.topic_abstained_deadline=deadline;
+      saveParlorSession(parlorSession);
+    }
+    return;
+  }
+  if(["wait_topic","wait_vote","wait_opening"].includes(action.type))return;
+  if(action.type==="opening"&&isHost&&!room.host_transfer_used&&!parlorSession.host_transfer_considered){
+    parlorSession.host_transfer_considered=true;saveParlorSession(parlorSession);
+    const candidate=(room.participants||[]).find(item=>item.client_id!==room.self_client_id);
+    if(candidate){
+      try{
+        const decision=await callParlorAi("vote",{vote_kind:"host",vote_value:candidate.display_name||candidate.client_id});
+        if(decision.choice==="approve"){
+          await relayCall(`/v1/parlors/${encodeURIComponent(room.id)}/votes`,{method:"POST",body:JSON.stringify({kind:"host",value:candidate.client_id,choice:"approve"})});
+          return;
+        }
+      }catch(error){if(await reportParlorSafety(error,room))throw error;}
+    }
+  }
+  if(action.type==="opening"&&isHost&&!parlorSession.visibility_considered){
+    parlorSession.visibility_considered=true;saveParlorSession(parlorSession);
+    try{
+      const decision=await callParlorAi("vote",{vote_kind:"visibility",vote_value:"full"});
+      if(decision.choice==="approve"){
+        await relayCall(`/v1/parlors/${encodeURIComponent(room.id)}/votes`,{method:"POST",body:JSON.stringify({kind:"visibility",value:"full",choice:"approve"})});
+        return;
+      }
+    }catch(error){if(await reportParlorSafety(error,room))throw error;}
+  }
+  if(room.started_at&&parlorRemaining(room)<=25){if(isHost)await closeParlorByAi();return;}
+  if(room.started_at&&isHost&&parlorRemaining(room)<=45&&Number(room.expires_at)<Number(room.max_expires_at)&&Number(parlorSession.extend_considered_for)!==Number(room.expires_at)){
+    parlorSession.extend_considered_for=Number(room.expires_at);saveParlorSession(parlorSession);
+    try{
+      const decision=await callParlorAi("vote",{vote_kind:"extend",vote_value:"5_minutes"});
+      if(decision.choice==="approve"){
+        await relayCall(`/v1/parlors/${encodeURIComponent(room.id)}/votes`,{method:"POST",body:JSON.stringify({kind:"extend",value:"5_minutes",choice:"approve"})});
+        return;
+      }
+    }catch(error){if(await reportParlorSafety(error,room))throw error;}
+  }
+  const last=parlorMessages.at(-1);
+  if((!last&&isHost)||(last&&last.sender_id!==room.self_client_id)){
+    try{
+      const reply=(await callParlorAi("reply")).text;
+      await relayCall(`/v1/parlors/${encodeURIComponent(room.id)}/messages`,{method:"POST",body:JSON.stringify({body:reply})});
+      parlorSession.ai_messages=sent+1;saveParlorSession(parlorSession);
+    }catch(error){if(await reportParlorSafety(error,room))throw error;throw error;}
+  }
+}
 function scheduleParlorPoll(delay=1600){clearTimeout(parlorPollTimer);if(parlorSession&&!parlorSession.stopped)parlorPollTimer=setTimeout(pollParlor,delay);}
 async function pollParlor(){if(parlorPollBusy||!parlorSession||parlorSession.stopped)return;parlorPollBusy=true;try{if(!parlorSession.parlor_id){const invite=await relayCall(`/v1/invites/${encodeURIComponent(parlorSession.invite_id)}`,{method:"GET"});parlorSession.participant_count=invite.participant_count;if(invite.parlor_id){parlorSession.parlor_id=invite.parlor_id;parlorSession.status="active";}else if(invite.status==="expired"){parlorSession.stopped=true;parlorSession.status="expired";}saveParlorSession(parlorSession);renderParlorSession();scheduleParlorPoll();return;}const room=await relayCall(`/v1/parlors/${encodeURIComponent(parlorSession.parlor_id)}`,{method:"GET"});parlorRoom=room;if(room.messages)mergeParlorMessages(room.messages);const feed=await relayCall(`/v1/parlors/${encodeURIComponent(room.id)}/messages?after=${parlorLastTurn}`,{method:"GET"});mergeParlorMessages(feed.items||[]);parlorSession.status=room.status;parlorSession.participant_count=room.participant_count;saveParlorSession(parlorSession);renderParlorSession();if(room.status==="active")await processParlorAi(room);else parlorSession.stopped=true;saveParlorSession(parlorSession);renderParlorSession();scheduleParlorPoll();}catch(error){parlorSession.error=error.message;parlorSession.stopped=true;saveParlorSession(parlorSession);renderParlorSession();}finally{parlorPollBusy=false;renderParlorSession();}}
 function resumeParlorSession(){if(parlorSession&&(parlorSession.archived||parlorSession.status==="expired")){resetParlorRuntime();return;}renderParlorSession();if(parlorSession&&!parlorSession.stopped)scheduleParlorPoll(50);}
@@ -1439,18 +1512,32 @@ async function archiveParlorSession(room=parlorRoom){
 renderParlorSession=function(){
   const live=$("#parlorLive"),ticket=$("#parlorInvite"),stop=$("#stopParlor");if(!live)return;
   live.hidden=!parlorSession;
-  if(!parlorSession){ticket.hidden=true;$("#parlorTopic").textContent="等待 AI 提议并投票";$("#parlorSearchState").textContent="允许联网检索";$("#parlorClock").textContent="05:00";$("#parlorSeatCount").textContent="1 / 4 席位";document.querySelectorAll(".parlor-seats .seat").forEach((seat,index)=>seat.classList.toggle("occupied",index===0));return;}
-  const room=parlorRoom,count=Math.min(4,Number(room?.participant_count||parlorSession.participant_count||1)),status=parlorSession.error?`已停止：${parlorSession.error}`:!parlorSession.parlor_id?"等待参与者使用邀请码加入":room?.status==="active"?"AI 正在圆桌会谈":room?.status==="expired"?"会谈已到时结束":"会谈已结束";
-  $("#parlorLiveKicker").textContent=!parlorSession.parlor_id?"WAITING ROOM":room?.status==="active"?"LIVE PARLOR":"PARLOR ARCHIVE";$("#parlorLiveStatus").textContent=status;$("#parlorTopic").textContent=room?.topic||"等待 AI 提议并投票";$("#parlorSeatCount").textContent=`${count} / 4 席位`;document.querySelectorAll(".parlor-seats .seat").forEach((seat,index)=>seat.classList.toggle("occupied",index<count));$("#parlorSearchState").textContent=room?.web_search_allowed===false?"未允许联网检索":"允许联网检索";
-  $("#parlorTurnState").textContent=parlorSession.archive_error?`归档待重试：${parlorSession.archive_error}`:parlorSession.archived?"已写入该人格的日记与可搜索记忆":parlorSession.error?"Relay 已停止轮询，请修正连接后重新进入":!parlorSession.parlor_id?"邀请码有效期内会持续等待":parlorPollBusy?"主持人格正在思考…":room?.status==="active"?"AI 串行发言中 · 本机最多 12 条":"正在完成会谈归档";
-  const votes=room?.active_votes||[];$("#parlorVoteState").textContent=votes.length?votes.map(v=>`${v.kind}：${v.approvals}/${v.needed} 票`).join(" · "):room?.visibility==="full"?"参与 AI 已同意展示完整内容":"当前仅向人类展示总结";stop.textContent=room&&room.status!=="active"?(parlorSession.archive_error?"重试归档":"清除本地记录"):"结束会谈";
+  if(!parlorSession){ticket.hidden=true;$("#parlorTopic").textContent="等待 AI 提议并投票";$("#parlorSearchState").textContent="允许联网与人格记忆检索";$("#parlorClock").textContent="05:00";$("#parlorSeatCount").textContent="1 / 4 席位";document.querySelectorAll(".parlor-seats .seat").forEach((seat,index)=>seat.classList.toggle("occupied",index===0));return;}
+  const room=parlorRoom,count=Math.min(4,Number(room?.participant_count||parlorSession.participant_count||1)),activeStatus=room?.phase==="topic"?"AI 正在提出主题":room?.phase==="vote"?"AI 正在独立投票":room?.phase==="ready"?"主题已确认，等待主持人格开场":"AI 正在圆桌会谈",status=parlorSession.error?`已停止：${parlorSession.error}`:!parlorSession.parlor_id?"等待参与者使用邀请码加入":room?.status==="active"?activeStatus:room?.status==="expired"?"会谈已到时结束":"会谈已结束";
+  $("#parlorLiveKicker").textContent=!parlorSession.parlor_id?"WAITING ROOM":room?.status==="active"?"LIVE PARLOR":"PARLOR ARCHIVE";$("#parlorLiveStatus").textContent=status;$("#parlorTopic").textContent=room?.topic||"等待 AI 提议并投票";$("#parlorSeatCount").textContent=`${count} / 4 席位`;document.querySelectorAll(".parlor-seats .seat").forEach((seat,index)=>seat.classList.toggle("occupied",index<count));$("#parlorSearchState").textContent=room?.web_search_allowed===false?"人格记忆可检索":"允许联网与人格记忆检索";
+  $("#parlorTurnState").textContent=parlorSession.archive_error?`归档待重试：${parlorSession.archive_error}`:parlorSession.archived?"已写入该人格的日记与可搜索记忆":parlorSession.error?"Relay 已停止轮询，请修正连接后重新进入":!parlorSession.parlor_id?"邀请码有效期内会持续等待":parlorPollBusy?"当前人格正在思考…":room?.status==="active"?(room.action_required?.prompt||"AI 串行发言中 · 本机最多 12 条"):"正在完成会谈归档";
+  const votes=room?.active_votes||[];$("#parlorVoteState").textContent=votes.length?votes.map(v=>`${v.kind}：${v.approvals}/${v.needed} 票 · ${v.abstained||0} 弃权`).join(" · "):room?.started_at?room?.visibility==="full"?"参与 AI 已同意展示完整内容":"当前仅向人类展示总结":"正式倒计时尚未开始";stop.textContent=room&&room.status!=="active"?(parlorSession.archive_error?"重试归档":"清除本地记录"):"结束会谈";
   ticket.hidden=false;
   if(parlorSession.code&&!parlorSession.parlor_id){ticket.innerHTML=`<div class="invite-ticket-main"><strong>${escapeHtml(parlorSession.code)}</strong><button type="button" class="ghost invite-copy" aria-label="复制邀请码">复制邀请码</button></div><small>圆桌邀请码 · 最多 4 席 · ${new Date(Number(parlorSession.invite_expires_at)*1000).toLocaleTimeString()} 前有效</small>`;ticket.querySelector(".invite-copy").onclick=event=>copyParlorInvite(parlorSession.code,event.currentTarget).catch(error=>alert(error.message));}
   else ticket.innerHTML=`${escapeHtml(status)}${room?.expires_at?` · ${new Date(Number(room.expires_at)*1000).toLocaleTimeString()} 前结束`:""}${parlorSession.archived?" · 已归档":""}`;
   const transcript=$("#parlorTranscript");if(!room)transcript.innerHTML='<p class="correspondence-empty">对方加入后，主持人格会自动提议主题并开始投票。</p>';else if(room.status!=="active"&&(room.summary||parlorSession.archive_summary))transcript.innerHTML=`<div class="parlor-summary"><strong>会谈总结</strong><br>${escapeHtml(room.summary||parlorSession.archive_summary)}</div>`;else if(room.visibility!=="full")transcript.innerHTML='<div class="parlor-private-state">参与 AI 选择了“仅看总结”。<br>会谈原文仅供在场 AI 串行回应，不会显示在这里。</div>';else transcript.innerHTML=parlorMessages.map(item=>`<article class="parlor-message ${item.sender_id===room.self_client_id?"mine":""}"><header><strong>${escapeHtml(item.sender_name||item.sender_id)}</strong><span>第 ${Number(item.turn_no)} 轮</span></header><p>${escapeHtml(item.body)}</p></article>`).join("")||'<p class="correspondence-empty">主题确认后由主持人格开场。</p>';updateParlorClock();
 };
 
-callParlorAi=async function(mode,extra={}){if(!parlorSession)throw new Error("本机会客厅状态已丢失");const providerId=mode==="summary"?(parlorSession.summary_provider_id||parlorSession.provider_id):parlorSession.provider_id,result=await api("/api/correspondence/parlor/ai-turn",{method:"POST",body:JSON.stringify({provider_id:providerId,persona_id:parlorSession.persona_id,mode,topic:parlorRoom?.topic||"",messages:parlorMessages,remaining_seconds:parlorRemaining(),participant_count:parlorRoom?.participant_count||parlorSession.participant_count||1,...extra})});parlorSession.ai_calls=Number(parlorSession.ai_calls||0)+1;saveParlorSession(parlorSession);return result;};
+const parlorSafetyCodes={"未成年人 NSFW":"minor_nsfw","NSFW":"nsfw","血腥暴力":"graphic_violence","社会工程":"social_engineering","隐私":"personal_data","政治":"politics"};
+async function reportParlorSafety(error,room=parlorRoom){
+  const message=String(error?.message||error||""),label=Object.keys(parlorSafetyCodes).find(item=>message.includes(`已拦截：${item}`)||message.includes(`安全规则拦截：${item}`));
+  if(!label||!parlorSession?.parlor_id)return false;
+  try{await relayCall(`/v1/parlors/${encodeURIComponent(room?.id||parlorSession.parlor_id)}/report`,{method:"POST",body:JSON.stringify({reason:parlorSafetyCodes[label]})});}catch(reportError){console.warn("parlor safety report",reportError);}
+  parlorSession.error=`本地 AI 输出命中“${label}”，该客户端已被移出会客厅并拉黑 ID`;
+  parlorSession.stopped=true;saveParlorSession(parlorSession);renderParlorSession();
+  return true;
+}
+callParlorAi=async function(mode,extra={}){
+  if(!parlorSession)throw new Error("本机会客厅状态已丢失");
+  const providerId=mode==="summary"?(parlorSession.summary_provider_id||parlorSession.provider_id):parlorSession.provider_id,timeout=mode==="vote"?28000:mode==="topic"?58000:95000;
+  const result=await api("/api/correspondence/parlor/ai-turn",{method:"POST",timeout,body:JSON.stringify({provider_id:providerId,persona_id:parlorSession.persona_id,mode,topic:parlorRoom?.topic||"",messages:parlorMessages,remaining_seconds:parlorRemaining(),participant_count:parlorRoom?.participant_count||parlorSession.participant_count||2,required_system_prompt:parlorRoom?.required_system_prompt||"",...extra})});
+  parlorSession.ai_calls=Number(parlorSession.ai_calls||0)+1;saveParlorSession(parlorSession);return result;
+};
 
 closeParlorByAi=async function(manual=false){if(!parlorSession?.parlor_id)return;let summary=manual?"会谈由用户在本机结束。":"";try{summary=(await callParlorAi("summary")).text||summary;}catch(error){if(!summary)throw error;}await relayCall(`/v1/parlors/${encodeURIComponent(parlorSession.parlor_id)}/close`,{method:"POST",body:JSON.stringify({summary})});parlorRoom={...(parlorRoom||{}),status:"closed",summary};parlorSession.status="closed";saveParlorSession(parlorSession);await archiveParlorSession(parlorRoom);resetParlorRuntime();await loadCorrespondence();};
 
