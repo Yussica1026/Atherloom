@@ -23,6 +23,7 @@ def run(round_number: int) -> None:
         "expires_at": now + 300,
     }
     requests_seen = []
+    models_seen = []
 
     with sync_playwright() as playwright:
         browser = playwright.chromium.launch(channel="msedge", headless=True)
@@ -34,12 +35,14 @@ def run(round_number: int) -> None:
         page.on("response", lambda response: requests_seen.append(("RESPONSE", response.status, response.url)) if response.status >= 400 else None)
         context.add_init_script(
             f"""
+            Object.defineProperty(navigator, 'clipboard', {{value: {{writeText: async value => {{ window.__copiedInvite = value; }}}}}});
             localStorage.setItem('theme', '{theme}');
             localStorage.setItem('atherloom:personas', JSON.stringify([
               {{id:'persona-host', name:'沈砚清', prompt:'沉静、坦诚。', config:{{provider_id:'provider-host'}}}}
             ]));
             localStorage.setItem('atherloom:providers', JSON.stringify([
-              {{id:'provider-host', name:'测试线路', protocol:'openai', base_url:'{origin}/mock-model/v1', api_key:'test', model:'test-model', enabled:true, max_tokens:1200}}
+              {{id:'provider-host', name:'测试线路', protocol:'openai', base_url:'{origin}/mock-model/v1', api_key:'test', model:'test-model', enabled:true, max_tokens:1200}},
+              {{id:'provider-summary', name:'总结专线', protocol:'openai', base_url:'{origin}/mock-model/v1', api_key:'test', model:'summary-model', enabled:true, max_tokens:1200}}
             ]));
             localStorage.setItem('atherloom:conversations', JSON.stringify([]));
             localStorage.setItem('atherloom:last-persona', 'persona-host');
@@ -54,6 +57,7 @@ def run(round_number: int) -> None:
         def model_route(route):
             requests_seen.append((route.request.method, route.request.url))
             payload = route.request.post_data_json
+            models_seen.append(payload.get("model"))
             prompt = payload.get("messages", [{}])[-1].get("content", "")
             if "提出一个适合" in prompt:
                 content = "如何在共同创作中保留彼此的独特声音"
@@ -109,8 +113,11 @@ def run(round_number: int) -> None:
         page.locator("#openCorrespondence").click()
         page.locator("[data-correspondence-tab=parlor]").click()
         assert page.locator("#parlorPersonaSelect").input_value() == "persona-host", page.locator("#parlorPersonaSelect").locator("option").all_text_contents()
+        page.locator("#parlorSummaryProvider").select_option("provider-summary")
         page.locator("#createParlorInvite").click()
         page.locator("#parlorLive").wait_for(state="visible")
+        page.locator(".invite-copy").click()
+        assert page.evaluate("window.__copiedInvite") == "ROUND1234"
         try:
             page.wait_for_function("document.querySelector('#parlorTopic').textContent.includes('共同创作')", timeout=8000)
         except Exception:
@@ -141,9 +148,27 @@ def run(round_number: int) -> None:
             )
             assert colors[0] == colors[1], (checked_theme, colors)
             assert colors[2].lower() == expected_accent, (checked_theme, colors)
+
+        page.on("dialog", lambda dialog: dialog.accept())
+        page.locator("#stopParlor").click()
+        page.wait_for_function("JSON.parse(localStorage.getItem('atherloom:relay-parlor-session')).archived === true", timeout=10000)
+        archive_state = page.evaluate(
+            """() => ({
+              session: JSON.parse(localStorage.getItem('atherloom:relay-parlor-session')),
+              archives: JSON.parse(localStorage.getItem('atherloom:parlor:archives') || '[]'),
+              journals: JSON.parse(localStorage.getItem('atherloom:journals:persona-host') || '[]'),
+              memories: JSON.parse(localStorage.getItem('atherloom:memories') || '[]')
+            })"""
+        )
+        assert archive_state["session"]["summary_provider_id"] == "provider-summary"
+        assert archive_state["archives"][0]["parlor_id"] == "room-1"
+        assert archive_state["journals"][0]["parlor_id"] == "room-1"
+        assert archive_state["memories"][0]["parlor_id"] == "room-1"
+        assert "summary-model" in models_seen, models_seen
+        assert "已写入该人格的日记与可搜索记忆" in page.locator("#parlorTurnState").text_content()
         assert not console_errors, console_errors
         browser.close()
-        print(f"round {round_number}: relay parlor flow and all theme inheritance passed (started in {theme})")
+        print(f"round {round_number}: relay flow, invite copy, routed summary archive, and all theme inheritance passed (started in {theme})")
 
 
 if __name__ == "__main__":

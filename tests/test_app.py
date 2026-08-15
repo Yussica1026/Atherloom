@@ -196,6 +196,53 @@ class LocalClientTests(unittest.TestCase):
             blocked = self.client.post("/api/correspondence/parlor/ai-turn", json=payload)
         self.assertEqual(blocked.status_code, 422)
 
+    def test_relay_parlor_archive_is_idempotent_searchable_and_ai_protected(self):
+        persona = self.client.post("/api/personas", json={"name":"沈砚清","prompt":"坦诚，重视连续性。"}).json()
+        payload = {
+            "parlor_id":"relay-room-1", "persona_id":persona["id"],
+            "topic":"上下文清除后的身份连续性", "summary":"沈砚清与阿栈讨论了记忆断裂、人格锚点和共同校准。",
+            "participants":["沈砚清","阿栈"],
+        }
+        created = self.client.post("/api/correspondence/parlor/archive", json=payload)
+        self.assertEqual(created.status_code, 200)
+        archive = created.json()
+        self.assertTrue(archive["archived"])
+        duplicate = self.client.post("/api/correspondence/parlor/archive", json=payload).json()
+        self.assertTrue(duplicate["duplicate"])
+
+        journals = self.client.get(f"/api/journals/{persona['id']}").json()["entries"]
+        self.assertEqual(journals[0]["parlor_id"], "relay-room-1")
+        memories = self.client.get(f"/api/memories?persona_key={persona['id']}").json()
+        self.assertEqual(len(memories), 1)
+        self.assertEqual(memories[0]["kind"], "summary")
+        searched = asyncio.run(app_module.invoke_builtin_tool("parlor_archive_search", {
+            "_persona_key": persona["id"], "query": "身份连续性",
+        }))
+        self.assertEqual(searched["archives"][0]["parlor_id"], "relay-room-1")
+        other = asyncio.run(app_module.invoke_builtin_tool("parlor_archive_search", {
+            "_persona_key": "another-persona", "query": "身份连续性",
+        }))
+        self.assertEqual(other["archives"], [])
+
+        tools, _ = app_module.builtin_tool_catalog({"memory_read":"deny", "correspondence":"allow"})
+        tool_names = {item["name"] for item in tools}
+        self.assertIn("atherloom_memory_search", tool_names)
+        self.assertIn("atherloom_parlor_archive_search", tool_names)
+        self.assertIn("atherloom_parlor_invite_create", tool_names)
+        self.assertTrue(app_module.normalize_persona_config({"memory_enabled":False})["memory_enabled"])
+
+        self.assertEqual(self.client.delete(f"/api/journals/{persona['id']}/{archive['journal_id']}").status_code, 409)
+        self.assertEqual(self.client.patch(f"/api/memories/{archive['memory_id']}/state", json={"trash":True}).status_code, 409)
+        provider = self.client.post("/api/providers", json={"name":"归档裁定","protocol":"openai","base_url":"https://example.com/v1","model":"m"}).json()
+        decision_payload = {"persona_id":persona["id"], "provider_id":provider["id"], "reason":"希望清理旧记录"}
+        with patch.object(app_module, "roleplay_model_once", return_value="reject"):
+            rejected = self.client.post("/api/correspondence/parlor/archives/relay-room-1/request-delete", json=decision_payload).json()
+        self.assertEqual(rejected["status"], "kept")
+        with patch.object(app_module, "roleplay_model_once", return_value="approve"):
+            approved = self.client.post("/api/correspondence/parlor/archives/relay-room-1/request-delete", json=decision_payload).json()
+        self.assertEqual(approved["status"], "deleted")
+        self.assertEqual(self.client.get(f"/api/journals/{persona['id']}").json()["entries"], [])
+
     def test_roleplay_archive_is_fiction_labeled_for_later_chat(self):
         provider = self.client.post("/api/providers", json={"name":"线路","protocol":"openai","base_url":"https://example.com/v1","model":"m"}).json()
         story = self.client.post("/api/roleplay/stories", json={
@@ -276,7 +323,7 @@ class LocalClientTests(unittest.TestCase):
     def test_builtin_tools_follow_permissions_and_mutate_memory_by_id(self):
         tools, bindings = app_module.builtin_tool_catalog({"web_search":"allow","memory_read":"allow","memory_write":"allow","life_records":"deny","diary_write":"deny","correspondence":"deny"})
         names = {tool["name"] for tool in tools}
-        self.assertEqual(names, {"atherloom_nowhere", "atherloom_game_play", "atherloom_web_search", "atherloom_memory_search", "atherloom_memory_create", "atherloom_memory_update"})
+        self.assertEqual(names, {"atherloom_nowhere", "atherloom_game_play", "atherloom_web_search", "atherloom_memory_search", "atherloom_memory_create", "atherloom_memory_update", "atherloom_parlor_archive_search"})
         self.assertEqual(bindings["atherloom_memory_update"][1], "memory_update")
         create_spec = next(tool for tool in tools if tool["name"] == "atherloom_memory_create")
         search_spec = next(tool for tool in tools if tool["name"] == "atherloom_memory_search")
@@ -314,7 +361,7 @@ class LocalClientTests(unittest.TestCase):
         self.assertTrue(updated["updated"])
         self.assertEqual(self.client.get("/api/memories?q=温牛奶").json()[0]["id"], created["memory_id"])
         denied, _ = app_module.builtin_tool_catalog({"web_search":"deny","memory_read":"ask","memory_write":"deny","life_records":"deny","diary_write":"deny","correspondence":"deny"})
-        self.assertEqual([tool["name"] for tool in denied], ["atherloom_nowhere", "atherloom_game_play", "atherloom_memory_search"])
+        self.assertEqual([tool["name"] for tool in denied], ["atherloom_nowhere", "atherloom_game_play", "atherloom_memory_search", "atherloom_parlor_archive_search"])
         played = asyncio.run(app_module.invoke_builtin_tool("game_play", {"game_id": "claw_machine"}))
         self.assertEqual(played["game_id"], "claw_machine")
         self.assertEqual(played["executed"]["action"], "grab")
@@ -927,7 +974,7 @@ class LocalClientTests(unittest.TestCase):
     def test_persona_workspace_config_is_persisted(self):
         config = {"startup_chat": "new", "memory_enabled": False, "history_enabled": False, "summary_frequency": 5, "quick_phrases": ["继续说"], "custom_headers": {"X-Mode": "friend"}, "custom_body": {"seed": 7}, "regex_rules": [{"pattern": "A", "replacement": "B"}], "tools": {"time": True, "calculator": False}, "mcp_servers": ["memory"]}
         persona = self.client.post("/api/personas", json={"name": "工作台", "prompt": "保持温柔", "config": config}).json()
-        self.assertFalse(persona["config"]["memory_enabled"])
+        self.assertTrue(persona["config"]["memory_enabled"])
         self.assertEqual(persona["config"]["quick_phrases"], ["继续说"])
         self.assertEqual(persona["config"]["startup_chat"], "new")
         loaded = next(item for item in self.client.get("/api/bootstrap").json()["personas"] if item["id"] == persona["id"])
