@@ -162,6 +162,7 @@ def init_db() -> None:
             CREATE TABLE IF NOT EXISTS parlor_archives (
               parlor_id TEXT NOT NULL, persona_key TEXT NOT NULL, topic TEXT NOT NULL,
               summary TEXT NOT NULL, participants_json TEXT NOT NULL DEFAULT '[]',
+              keywords_json TEXT NOT NULL DEFAULT '[]',
               journal_id TEXT NOT NULL, memory_id TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'kept',
               deletion_decision TEXT, deletion_reason TEXT NOT NULL DEFAULT '',
               created_at TEXT NOT NULL, decided_at TEXT,
@@ -331,6 +332,9 @@ def init_db() -> None:
         board_columns = {row["name"] for row in connection.execute("PRAGMA table_info(board_messages)")}
         if "reply_to" not in board_columns:
             connection.execute("ALTER TABLE board_messages ADD COLUMN reply_to TEXT")
+        parlor_archive_columns = {row["name"] for row in connection.execute("PRAGMA table_info(parlor_archives)")}
+        if "keywords_json" not in parlor_archive_columns:
+            connection.execute("ALTER TABLE parlor_archives ADD COLUMN keywords_json TEXT NOT NULL DEFAULT '[]'")
         current_version = int(connection.execute("PRAGMA user_version").fetchone()[0])
         if current_version > DB_SCHEMA_VERSION:
             raise RuntimeError(
@@ -2366,15 +2370,15 @@ async def invoke_builtin_tool(name: str, arguments: dict[str, Any]) -> dict[str,
             if query:
                 pattern = f"%{query}%"
                 rows = connection.execute(
-                    "SELECT parlor_id,topic,summary,participants_json,status,created_at FROM parlor_archives WHERE persona_key=? AND status='kept' AND (topic LIKE ? OR summary LIKE ? OR participants_json LIKE ?) ORDER BY created_at DESC LIMIT ?",
-                    (persona_key, pattern, pattern, pattern, limit),
+                    "SELECT parlor_id,topic,summary,participants_json,keywords_json,status,created_at FROM parlor_archives WHERE persona_key=? AND status='kept' AND (topic LIKE ? OR summary LIKE ? OR participants_json LIKE ? OR keywords_json LIKE ?) ORDER BY created_at DESC LIMIT ?",
+                    (persona_key, pattern, pattern, pattern, pattern, limit),
                 ).fetchall()
             else:
                 rows = connection.execute(
-                    "SELECT parlor_id,topic,summary,participants_json,status,created_at FROM parlor_archives WHERE persona_key=? AND status='kept' ORDER BY created_at DESC LIMIT ?",
+                    "SELECT parlor_id,topic,summary,participants_json,keywords_json,status,created_at FROM parlor_archives WHERE persona_key=? AND status='kept' ORDER BY created_at DESC LIMIT ?",
                     (persona_key, limit),
                 ).fetchall()
-        return {"archives": [{**dict(row), "participants": json.loads(row["participants_json"] or "[]")} for row in rows]}
+        return {"archives": [{**dict(row), "participants": json.loads(row["participants_json"] or "[]"), "keywords": json.loads(row["keywords_json"] or "[]")} for row in rows]}
     if name in {"parlor_status", "parlor_send", "parlor_close"}:
         persona_key = str(arguments.get("_persona_key") or "__default__")
         with closing(db()) as connection:
@@ -4815,6 +4819,33 @@ async def correspondence_parlor_ai_turn(body: ParlorAiTurnIn) -> dict[str, str]:
     return normalize_parlor_ai_output(body.mode, raw)
 
 
+def parlor_archive_keywords(topic: str, summary: str) -> list[str]:
+    """Build compact search hints only from the user-visible topic and allowed summary."""
+    source = re.sub(r"[*_#>`~]", " ", f"{topic}\n{summary}")
+    candidates = re.findall(r"[“\"《]([^”\"》]{2,24})[”\"》]", source)
+    candidates += re.split(r"[\n，。！？；：、,.!?;:()（）\[\]【】]+", source)
+    candidates += re.findall(r"[A-Za-z][A-Za-z0-9_-]{1,23}", source)
+    stop = {"会谈总结", "讨论总结", "本次会谈", "参与者", "未记录", "主题", "总结"}
+    keywords: list[str] = []
+    for raw in candidates:
+        value = re.sub(r"\s+", " ", raw).strip(" -—·：:")
+        if len(value) < 2 or value in stop:
+            continue
+        if len(value) > 24:
+            for part in re.split(r"(?:以及|或者|还是|同时|但是|因此|如何|怎样|成为|可以|应该|是否)", value):
+                part = part.strip(" -—·：:")
+                if 2 <= len(part) <= 24 and part not in stop and part not in keywords:
+                    keywords.append(part)
+                    if len(keywords) >= 12:
+                        return keywords
+            continue
+        if value not in keywords:
+            keywords.append(value)
+        if len(keywords) >= 12:
+            break
+    return keywords
+
+
 @app.post("/api/correspondence/parlor/archive")
 def archive_correspondence_parlor(body: ParlorArchiveIn) -> dict[str, Any]:
     topic, summary = body.topic.strip(), body.summary.strip()
@@ -4832,12 +4863,17 @@ def archive_correspondence_parlor(body: ParlorArchiveIn) -> dict[str, Any]:
             (body.parlor_id, body.persona_id),
         ).fetchone()
         if existing:
-            return {"archived": True, "duplicate": True, **dict(existing)}
+            existing_payload = dict(existing)
+            existing_payload["participants"] = json.loads(existing["participants_json"] or "[]")
+            existing_payload["keywords"] = json.loads(existing["keywords_json"] or "[]")
+            return {"archived": True, "duplicate": True, **existing_payload}
         journal_id, memory_id = str(uuid.uuid4()), str(uuid.uuid4())
         short_topic = topic or "未命名会谈"
         title = f"圆桌会谈 · {short_topic}"[:120]
         participant_line = "、".join(participants) if participants else "未记录"
-        content = f"主题：{short_topic}\n参与者：{participant_line}\n\n{summary}"[:30000]
+        keywords = parlor_archive_keywords(short_topic, summary)
+        keyword_line = "、".join(keywords) if keywords else "未生成"
+        content = f"主题：{short_topic}\n关键词：{keyword_line}\n参与者：{participant_line}\n\n{summary}"[:30000]
         connection.execute("BEGIN IMMEDIATE")
         connection.execute(
             "INSERT INTO journal_entries VALUES(?,?,?,?,?,?,?,?,?,?)",
@@ -4855,21 +4891,21 @@ def archive_correspondence_parlor(body: ParlorArchiveIn) -> dict[str, Any]:
         )
         refresh_memory_links(connection, memory_id, body.persona_id)
         connection.execute(
-            "INSERT INTO parlor_archives(parlor_id,persona_key,topic,summary,participants_json,journal_id,memory_id,status,created_at) VALUES(?,?,?,?,?,?,?,'kept',?)",
-            (body.parlor_id, body.persona_id, short_topic, summary, json.dumps(participants, ensure_ascii=False), journal_id, memory_id, stamp),
+            "INSERT INTO parlor_archives(parlor_id,persona_key,topic,summary,participants_json,keywords_json,journal_id,memory_id,status,created_at) VALUES(?,?,?,?,?,?,?,?,'kept',?)",
+            (body.parlor_id, body.persona_id, short_topic, summary, json.dumps(participants, ensure_ascii=False), json.dumps(keywords, ensure_ascii=False), journal_id, memory_id, stamp),
         )
         connection.commit()
-    return {"archived": True, "duplicate": False, "parlor_id": body.parlor_id, "persona_id": body.persona_id, "journal_id": journal_id, "memory_id": memory_id, "status": "kept"}
+    return {"archived": True, "duplicate": False, "parlor_id": body.parlor_id, "persona_id": body.persona_id, "journal_id": journal_id, "memory_id": memory_id, "status": "kept", "keywords": keywords}
 
 
 @app.get("/api/correspondence/parlor/archives/{persona_id}")
 def list_correspondence_parlor_archives(persona_id: str) -> dict[str, Any]:
     with closing(db()) as connection:
         rows = connection.execute(
-            "SELECT parlor_id,topic,summary,participants_json,status,deletion_decision,deletion_reason,created_at,decided_at FROM parlor_archives WHERE persona_key=? ORDER BY created_at DESC",
+            "SELECT parlor_id,topic,summary,participants_json,keywords_json,status,deletion_decision,deletion_reason,created_at,decided_at FROM parlor_archives WHERE persona_key=? ORDER BY created_at DESC",
             (persona_id,),
         ).fetchall()
-    return {"items": [{**dict(row), "participants": json.loads(row["participants_json"] or "[]")} for row in rows]}
+    return {"items": [{**dict(row), "participants": json.loads(row["participants_json"] or "[]"), "keywords": json.loads(row["keywords_json"] or "[]")} for row in rows]}
 
 
 @app.post("/api/correspondence/parlor/archives/{parlor_id}/request-delete")

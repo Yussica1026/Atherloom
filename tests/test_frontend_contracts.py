@@ -26,7 +26,7 @@ class FrontendRegressionContracts(unittest.TestCase):
         self.assertIn('/api/correspondence/parlor/archive', APP)
         self.assertIn('await archiveParlorSession(room)', APP)
         self.assertIn('summary_provider_id', APP)
-        self.assertIn('已写入该人格的日记与可搜索记忆', APP)
+        self.assertIn('已写入该人格的日记、关键词与可搜索记忆', APP)
         self.assertIn('data-request-delete-archive', APP)
         self.assertIn('删除需人格同意', APP)
         self.assertIn('parlor_invite_create', APP)
@@ -40,7 +40,7 @@ class FrontendRegressionContracts(unittest.TestCase):
         self.assertIn('id="parlorPrepExcluded"', INDEX)
         self.assertIn('parlor-time-track', CSS)
         self.assertIn('/runtime`', APP)
-        self.assertIn('本地模型错误不会再冒充成 Relay 故障', APP)
+        self.assertIn('Relay 连接暂时中断，正在自动重试', APP)
         self.assertIn('callParlorAi("identity")', APP)
         self.assertIn('/identity`', APP)
         self.assertIn('item.species,item.gender', APP)
@@ -108,8 +108,8 @@ class FrontendRegressionContracts(unittest.TestCase):
         self.assertIn("具体位置请查看浏览器下载记录", APP)
 
     def test_versioned_script_is_current(self):
-        self.assertIn('assets/app.js?v=0591', INDEX)
-        self.assertIn('assets/standalone.js?v=0591', INDEX)
+        self.assertIn('assets/app.js?v=0592', INDEX)
+        self.assertIn('assets/standalone.js?v=0592', INDEX)
 
     def test_structured_questions_have_android_touch_fallback_and_feedback(self):
         self.assertIn('function chooseQuestionOption(button)', APP)
@@ -120,6 +120,15 @@ class FrontendRegressionContracts(unittest.TestCase):
         self.assertIn('aria-pressed="false"', APP)
         self.assertIn('touch-action:manipulation', CSS)
         self.assertIn('min-height:44px', CSS)
+
+    def test_parlor_uses_two_minute_windows_and_restart_recovery(self):
+        self.assertIn('投票限 120 秒', INDEX)
+        self.assertIn('PARLOR_MODEL_DEADLINE_MS=105000', APP)
+        self.assertIn('/v1/parlors/active', APP)
+        self.assertIn('本轮已过期，迟到正文未发送', APP)
+        self.assertIn('parlorSession.model_notice', APP)
+        self.assertIn('parlor-archive-keywords', CSS)
+        self.assertIn('parlorArchiveKeywords', STANDALONE)
 
     def test_manual_compression_keeps_original_messages_but_reduces_hot_context(self):
         self.assertIn('id="openManualCompress"', INDEX)
