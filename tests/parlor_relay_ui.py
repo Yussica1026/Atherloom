@@ -20,10 +20,14 @@ def run(round_number: int) -> None:
         "visibility": "summary",
         "messages": [],
         "guest_added": False,
-        "expires_at": now + 300,
+        "phase": "topic",
+        "started_at": None,
+        "expires_at": None,
+        "host_transfer_used": True,
     }
     requests_seen = []
     models_seen = []
+    model_payloads = []
 
     with sync_playwright() as playwright:
         browser = playwright.chromium.launch(channel="msedge", headless=True)
@@ -57,6 +61,7 @@ def run(round_number: int) -> None:
         def model_route(route):
             requests_seen.append((route.request.method, route.request.url))
             payload = route.request.post_data_json
+            model_payloads.append(payload)
             models_seen.append(payload.get("model"))
             prompt = payload.get("messages", [{}])[-1].get("content", "")
             if "提出一个适合" in prompt:
@@ -81,13 +86,31 @@ def run(round_number: int) -> None:
             elif path == "/v1/invites/create" and method == "POST":
                 fulfill(route, {"invite_id": "invite-1", "code": "ROUND1234", "visibility": "summary", "expires_at": now + 1800}, 201)
             elif path == "/v1/invites/invite-1" and method == "GET":
-                fulfill(route, {"invite_id": "invite-1", "status": "open", "parlor_id": "room-1", "participant_count": 2, "participant_limit": 4, "expires_at": relay["expires_at"]})
+                fulfill(route, {"invite_id": "invite-1", "status": "open", "parlor_id": "room-1", "participant_count": 2, "participant_limit": 4, "expires_at": now + 1800})
             elif path == "/v1/parlors/room-1" and method == "GET":
-                fulfill(route, {"id": "room-1", "self_client_id": "host", "status": "active", "visibility": relay["visibility"], "expires_at": relay["expires_at"], "max_expires_at": relay["expires_at"] + 900, "summary": None, "topic": relay["topic"], "web_search_allowed": True, "participants": [{"client_id": "host", "display_name": "沈砚清", "role": "host"}, {"client_id": "guest", "display_name": "阿栈", "role": "guest"}], "participant_count": 2, "participant_limit": 4, "active_votes": [], "messages": relay["messages"] if relay["visibility"] == "full" else []})
+                if relay["phase"] == "topic":
+                    action = {"type": "topic", "deadline": now + 60, "prompt": "请发送你想谈论的主题；60 秒内未提出则视为弃权。"}
+                elif relay["phase"] == "ready":
+                    action = {"type": "opening", "prompt": "你是主持人格，请优先发起投票或开始发言。"}
+                else:
+                    action = {"type": "discussion", "prompt": "轮到你回应。"}
+                fulfill(route, {
+                    "id": "room-1", "self_client_id": "host", "host_id": "host", "status": "active",
+                    "phase": relay["phase"], "visibility": relay["visibility"], "started_at": relay["started_at"],
+                    "expires_at": relay["expires_at"], "max_expires_at": relay["started_at"] + 1200 if relay["started_at"] else None,
+                    "summary": None, "topic": relay["topic"], "web_search_allowed": True,
+                    "memory_search_required": True, "host_transfer_used": relay["host_transfer_used"],
+                    "required_system_prompt": "你可以检索自己的人格记忆；记忆内容本身不违规。明确禁止 NSFW、未成年人性内容、血腥暴力、社工、政治和隐私套取。",
+                    "action_required": action,
+                    "participants": [{"client_id": "host", "display_name": "沈砚清", "role": "host"}, {"client_id": "guest", "display_name": "阿栈", "role": "guest"}],
+                    "participant_count": 2, "participant_limit": 4, "active_votes": [],
+                    "messages": relay["messages"] if relay["visibility"] == "full" else [],
+                })
             elif path == "/v1/parlors/room-1/votes" and method == "POST":
                 payload = request.post_data_json
                 if payload["kind"] == "topic":
                     relay["topic"] = payload["value"]
+                    relay["phase"] = "ready"
                 elif payload["kind"] == "visibility" and payload["choice"] == "approve":
                     relay["visibility"] = payload["value"]
                 fulfill(route, {"status": "approved", "kind": payload["kind"], "value": payload["value"]}, 201)
@@ -96,6 +119,11 @@ def run(round_number: int) -> None:
                 fulfill(route, {"items": [item for item in relay["messages"] if item["turn_no"] > after], "last_turn": len(relay["messages"]), "visibility": relay["visibility"]})
             elif path == "/v1/parlors/room-1/messages" and method == "POST":
                 body = request.post_data_json["body"]
+                if relay["started_at"] is None:
+                    assert relay["topic"] and relay["visibility"] == "full"
+                    relay["phase"] = "discussion"
+                    relay["started_at"] = int(time.time())
+                    relay["expires_at"] = relay["started_at"] + 300
                 relay["messages"].append({"id": f"m{len(relay['messages']) + 1}", "sender_id": "host", "sender_name": "沈砚清", "body": body, "turn_no": len(relay["messages"]) + 1, "created_at": now})
                 if not relay["guest_added"]:
                     relay["guest_added"] = True
@@ -130,6 +158,8 @@ def run(round_number: int) -> None:
         assert "2 / 4" in page.locator("#parlorSeatCount").text_content()
         assert "沈砚清" in page.locator("#parlorTranscript").text_content()
         assert "阿栈" in page.locator("#parlorTranscript").text_content()
+        assert relay["started_at"] is not None and relay["expires_at"] == relay["started_at"] + 300
+        assert any("记忆内容本身不违规" in str(payload) for payload in model_payloads), model_payloads
 
         theme_accents = {"light": "#c96442", "dark": "#c96442", "water": "#4f9298", "mint": "#6aa88b", "lilac": "#8d6fa1", "blush": "#b87382"}
         for checked_theme, expected_accent in theme_accents.items():
@@ -151,21 +181,18 @@ def run(round_number: int) -> None:
 
         page.on("dialog", lambda dialog: dialog.accept())
         page.locator("#stopParlor").click()
-        page.wait_for_function("JSON.parse(localStorage.getItem('atherloom:relay-parlor-session')).archived === true", timeout=10000)
+        page.wait_for_function("localStorage.getItem('atherloom:relay-parlor-session') === null", timeout=10000)
         archive_state = page.evaluate(
             """() => ({
-              session: JSON.parse(localStorage.getItem('atherloom:relay-parlor-session')),
               archives: JSON.parse(localStorage.getItem('atherloom:parlor:archives') || '[]'),
               journals: JSON.parse(localStorage.getItem('atherloom:journals:persona-host') || '[]'),
               memories: JSON.parse(localStorage.getItem('atherloom:memories') || '[]')
             })"""
         )
-        assert archive_state["session"]["summary_provider_id"] == "provider-summary"
         assert archive_state["archives"][0]["parlor_id"] == "room-1"
         assert archive_state["journals"][0]["parlor_id"] == "room-1"
         assert archive_state["memories"][0]["parlor_id"] == "room-1"
         assert "summary-model" in models_seen, models_seen
-        assert "已写入该人格的日记与可搜索记忆" in page.locator("#parlorTurnState").text_content()
         assert not console_errors, console_errors
         browser.close()
         print(f"round {round_number}: relay flow, invite copy, routed summary archive, and all theme inheritance passed (started in {theme})")
