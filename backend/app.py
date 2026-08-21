@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import json
 import hashlib
 import html as html_lib
@@ -5230,6 +5231,152 @@ def delete_latest_roleplay_turn(story_id: str, turn_number: int) -> dict[str, An
         )
         connection.commit()
         return {"ok": True, "state": state}
+
+
+BACKUP_PART_TABLES: dict[str, tuple[str, ...]] = {
+    "conversations": (
+        "conversations", "messages", "message_tool_events", "message_trash", "message_selections",
+        "summary_versions", "conversation_continuity", "timeline_archived_messages", "favorites", "favorite_owners",
+    ),
+    "personas": ("personas", "persona_configs", "worldbooks"),
+    "memory": (
+        "memories", "memory_audit", "memory_embeddings", "memory_usage", "memory_links", "motivation_states",
+        "journal_entries", "parlor_archives", "dream_entries", "life_records", "board_messages",
+        "correspondence_contacts", "correspondence_mail", "correspondence_invites",
+        "correspondence_parlors", "correspondence_parlor_messages",
+    ),
+    "settings": ("providers", "app_settings", "mcp_servers", "mcp_audit", "health_daily_summaries", "health_sync_audit"),
+    "games": ("game_saves", "homestead_saves", "roleplay_stories", "roleplay_turns"),
+}
+BACKUP_SECRET_SETTING_KEYS = {"search_api_key"}
+
+
+class BackupExportIn(BaseModel):
+    parts: list[str] = Field(default_factory=lambda: list(BACKUP_PART_TABLES))
+
+
+class BackupRestoreIn(BaseModel):
+    bundle: dict[str, Any]
+    parts: list[str] = Field(default_factory=list)
+
+
+def normalize_backup_parts(parts: list[str]) -> list[str]:
+    selected = list(dict.fromkeys(str(part).strip() for part in parts if str(part).strip()))
+    invalid = [part for part in selected if part not in BACKUP_PART_TABLES]
+    if invalid:
+        raise HTTPException(400, f"不支持的备份分类：{', '.join(invalid)}")
+    if not selected:
+        raise HTTPException(400, "请至少选择一类数据")
+    return selected
+
+
+def backup_json_value(value: Any) -> Any:
+    if isinstance(value, bytes):
+        return {"__atherloom_bytes__": base64.b64encode(value).decode("ascii")}
+    return value
+
+
+def restore_json_value(value: Any) -> Any:
+    if isinstance(value, dict) and set(value) == {"__atherloom_bytes__"}:
+        try:
+            return base64.b64decode(str(value["__atherloom_bytes__"]), validate=True)
+        except (ValueError, binascii.Error) as error:
+            raise HTTPException(400, "备份中包含损坏的二进制数据") from error
+    return value
+
+
+def sanitized_backup_row(table: str, source: sqlite3.Row) -> dict[str, Any] | None:
+    row = {key: backup_json_value(source[key]) for key in source.keys()}
+    if table == "providers":
+        row["api_key"] = ""
+        row["custom_headers"] = "{}"
+    elif table == "mcp_servers":
+        row["token"] = ""
+        row["env_json"] = "{}"
+        row["headers_json"] = "{}"
+    elif table == "app_settings" and row.get("key") in BACKUP_SECRET_SETTING_KEYS:
+        return None
+    return row
+
+
+@app.post("/api/backup/export")
+def export_backup(body: BackupExportIn) -> dict[str, Any]:
+    selected = normalize_backup_parts(body.parts)
+    tables: dict[str, list[dict[str, Any]]] = {}
+    with closing(db()) as connection:
+        existing = {row["name"] for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        for part in selected:
+            for table in BACKUP_PART_TABLES[part]:
+                if table not in existing:
+                    continue
+                rows = []
+                for source in connection.execute(f'SELECT * FROM "{table}"'):
+                    sanitized = sanitized_backup_row(table, source)
+                    if sanitized is not None:
+                        rows.append(sanitized)
+                tables[table] = rows
+    return {
+        "format": "atherloom-backup",
+        "version": 2,
+        "schema_version": DB_SCHEMA_VERSION,
+        "exported_at": now_iso(),
+        "parts": selected,
+        "secrets_omitted": ["providers.api_key", "providers.custom_headers", "app_settings.search_api_key", "mcp_servers.token", "mcp_servers.env_json", "mcp_servers.headers_json"],
+        "tables": tables,
+    }
+
+
+@app.post("/api/backup/restore")
+def restore_backup(body: BackupRestoreIn) -> dict[str, Any]:
+    bundle = body.bundle
+    if bundle.get("format") != "atherloom-backup" or bundle.get("version") != 2 or not isinstance(bundle.get("tables"), dict):
+        raise HTTPException(400, "不是有效的 Atherloom 服务端备份文件")
+    bundled_parts = normalize_backup_parts(bundle.get("parts") if isinstance(bundle.get("parts"), list) else [])
+    selected = normalize_backup_parts(body.parts or bundled_parts)
+    unavailable = [part for part in selected if part not in bundled_parts]
+    if unavailable:
+        raise HTTPException(400, f"备份文件不包含：{', '.join(unavailable)}")
+
+    source_tables = bundle["tables"]
+    required_tables = [table for part in selected for table in BACKUP_PART_TABLES[part]]
+    invalid_payload = [table for table in required_tables if table in source_tables and not isinstance(source_tables[table], list)]
+    if invalid_payload:
+        raise HTTPException(400, f"备份表格式错误：{', '.join(invalid_payload)}")
+
+    snapshot_path = DB_PATH.with_name(f"{DB_PATH.stem}.pre-restore-{datetime.now().strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:6]}.bak")
+    restored: dict[str, int] = {}
+    with closing(db()) as connection:
+        existing = {row["name"] for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        active_tables = [table for table in required_tables if table in existing and table in source_tables]
+        missing = [table for table in required_tables if table in existing and table not in source_tables]
+        if missing:
+            raise HTTPException(400, f"备份文件缺少数据表：{', '.join(missing)}")
+        with closing(sqlite3.connect(snapshot_path)) as snapshot:
+            connection.backup(snapshot)
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            for table in reversed(active_tables):
+                connection.execute(f'DELETE FROM "{table}"')
+            for table in active_tables:
+                columns = {row["name"] for row in connection.execute(f'PRAGMA table_info("{table}")')}
+                count = 0
+                for raw in source_tables[table]:
+                    if not isinstance(raw, dict):
+                        raise HTTPException(400, f"备份表 {table} 中存在无效记录")
+                    row = {key: restore_json_value(value) for key, value in raw.items() if key in columns}
+                    if not row:
+                        continue
+                    names = list(row)
+                    quoted = ",".join(f'"{name}"' for name in names)
+                    placeholders = ",".join("?" for _ in names)
+                    connection.execute(f'INSERT INTO "{table}" ({quoted}) VALUES ({placeholders})', tuple(row[name] for name in names))
+                    count += 1
+                restored[table] = count
+            connection.commit()
+        except Exception:
+            connection.rollback()
+            raise
+    return {"ok": True, "parts": selected, "tables": restored, "snapshot": snapshot_path.name, "secrets_restored": False}
 
 
 try:
