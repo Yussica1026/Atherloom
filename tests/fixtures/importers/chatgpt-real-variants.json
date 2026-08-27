@@ -1,0 +1,77 @@
+[
+  {
+    "id": "chatgpt-assets-anonymous",
+    "title": "Anonymous assets conversation",
+    "create_time": "2024-03-01T08:00:00",
+    "update_time": 1709280060.5,
+    "current_node": "assistant-node-anonymous",
+    "mapping": {
+      "root-anonymous": {
+        "id": "root-anonymous",
+        "message": null,
+        "parent": null,
+        "children": ["user-node-anonymous"]
+      },
+      "user-node-anonymous": {
+        "id": "user-node-anonymous",
+        "parent": "root-anonymous",
+        "children": ["assistant-node-anonymous"],
+        "message": {
+          "id": "user-message-anonymous",
+          "author": {"role": "user", "name": null, "metadata": {}},
+          "create_time": "2024-03-01T08:00:01.250Z",
+          "update_time": null,
+          "content": {
+            "content_type": "multimodal_text",
+            "parts": [
+              "Describe the attached files.",
+              {
+                "content_type": "image_asset_pointer",
+                "asset_pointer": "sediment://file_anonymous_image",
+                "size_bytes": 1234,
+                "width": 640,
+                "height": 480,
+                "metadata": {"generation": {"orientation": "landscape"}}
+              }
+            ]
+          },
+          "metadata": {
+            "attachments": [
+              {
+                "id": "file-anonymous-upload",
+                "name": "anonymous.txt",
+                "mime_type": "text/plain",
+                "size": 42,
+                "future_attachment_field": {"kept": true}
+              }
+            ]
+          }
+        }
+      },
+      "assistant-node-anonymous": {
+        "id": "assistant-node-anonymous",
+        "parent": "user-node-anonymous",
+        "children": [],
+        "message": {
+          "id": "assistant-message-anonymous",
+          "author": {"role": "assistant", "name": null, "metadata": {}},
+          "create_time": 1709280060.5,
+          "content": {
+            "content_type": "text",
+            "parts": [
+              "The references are preserved.",
+              null,
+              {
+                "content_type": "execution_output",
+                "text": "anonymous tool output",
+                "future_output_field": [1, 2]
+              }
+            ]
+          },
+          "metadata": {"model_slug": "anonymous-model"}
+        }
+      }
+    },
+    "future_conversation_field": {"kept": true}
+  }
+]

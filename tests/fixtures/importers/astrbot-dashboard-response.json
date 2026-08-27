@@ -1,0 +1,41 @@
+{
+  "status": "ok",
+  "message": null,
+  "data": {
+    "conversations": [
+      {
+        "platform_id": "anonymous-api",
+        "user_id": "anonymous-api:FriendMessage:anonymous-session",
+        "cid": "00000000-0000-0000-0000-000000000003",
+        "title": "Anonymous API conversation",
+        "persona_id": null,
+        "token_usage": 12,
+        "created_at": 1760000300,
+        "updated_at": 1760000360,
+        "umo_info": {
+          "umo": "anonymous-api:FriendMessage:anonymous-session"
+        },
+        "history": "[{\"role\":\"user\",\"content\":\"Anonymous API message\"},{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"Anonymous API reply\"},{\"type\":\"future_part\",\"payload\":{\"kept\":true}}]}]"
+      },
+      {
+        "platform_id": "anonymous-api",
+        "user_id": "anonymous-api:FriendMessage:anonymous-session",
+        "cid": "00000000-0000-0000-0000-000000000004",
+        "title": "Anonymous malformed history",
+        "persona_id": null,
+        "created_at": 1760000400,
+        "updated_at": 1760000460,
+        "history": "{not-json",
+        "future_conversation_field": {
+          "kept": true
+        }
+      }
+    ],
+    "pagination": {
+      "page": 1,
+      "page_size": 20,
+      "total": 2,
+      "total_pages": 1
+    }
+  }
+}

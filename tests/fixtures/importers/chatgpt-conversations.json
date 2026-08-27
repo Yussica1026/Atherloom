@@ -1,0 +1,78 @@
+[
+  {
+    "id": "chatgpt-conversation-anon-1",
+    "title": "匿名分支示例",
+    "create_time": 1704067200.0,
+    "update_time": 1704067260.0,
+    "current_node": "assistant-branch-b",
+    "future_conversation_field": {"kept": true},
+    "mapping": {
+      "root": {
+        "id": "root",
+        "message": null,
+        "parent": null,
+        "children": ["user-1"]
+      },
+      "user-1": {
+        "id": "user-1",
+        "parent": "root",
+        "children": ["assistant-branch-a", "assistant-branch-b"],
+        "future_node_field": "kept",
+        "message": {
+          "id": "message-user-1",
+          "author": {"role": "user", "name": null, "future_author_field": 1},
+          "create_time": 1704067201.0,
+          "content": {
+            "content_type": "multimodal_text",
+            "parts": [
+              "请描述这张匿名图片。",
+              {
+                "content_type": "image_asset_pointer",
+                "asset_pointer": "file-service://anonymous-image",
+                "width": 320,
+                "height": 200,
+                "future_block_field": [1, 2, 3]
+              }
+            ],
+            "future_wrapper_field": "kept"
+          },
+          "metadata": {"request_id": "anonymous-request"},
+          "status": "finished_successfully",
+          "recipient": "all"
+        }
+      },
+      "assistant-branch-a": {
+        "id": "assistant-branch-a",
+        "parent": "user-1",
+        "children": [],
+        "message": {
+          "id": "message-assistant-a",
+          "author": {"role": "assistant"},
+          "create_time": 1704067220.0,
+          "content": {"content_type": "text", "parts": ["这是第一条分支回复。"]},
+          "metadata": {"model_slug": "anonymous-model"},
+          "end_turn": true
+        }
+      },
+      "assistant-branch-b": {
+        "id": "assistant-branch-b",
+        "parent": "user-1",
+        "children": [],
+        "message": {
+          "id": "message-assistant-b",
+          "author": {"role": "assistant"},
+          "create_time": "1704067230",
+          "content": {
+            "content_type": "text",
+            "parts": [
+              {"type": "text", "text": "这是当前分支回复。"},
+              {"type": "future_audio_summary", "payload": {"anonymous": true}}
+            ]
+          },
+          "metadata": {},
+          "future_message_field": {"kept": true}
+        }
+      }
+    }
+  }
+]

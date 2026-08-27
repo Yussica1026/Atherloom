@@ -23,6 +23,7 @@ from typing import Any
 import httpx
 from cryptography.exceptions import InvalidTag
 from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
@@ -30,6 +31,26 @@ from pydantic import BaseModel, Field
 from backend.motivation import DRIVES, EVENTS, apply_event, context_summary, default_state, normalize, tick
 from backend import homestead
 from backend.correspondence import MAILBOX_POLICY, safety_reason as correspondence_safety_reason, create_router as create_correspondence_router
+from backend.importers import DEFAULT_IMPORTER_REGISTRY
+from backend.importers.router import create_router as create_conversation_import_router
+from backend.casual_games.games import RuleViolation as CasualGameRuleViolation
+from backend.casual_games.models import (
+    ActionCommitIn as CasualActionCommitIn,
+    MemoryDecisionIn as CasualMemoryDecisionIn,
+    PersonaTurnIn as CasualPersonaTurnIn,
+    SessionCreateIn as CasualSessionCreateIn,
+)
+from backend.casual_games.registry import get_registration as get_casual_game_registration
+from backend.casual_games.repository import (
+    CasualGameConflict,
+    CasualGameDataError,
+    CasualGameNotFound,
+    CasualGameRepository,
+)
+from backend.casual_games.router import create_router as create_casual_game_router
+from backend.casual_games.service import CasualGameService
+from backend.game.router import create_router as create_game_router
+from backend.longworld_provider import AtherloomGameMaster
 from backend.health import (
     decrypt_sync_envelope,
     encrypt_for_storage,
@@ -45,6 +66,24 @@ DB_SCHEMA_VERSION = 2
 MAX_TOOL_ROUNDS = 12
 MAX_TOOL_CALLS_PER_TURN = 12
 MAX_TOOL_CALLS_PER_ROUND = 4
+CASUAL_CHAT_GAME_IDS = (
+    "tic_tac_toe",
+    "rock_paper_scissors",
+    "bulls_and_cows",
+    "twenty_questions",
+)
+CASUAL_PERSONA_ACTION_PROTOCOLS = {
+    "tic_tac_toe": "Choose exactly one currently empty board position.",
+    "rock_paper_scissors": "Choose exactly one of rock, paper, or scissors.",
+    "bulls_and_cows": (
+        "Return one guess containing exactly four distinct ASCII digits. "
+        "Use only the public prior scores; hidden secrets remain program-owned."
+    ),
+    "twenty_questions": (
+        "Return one non-empty question or guess. The user answer or verdict is "
+        "a later engine-validated action; do not supply it yourself."
+    ),
+}
 DEFAULT_SUMMARY_PROMPT = """请把下面这段较早的对话压缩成连续、忠实、可供后续聊天使用的摘要。\n\n要求：\n1. 保留人物关系、关键事实、决定、承诺、未完成事项和情绪变化。\n2. 不编造双方没有表达过的心意或事实。\n3. 区分用户与助手各自说过的话。\n4. 删除寒暄、重复和已经失效的临时细节。\n5. 使用简洁中文，不评价用户。\n\n会话标题：{{title}}\n已有摘要：{{existing_summary}}\n待总结对话：\n{{conversation}}"""
 
 
@@ -679,6 +718,16 @@ class ParlorArchiveDeleteIn(BaseModel):
 
 
 app = FastAPI(title="Local Claude Style Client", docs_url=None, redoc_url=None)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "https://appassets.androidplatform.net",
+        "https://yussica1026.github.io",
+    ],
+    allow_origin_regex=r"^https?://(?:localhost|127\.0\.0\.1)(?::\d+)?$",
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allow_headers=["*"],
+)
 
 
 def correspondence_persona_exists(persona_key: str) -> bool:
@@ -686,8 +735,105 @@ def correspondence_persona_exists(persona_key: str) -> bool:
         return bool(connection.execute("SELECT 1 FROM personas WHERE id=?", (persona_key,)).fetchone())
 
 
+def casual_game_persona_exists(persona_key: str) -> bool:
+    return persona_key == "__default__" or correspondence_persona_exists(persona_key)
+
+
+def resolve_casual_game_conversation(conversation_id: str) -> dict[str, Any] | None:
+    """Bind a Casual Game to the Persona already selected by this chat."""
+
+    with closing(db()) as connection:
+        row = connection.execute(
+            """
+            SELECT conversation.id,
+                   conversation.persona_id AS selected_persona_id,
+                   persona.id AS persona_id
+            FROM conversations AS conversation
+            LEFT JOIN personas AS persona ON persona.id=conversation.persona_id
+            WHERE conversation.id=?
+            """,
+            (conversation_id,),
+        ).fetchone()
+    if row is None:
+        return None
+    return {
+        "conversation_id": row["id"],
+        "persona_id": (
+            "__default__"
+            if row["selected_persona_id"] is None
+            else row["persona_id"]
+        ),
+        "player_id": "local_user",
+    }
+
+
+def casual_game_repository() -> CasualGameRepository:
+    return CasualGameRepository(lambda: DB_PATH)
+
+
+def casual_game_service() -> CasualGameService:
+    return CasualGameService(
+        casual_game_repository(),
+        resolve_casual_game_conversation,
+    )
+
+
+def resolve_game_ai_character(persona_id: str, provider_id: str) -> dict[str, Any] | None:
+    """Build a frozen LongWorld runtime snapshot from an explicit safe allowlist."""
+
+    with closing(db()) as connection:
+        persona = connection.execute(
+            "SELECT id,name,prompt FROM personas WHERE id=?",
+            (persona_id,),
+        ).fetchone()
+        provider = connection.execute(
+            """
+            SELECT id,name,protocol,model,temperature,top_p,max_tokens,
+                   stream_enabled,thinking_enabled
+            FROM providers WHERE id=? AND enabled=1
+            """,
+            (provider_id,),
+        ).fetchone()
+    if persona is None or provider is None:
+        return None
+    # Never copy api_key, custom_headers, base_url, Persona tools/MCP config,
+    # or any real-world memory into the game-side snapshot.
+    return {
+        "persona_id": persona["id"],
+        "provider_id": provider["id"],
+        "persona": {"name": persona["name"], "prompt": persona["prompt"]},
+        "provider": {
+            "name": provider["name"],
+            "protocol": provider["protocol"],
+            "model": provider["model"],
+            "temperature": provider["temperature"],
+            "top_p": provider["top_p"],
+            "max_tokens": provider["max_tokens"],
+            "stream_enabled": bool(provider["stream_enabled"]),
+            "thinking_enabled": bool(provider["thinking_enabled"]),
+        },
+    }
+
+
 correspondence_router, init_correspondence = create_correspondence_router(lambda: DB_PATH, correspondence_persona_exists)
 app.include_router(correspondence_router)
+conversation_import_router, init_conversation_import_schema = create_conversation_import_router(
+    lambda: DB_PATH,
+    DEFAULT_IMPORTER_REGISTRY,
+)
+app.include_router(conversation_import_router)
+game_router, init_game_schema = create_game_router(
+    lambda: DB_PATH,
+    resolve_game_ai_character,
+    lambda provider_id: AtherloomGameMaster(lambda: DB_PATH, provider_id),
+)
+app.include_router(game_router)
+casual_game_router, init_casual_game_schema = create_casual_game_router(
+    lambda: DB_PATH,
+    resolve_casual_game_conversation,
+    persona_exists=casual_game_persona_exists,
+)
+app.include_router(casual_game_router)
 
 # 原版乌有乡运行时保持在 third_party 中；这里只提供挂载桥，不改写其报告和规则。
 NOWHERE_ROOT = ROOT / "third_party" / "nowhere"
@@ -700,6 +846,9 @@ os.environ.setdefault("NOWHERE_HOME", str(DB_PATH.parent / "nowhere"))
 def startup() -> None:
     init_db()
     init_correspondence()
+    init_conversation_import_schema()
+    init_game_schema()
+    init_casual_game_schema()
 
 
 def masked_provider(row: sqlite3.Row) -> dict[str, Any]:
@@ -1982,6 +2131,21 @@ BUILTIN_TOOL_SPECS = {
             "required": ["game_id"],
         },
     },
+    "open_game": {
+        "permission": "game_play",
+        "description": "用户邀请当前 Persona 玩井字棋、猜拳、猜数字或二十问时，打开一局真实的 Atherloom 休闲游戏。猜数字只打开本地设置界面，由用户直接输入秘密数字；模型不得索取或传递秘密数字。二十问的答案也由用户自己保留。游戏继续绑定当前聊天、当前 Persona 与当前模型线路；不要在文字里自行模拟游戏。",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "game_id": {
+                    "type": "string",
+                    "enum": list(CASUAL_CHAT_GAME_IDS),
+                },
+            },
+            "required": ["game_id"],
+            "additionalProperties": False,
+        },
+    },
     "web_search": {
         "permission": "web_search",
         "description": "搜索公开互联网，返回标题、链接与摘要。适合查询最新信息或核实事实。",
@@ -2172,6 +2336,47 @@ async def invoke_builtin_tool(name: str, arguments: dict[str, Any]) -> dict[str,
         if action == "wait": return await nowhere_server.wait_impl(float(arguments.get("hours") or 1.0))
         if action == "send_postcard": return nowhere_server.send_postcard_impl(str(arguments.get("text") or ""))
         raise ValueError("未知的乌有乡动作")
+    if name == "open_game":
+        game_id = str(arguments.get("game_id") or "").strip()
+        if game_id not in CASUAL_CHAT_GAME_IDS:
+            raise ValueError("当前只开放井字棋、猜拳、猜数字和二十问")
+        conversation_id = str(arguments.get("_conversation_id") or "").strip()
+        source_message_id = str(arguments.get("_source_message_id") or "").strip()
+        if not conversation_id or not source_message_id:
+            raise ValueError("open_game 只能由当前聊天中的工具调用打开")
+        if game_id == "bulls_and_cows":
+            binding = resolve_casual_game_conversation(conversation_id)
+            if binding is None:
+                raise ValueError("当前聊天不存在，不能打开猜数字")
+            persona_id = binding.get("persona_id")
+            if not isinstance(persona_id, str) or not persona_id:
+                raise ValueError("当前聊天尚未绑定有效 Persona，不能打开猜数字")
+            return {
+                "opened": True,
+                "effect": {
+                    "type": "open_game",
+                    "game_id": game_id,
+                    "session_id": None,
+                    "conversation_id": conversation_id,
+                    "persona_id": persona_id,
+                    "setup_required": True,
+                },
+            }
+        session = casual_game_service().create_session(
+            CasualSessionCreateIn(
+                game_id=game_id,
+                conversation_id=conversation_id,
+            ),
+            idempotency_key=f"open_game:{source_message_id}:{game_id}",
+        )
+        effect = {
+            "type": "open_game",
+            "game_id": session["game_id"],
+            "session_id": session["id"],
+            "conversation_id": session["conversation_id"],
+            "persona_id": session["persona_id"],
+        }
+        return {"opened": True, "effect": effect}
     if name == "game_play":
         game_id = str(arguments.get("game_id", "")).strip()
         if game_id not in AI_GAME_ACTIONS:
@@ -3652,6 +3857,26 @@ def relevant_roleplay_archive(connection: sqlite3.Connection, query: str, limit:
     )
 
 
+def imported_system_message_filter(connection: sqlite3.Connection) -> str:
+    table = connection.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='import_message_provenance'"
+    ).fetchone()
+    if table is None:
+        # A database without the importer schema cannot contain imported
+        # provenance rows. Keep legacy/minimal databases usable until their
+        # normal startup migration creates the table.
+        return ""
+    return """
+      AND NOT (
+        messages.role='system'
+        AND EXISTS (
+          SELECT 1 FROM import_message_provenance imported
+          WHERE imported.message_id=messages.id
+        )
+      )
+    """
+
+
 def load_chat_context(connection: sqlite3.Connection, body: ChatIn, cutoff: str | None = None) -> tuple[sqlite3.Row, str, list[dict[str, str]]]:
     conversation = connection.execute("SELECT * FROM conversations WHERE id=?", (body.conversation_id,)).fetchone()
     if not conversation:
@@ -3682,6 +3907,7 @@ def load_chat_context(connection: sqlite3.Connection, body: ChatIn, cutoff: str 
       WHERE messages.conversation_id=?
       AND NOT EXISTS (SELECT 1 FROM message_trash t WHERE t.message_id=messages.id)
       AND NOT EXISTS (SELECT 1 FROM timeline_archived_messages a WHERE a.message_id=messages.id)
+      """ + imported_system_message_filter(connection) + """
       AND (messages.role!='assistant' OR messages.parent_message_id IS NULL OR messages.id=COALESCE(
         (SELECT s.assistant_message_id FROM message_selections s WHERE s.conversation_id=messages.conversation_id AND s.parent_message_id=messages.parent_message_id),
         (SELECT m2.id FROM messages m2 WHERE m2.conversation_id=messages.conversation_id AND m2.parent_message_id=messages.parent_message_id AND NOT EXISTS (SELECT 1 FROM message_trash t2 WHERE t2.message_id=m2.id) ORDER BY m2.created_at DESC LIMIT 1)
@@ -3708,7 +3934,7 @@ def load_chat_context(connection: sqlite3.Connection, body: ChatIn, cutoff: str 
 记忆会随时间衰减，真实召回会加固，也会沿关联记忆扩散；不得删除、隐藏或绕过用户的候选确认。"""
     tool_names = [name for name, enabled in persona_config["tools"].items() if enabled]
     tool_context = f"该人格启用的本地能力偏好：{', '.join(tool_names)}。只有 Atherloom 实际提供的能力才可调用。" if tool_names else ""
-    game_tool_context = "Atherloom 真实内置六款可执行游戏工具：云汀钓记、抓娃娃机、云纹老虎机、星潮合成、雾径迷宫、余烬地牢。这些不是需要你设计、模拟、联网搜索或确认是否存在的文字游戏。用户说“玩抓娃娃机”等游玩指令时，Atherloom 会先执行对应游戏并通过 <verified_game_context> 提供结果；你必须依据结果自然回应，绝不能声称要创建一个虚拟游戏。只有收到已执行结果才能声称自己实际操作过。"
+    game_tool_context = "Atherloom 提供两类真实可执行游戏工具：旧游戏云汀钓记、抓娃娃机、云纹老虎机、星潮合成、雾径迷宫、余烬地牢使用 atherloom_game_play；当前 Persona 与用户玩井字棋（tic_tac_toe）、猜拳（rock_paper_scissors）、猜数字（bulls_and_cows）或二十问（twenty_questions）使用 atherloom_open_game。猜数字工具只打开本地设置界面，秘密数字必须由用户直接在界面输入，模型不得索取、接收或传递；二十问也不要索取或代填用户心里的答案。不要在文字里自行模拟这些游戏。旧游戏只有收到已执行结果才能声称自己实际操作过，并只把 <verified_game_context> 用于旧游戏；休闲游戏只认后端返回的 Session 与 Result。"
     game_context = f"<verified_game_context>\n{body.game_context}\n</verified_game_context>\n这是 Atherloom 提供的真实游戏状态、动作或房间信息。只在话题相关时自然使用；不要搜索外网猜测这些内置游戏，也不要否认已经提供的事实。" if body.game_context else ""
     if body.media_context and body.media_context.lstrip().startswith("书籍："):
         media_context = f"<shared_reading_evidence>\n{body.media_context}\n</shared_reading_evidence>\n只能依据用户主动提供的本地阅读片段讨论本书；不要假装读过未提供的正文，也不要推断后续内容。"
@@ -4446,7 +4672,8 @@ async def chat(body: ChatIn) -> StreamingResponse:
                         tool_deadline = asyncio.get_running_loop().time() + tool_timeout_seconds
                         for _round in range(MAX_TOOL_ROUNDS):
                             remaining_seconds = tool_deadline - asyncio.get_running_loop().time()
-                            if remaining_seconds <= 0: break
+                            if remaining_seconds <= 0:
+                                break
                             try:
                                 probe = await asyncio.wait_for(client.post(url, headers=headers, json=tool_payload), timeout=remaining_seconds)
                             except TimeoutError:
@@ -4467,62 +4694,124 @@ async def chat(body: ChatIn) -> StreamingResponse:
                             remaining = MAX_TOOL_CALLS_PER_TURN - tool_calls_used
                             calls = normalized["calls"]
                             allowed = min(len(calls), MAX_TOOL_CALLS_PER_ROUND, remaining)
+                            selected_calls = calls[:allowed]
+                            overflowed_calls = calls[allowed:]
                             results: list[dict[str, Any]] = []
-                            for index, call in enumerate(calls):
-                                if index >= allowed:
-                                    results.append(
-                                        {"content": "本轮工具调用超过安全预算，Atherloom 未执行", "is_error": True}
-                                    )
-                                    continue
-                                server, original = mcp_bindings[call["name"]]
+
+                            async def run_tool_invocation(
+                                call_server: dict[str, Any],
+                                call_original: str,
+                                call_arguments: dict[str, Any],
+                                call_name: str,
+                            ) -> tuple[str, bool, Any]:
                                 try:
-                                    policy = expanded_mcp_server(server).get("tool_policies", {}).get(original, "allow")
+                                    policy = expanded_mcp_server(call_server).get("tool_policies", {}).get(call_original, "allow")
                                     approved = set(body.approved_tool_permissions)
-                                    builtin_permission = BUILTIN_TOOL_SPECS.get(original, {}).get("permission") if server.get("transport") == "builtin" else None
-                                    if policy == "ask" and builtin_permission not in approved and call["name"] not in approved:
+                                    builtin_permission = BUILTIN_TOOL_SPECS.get(call_original, {}).get("permission") if call_server.get("transport") == "builtin" else None
+                                    if policy == "ask" and builtin_permission not in approved and call_name not in approved:
                                         raise PermissionError("该工具设置为“每次询问”，当前未获得用户确认")
-                                    arguments = dict(call.get("arguments") or {})
-                                    if server.get("transport") == "builtin":
-                                        arguments["_persona_key"] = motivation_key(body.persona_id)
-                                        arguments["_conversation_id"] = body.conversation_id
-                                        arguments["_source_message_id"] = user_id
+                                    if call_server.get("transport") == "builtin":
+                                        call_arguments["_persona_key"] = motivation_key(body.persona_id)
+                                        call_arguments["_conversation_id"] = body.conversation_id
+                                        call_arguments["_source_message_id"] = user_id
                                     remaining_seconds = tool_deadline - asyncio.get_running_loop().time()
-                                    if remaining_seconds <= 0: raise TimeoutError(f"AI 工具调用已达到用户设置的 {tool_timeout_seconds} 秒上限")
-                                    result = await asyncio.wait_for(invoke_server_tool(server, original, arguments), timeout=remaining_seconds)
-                                    content, is_error = mcp_result_text(result)[:50000], False
-                                    if original == "web_search" and isinstance(result, dict):
-                                        event = {
-                                            "type": "web_search", "query": str(result.get("query") or arguments.get("query") or ""),
-                                            "results": [item for item in result.get("results", []) if isinstance(item, dict) and item.get("url")][:8],
-                                        }
-                                        tool_events.append(event)
-                                        yield json.dumps({"tool_event": event}, ensure_ascii=False) + "\n"
-                                    if original == "nowhere":
-                                        event = {
-                                            "type": "nowhere",
-                                            "action": str(arguments.get("action") or ""),
-                                            "text": content[:500],
-                                        }
-                                        tool_events.append(event)
-                                        yield json.dumps({"tool_event": event}, ensure_ascii=False) + "\n"
-                                    if original == "parlor_invite_create" and isinstance(result, dict) and result.get("requested"):
-                                        event = {"type": "parlor_invite_create", "persona_id": motivation_key(body.persona_id)}
-                                        tool_events.append(event)
-                                        yield json.dumps({"tool_event": event}, ensure_ascii=False) + "\n"
+                                    if remaining_seconds <= 0:
+                                        raise TimeoutError(f"AI 工具调用已达到用户设置的 {tool_timeout_seconds} 秒上限")
+                                    result = await asyncio.wait_for(
+                                        invoke_server_tool(call_server, call_original, call_arguments), timeout=remaining_seconds
+                                    )
+                                    content = mcp_result_text(result)[:50000]
                                     record_mcp_audit(
-                                        server["id"], original, "success",
+                                        call_server["id"], call_original, "success",
                                         conversation_id=body.conversation_id, user_message_id=user_id,
                                     )
+                                    return content, False, result
                                 except asyncio.CancelledError:
                                     raise
                                 except Exception as exc:
-                                    content, is_error = f"MCP 工具调用失败：{exc}", True
+                                    content = f"MCP 工具调用失败：{exc}"
                                     record_mcp_audit(
-                                        server["id"], original,
+                                        call_server["id"], call_original,
                                         "blocked" if isinstance(exc, PermissionError) else "error",
                                         str(exc), body.conversation_id, user_id,
                                     )
+                                    return content, True, None
+
+                            invocations = []
+                            for call in selected_calls:
+                                server, original = mcp_bindings[call["name"]]
+                                arguments = dict(call.get("arguments") or {})
+                                if server.get("transport") == "builtin":
+                                    arguments["_persona_key"] = motivation_key(body.persona_id)
+                                    arguments["_conversation_id"] = body.conversation_id
+                                    arguments["_source_message_id"] = user_id
+                                invocations.append(run_tool_invocation(server, original, arguments, call["name"]))
+
+                            invocation_contents = await asyncio.gather(*invocations, return_exceptions=True)
+                            for invocation_content, call in zip(invocation_contents, selected_calls):
+                                if isinstance(invocation_content, tuple):
+                                    content, is_error, result = invocation_content
+                                else:
+                                    content, is_error, result = f"MCP 工具调用失败：{invocation_content}", True, None
+                                server, original = mcp_bindings[call["name"]]
+                                arguments = call.get("arguments") or {}
+                                if original == "open_game" and isinstance(result, dict):
+                                    effect = result.get("effect")
+                                    if isinstance(effect, dict) and effect.get("type") == "open_game":
+                                        effect_event = {
+                                            "type": "open_game",
+                                            "game_id": str(effect.get("game_id") or ""),
+                                            "session_id": (
+                                                str(effect["session_id"])
+                                                if effect.get("session_id")
+                                                else None
+                                            ),
+                                            "conversation_id": str(effect.get("conversation_id") or ""),
+                                            "persona_id": str(effect.get("persona_id") or ""),
+                                            "setup_required": bool(
+                                                effect.get("setup_required", False)
+                                            ),
+                                        }
+                                        game_name = get_casual_game_registration(
+                                            effect_event["game_id"]
+                                        ).name
+                                        event = {
+                                            "type": "open_game",
+                                            "name": "atherloom_open_game",
+                                            "tool_name": f"打开{game_name}",
+                                            "status": "已打开",
+                                            "detail": game_name,
+                                            "effect": effect_event,
+                                        }
+                                        tool_events.append(event)
+                                        yield json.dumps(
+                                            {"tool_event": event},
+                                            ensure_ascii=False,
+                                        ) + "\n"
+                                if original == "web_search" and isinstance(result, dict):
+                                    event = {
+                                        "type": "web_search",
+                                        "query": str(result.get("query") or arguments.get("query") or ""),
+                                        "results": [item for item in result.get("results", []) if isinstance(item, dict) and item.get("url")][:8],
+                                    }
+                                    tool_events.append(event)
+                                    yield json.dumps({"tool_event": event}, ensure_ascii=False) + "\n"
+                                if original == "nowhere":
+                                    event = {
+                                        "type": "nowhere",
+                                        "action": str(arguments.get("action") or ""),
+                                        "text": content[:500] if isinstance(content, str) else "",
+                                    }
+                                    tool_events.append(event)
+                                    yield json.dumps({"tool_event": event}, ensure_ascii=False) + "\n"
+                                if original == "parlor_invite_create" and isinstance(result, dict) and result.get("requested"):
+                                    event = {"type": "parlor_invite_create", "persona_id": motivation_key(body.persona_id)}
+                                    tool_events.append(event)
+                                    yield json.dumps({"tool_event": event}, ensure_ascii=False) + "\n"
                                 results.append({"content": content, "is_error": is_error})
+                            for _ in overflowed_calls:
+                                results.append({"content": "本轮工具调用超过安全预算，Atherloom 未执行", "is_error": True})
+
                             tool_calls_used += min(len(calls), remaining)
                             tool_payload["messages"] = [
                                 *tool_payload["messages"],
@@ -4703,7 +4992,13 @@ def compatible_model_text(value: Any) -> str:
     return ""
 
 
-async def roleplay_model_once(provider: sqlite3.Row, system: str, prompt: str) -> str:
+async def roleplay_model_once(
+    provider: sqlite3.Row | dict[str, Any],
+    system: str,
+    prompt: str,
+    *,
+    error_label: str = "角色剧场",
+) -> str:
     headers = provider_headers(provider["protocol"], provider["api_key"], provider["custom_headers"])
     messages = [{"role": "user", "content": prompt}]
     if provider["protocol"] == "anthropic":
@@ -4724,7 +5019,7 @@ async def roleplay_model_once(provider: sqlite3.Row, system: str, prompt: str) -
             headers=headers, json=payload,
         )
     if response.status_code >= 400:
-        raise HTTPException(response.status_code, f"角色剧场线路返回 HTTP {response.status_code}：{response.text[:300]}")
+        raise HTTPException(response.status_code, f"{error_label}线路返回 HTTP {response.status_code}：{response.text[:300]}")
     data = response.json()
     if provider["protocol"] == "anthropic":
         result = "".join(block.get("text", "") for block in data.get("content", []) if block.get("type") == "text")
@@ -4739,8 +5034,678 @@ async def roleplay_model_once(provider: sqlite3.Row, system: str, prompt: str) -
         if not result and not message.get("tool_calls"):
             result = compatible_model_text(message.get("reasoning_content")) or compatible_model_text(message.get("reasoning"))
     if not str(result).strip():
-        raise HTTPException(502, "角色剧场线路没有返回正文")
+        raise HTTPException(502, f"{error_label}线路没有返回正文")
     return str(result).strip()
+
+
+def raise_casual_game_http(error: Exception) -> None:
+    if isinstance(error, CasualGameNotFound):
+        raise HTTPException(404, str(error)) from error
+    if isinstance(error, CasualGameConflict):
+        raise HTTPException(409, str(error)) from error
+    if isinstance(error, CasualGameRuleViolation):
+        raise HTTPException(
+            422,
+            {"code": error.code, "message": error.message},
+        ) from error
+    if isinstance(error, CasualGameDataError):
+        raise HTTPException(500, f"休闲游戏数据一致性错误：{error}") from error
+    raise error
+
+
+def casual_recent_chat_messages(
+    connection: sqlite3.Connection,
+    conversation_id: str,
+    *,
+    limit: int = 12,
+) -> list[dict[str, str]]:
+    rows = connection.execute(
+        """
+        SELECT role,content FROM (
+          SELECT messages.role,messages.content,messages.created_at
+          FROM messages
+          WHERE messages.conversation_id=?
+            AND NOT EXISTS (
+              SELECT 1 FROM message_trash t WHERE t.message_id=messages.id
+            )
+            AND NOT EXISTS (
+              SELECT 1 FROM timeline_archived_messages a WHERE a.message_id=messages.id
+            )
+            """ + imported_system_message_filter(connection) + """
+            AND (
+              messages.role!='assistant'
+              OR messages.parent_message_id IS NULL
+              OR messages.id=COALESCE(
+                (
+                  SELECT s.assistant_message_id FROM message_selections s
+                  WHERE s.conversation_id=messages.conversation_id
+                    AND s.parent_message_id=messages.parent_message_id
+                ),
+                (
+                  SELECT m2.id FROM messages m2
+                  WHERE m2.conversation_id=messages.conversation_id
+                    AND m2.parent_message_id=messages.parent_message_id
+                    AND NOT EXISTS (
+                      SELECT 1 FROM message_trash t2 WHERE t2.message_id=m2.id
+                    )
+                  ORDER BY m2.created_at DESC LIMIT 1
+                )
+              )
+            )
+          ORDER BY messages.created_at DESC
+          LIMIT ?
+        ) ORDER BY created_at
+        """,
+        (conversation_id, max(1, min(limit, 40))),
+    ).fetchall()
+    return [{"role": row["role"], "content": row["content"]} for row in rows]
+
+
+async def load_casual_persona_context(
+    session: Any,
+    query_hint: str,
+) -> dict[str, Any]:
+    with closing(db()) as connection:
+        conversation = connection.execute(
+            "SELECT * FROM conversations WHERE id=?",
+            (session.conversation_id,),
+        ).fetchone()
+        if conversation is None:
+            raise HTTPException(409, "休闲游戏原聊天不存在")
+        current_persona_id = motivation_key(conversation["persona_id"])
+        if current_persona_id != session.persona_id:
+            raise HTTPException(409, "原聊天已切换 Persona，不能继续这局游戏")
+        provider = connection.execute(
+            "SELECT * FROM providers WHERE id=? AND enabled=1",
+            (conversation["provider_id"],),
+        ).fetchone()
+        if provider is None:
+            raise HTTPException(404, "当前聊天绑定的模型线路不存在或已停用")
+        if session.persona_id == "__default__":
+            persona = {"id": "__default__", "name": "默认人格", "prompt": ""}
+            persona_config = normalize_persona_config({})
+        else:
+            persona = connection.execute(
+                "SELECT id,name,prompt FROM personas WHERE id=?",
+                (session.persona_id,),
+            ).fetchone()
+            if persona is None:
+                raise HTTPException(404, "休闲游戏绑定的 Persona 不存在")
+            config_row = connection.execute(
+                "SELECT config_json FROM persona_configs WHERE persona_id=?",
+                (session.persona_id,),
+            ).fetchone()
+            persona_config = normalize_persona_config(
+                config_row["config_json"] if config_row else {}
+            )
+        recent_messages = (
+            casual_recent_chat_messages(connection, session.conversation_id)
+            if persona_config["history_enabled"]
+            else []
+        )
+
+    behavior = casual_game_repository().get_behavior_config(
+        session.persona_id,
+        session.game_id,
+    )
+    memory_sources: list[dict[str, Any]] = []
+    if persona_config["memory_enabled"]:
+        conversation_query = " ".join(
+            message["content"] for message in recent_messages[-6:]
+        )
+        memory_query = " ".join(
+            part for part in (session.game_id, query_hint, conversation_query) if part
+        )[:12000]
+        query_vector, embedding_provider_id, embedding_model = await query_memory_vector(
+            memory_query
+        )
+        with closing(db()) as connection:
+            memory_sources = retrieve_memories(
+                connection,
+                memory_query,
+                limit=4,
+                char_budget=4000,
+                query_vector=query_vector,
+                embedding_provider_id=embedding_provider_id,
+                embedding_model=embedding_model,
+                persona_key=motivation_key(session.persona_id),
+            )
+
+    return {
+        "conversation": dict(conversation),
+        "provider": dict(provider),
+        "persona": dict(persona),
+        "persona_config": persona_config,
+        "behavior": behavior,
+        "memories": memory_sources,
+        "conversation_messages": recent_messages,
+    }
+
+
+def casual_prompt_sources(
+    context: dict[str, Any],
+    behavior_fields: list[str],
+) -> list[dict[str, Any]]:
+    behavior = context["behavior"]
+    configured_fields = [
+        field for field in behavior_fields if getattr(behavior, field, None)
+    ]
+    return [
+        {"kind": "protocol"},
+        {
+            "kind": "persona",
+            "persona_id": context["persona"]["id"],
+            "configured": bool(context["persona"]["prompt"].strip()),
+        },
+        {"kind": "user_game", "fields": configured_fields},
+        {"kind": "memory", "count": len(context["memories"])},
+        {
+            "kind": "conversation",
+            "conversation_id": context["conversation"]["id"],
+            "message_count": len(context["conversation_messages"]),
+        },
+        {
+            "kind": "provider",
+            "provider_id": context["provider"]["id"],
+            "model": context["provider"]["model"],
+        },
+    ]
+
+
+def casual_system_sections(
+    context: dict[str, Any],
+    protocol: str,
+    behavior_fields: list[str],
+) -> str:
+    sections = [f"<protocol_instructions>\n{protocol}\n</protocol_instructions>"]
+    persona_prompt = str(context["persona"]["prompt"] or "").strip()
+    if persona_prompt:
+        sections.append(
+            f"<persona_instructions>\n{persona_prompt}\n</persona_instructions>"
+        )
+    behavior = context["behavior"]
+    configured = [
+        f"<{field}>\n{str(getattr(behavior, field)).strip()}\n</{field}>"
+        for field in behavior_fields
+        if getattr(behavior, field, None)
+    ]
+    if configured:
+        sections.append(
+            "<user_game_instructions>\n"
+            + "\n".join(configured)
+            + "\n</user_game_instructions>"
+        )
+    if context["memories"]:
+        sections.append(
+            "<memory_context>\n"
+            + "\n\n".join(
+                f"{item['title']}\n{item['content']}" for item in context["memories"]
+            )
+            + "\n</memory_context>"
+        )
+    return "\n\n".join(sections)
+
+
+@app.post("/api/casual-games/sessions/{session_id}/persona-turn")
+async def casual_game_persona_turn(
+    session_id: str,
+    body: CasualPersonaTurnIn,
+) -> dict[str, Any]:
+    repository = casual_game_repository()
+    service = casual_game_service()
+    try:
+        session = repository.get_session(session_id)
+        replay = repository.find_persona_turn_response(
+            session_id,
+            session.persona_id,
+            body,
+        )
+        if replay is not None:
+            return {**replay, "idempotent_replay": True}
+        if session.game_id not in CASUAL_CHAT_GAME_IDS:
+            raise CasualGameConflict("当前游戏尚未接通 Persona 模型回合")
+        if session.status != "active":
+            raise CasualGameConflict("休闲游戏 Session 已结束")
+        if body.expected_revision != session.revision:
+            raise CasualGameConflict(
+                f"revision 冲突：当前为 {session.revision}，请求为 {body.expected_revision}"
+            )
+        registration = get_casual_game_registration(session.game_id)
+        public_state = registration.engine.public_state(session.state)
+        if registration.engine.current_actor(session.state) != "persona":
+            raise CasualGameConflict("当前不是 Persona 回合")
+        context = await load_casual_persona_context(
+            session,
+            json.dumps(public_state, ensure_ascii=False),
+        )
+        action_schema = dict(registration.persona_action_schema)
+        protocol_state = {
+            "game_id": session.game_id,
+            "actor": "persona",
+            "public_state": public_state,
+            "action_schema": action_schema,
+            "game_protocol": CASUAL_PERSONA_ACTION_PROTOCOLS[session.game_id],
+        }
+        if session.game_id == "tic_tac_toe":
+            protocol_state["legal_positions"] = [
+                index
+                for index, mark in enumerate(public_state.get("board", []))
+                if mark is None
+            ]
+        protocol = (
+            "这是一次由现有 Persona 执行的休闲游戏动作。你只负责选择动作，"
+            "程序负责回合、合法性和胜负。只输出一个符合 action_schema 的 JSON object，"
+            "不要输出 Markdown、说明、对白或胜负结论。\n"
+            + json.dumps(protocol_state, ensure_ascii=False, sort_keys=True)
+        )
+        prompt = json.dumps(
+            {
+                "conversation_summary": (
+                    context["conversation"]["summary"]
+                    if context["persona_config"]["history_enabled"]
+                    else ""
+                ),
+                "conversation_context": context["conversation_messages"],
+                "request": "return_one_legal_action_json",
+            },
+            ensure_ascii=False,
+        )
+        raw = await roleplay_model_once(
+            context["provider"],
+            casual_system_sections(
+                context,
+                protocol,
+                ["instructions", "strategy_instructions"],
+            ),
+            prompt,
+            error_label="休闲游戏",
+        )
+        try:
+            action = json.loads(raw)
+        except (json.JSONDecodeError, TypeError) as error:
+            raise HTTPException(502, "Persona 模型没有返回严格 JSON 动作") from error
+        if not isinstance(action, dict):
+            raise HTTPException(502, "Persona 模型动作必须是 JSON object")
+        committed = service.commit_persona_action(
+            session_id,
+            CasualActionCommitIn(
+                action=action,
+                expected_revision=body.expected_revision,
+                idempotency_key=body.idempotency_key,
+            ),
+        )
+        return {
+            **committed,
+            "prompt_sources": casual_prompt_sources(
+                context,
+                ["instructions", "strategy_instructions"],
+            ),
+        }
+    except HTTPException:
+        raise
+    except Exception as error:
+        raise_casual_game_http(error)
+
+
+def existing_casual_chat_reply(result_id: str) -> dict[str, Any] | None:
+    with closing(db()) as connection:
+        row = connection.execute(
+            """
+            SELECT result.chat_message_id,session.conversation_id,session.persona_id,
+                   message.content
+            FROM casual_game_results AS result
+            JOIN casual_game_sessions AS session ON session.id=result.session_id
+            LEFT JOIN messages AS message ON message.id=result.chat_message_id
+            WHERE result.id=?
+            """,
+            (result_id,),
+        ).fetchone()
+    if row is None or not row["chat_message_id"]:
+        return None
+    if row["content"] is None:
+        with closing(db()) as connection:
+            connection.execute(
+                """
+                UPDATE casual_game_results SET chat_message_id=NULL
+                WHERE id=? AND chat_message_id=?
+                """,
+                (result_id, row["chat_message_id"]),
+            )
+            connection.commit()
+        return None
+    return {
+        "result_id": result_id,
+        "assistant_id": row["chat_message_id"],
+        "conversation_id": row["conversation_id"],
+        "persona_id": row["persona_id"],
+        "content": row["content"],
+        "idempotent_replay": True,
+    }
+
+
+@app.post("/api/casual-games/results/{result_id}/chat-reply")
+async def casual_game_result_chat_reply(result_id: str) -> dict[str, Any]:
+    existing = existing_casual_chat_reply(result_id)
+    if existing is not None:
+        return existing
+    repository = casual_game_repository()
+    try:
+        result_record = repository.get_result_by_id(result_id)
+        session = repository.get_session(result_record.session_id)
+        if (
+            session.status != "finished"
+            or session.result_id != result_id
+            or session.game_id not in CASUAL_CHAT_GAME_IDS
+        ):
+            raise CasualGameConflict("Result 不是已接通休闲游戏的完成结果")
+        result_payload = result_record.result.model_dump(mode="json")
+        context = await load_casual_persona_context(
+            session,
+            json.dumps(result_payload, ensure_ascii=False),
+        )
+        protocol = (
+            "以下 casual_game_result 是程序验证并提交的真实互动结果。"
+            "请以当前 Persona 正常回复一次，可以自然回应这次共同游戏，"
+            "但不得改写结果、编造额外对局或声称未发生的事件。只输出回复正文。"
+        )
+        prompt = json.dumps(
+            {
+                "conversation_summary": (
+                    context["conversation"]["summary"]
+                    if context["persona_config"]["history_enabled"]
+                    else ""
+                ),
+                "conversation_context": context["conversation_messages"],
+                "casual_game_result": result_payload,
+                "request": "reply_to_verified_game_result",
+            },
+            ensure_ascii=False,
+        )
+        reply = await roleplay_model_once(
+            context["provider"],
+            casual_system_sections(
+                context,
+                protocol,
+                ["instructions", "reaction_instructions"],
+            ),
+            prompt,
+            error_label="休闲游戏",
+        )
+        assistant_id = str(uuid.uuid4())
+        stamp = now_iso()
+        event = {
+            "type": "casual_game_finished",
+            "game_id": session.game_id,
+            "session_id": session.id,
+            "result_id": result_id,
+        }
+        with closing(db()) as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            linked = connection.execute(
+                "SELECT chat_message_id FROM casual_game_results WHERE id=?",
+                (result_id,),
+            ).fetchone()
+            if linked is None:
+                connection.rollback()
+                raise HTTPException(404, "休闲游戏 Result 不存在")
+            if linked["chat_message_id"]:
+                connection.rollback()
+                replay = existing_casual_chat_reply(result_id)
+                if replay is None:
+                    raise HTTPException(500, "休闲游戏赛后回复链接失败")
+                return replay
+            current = connection.execute(
+                "SELECT persona_id,provider_id FROM conversations WHERE id=?",
+                (session.conversation_id,),
+            ).fetchone()
+            if (
+                current is None
+                or motivation_key(current["persona_id"]) != session.persona_id
+                or current["provider_id"] != context["provider"]["id"]
+            ):
+                connection.rollback()
+                raise HTTPException(409, "赛后回复生成期间原聊天的 Persona 或模型线路已改变")
+            connection.execute(
+                """
+                INSERT INTO messages(
+                  id,conversation_id,role,content,provider_id,model,created_at,
+                  reasoning,parent_message_id
+                ) VALUES(?,?,'assistant',?,?,?,?, '',NULL)
+                """,
+                (
+                    assistant_id,
+                    session.conversation_id,
+                    reply,
+                    context["provider"]["id"],
+                    context["provider"]["model"],
+                    stamp,
+                ),
+            )
+            connection.execute(
+                "INSERT INTO message_tool_events VALUES (?,?)",
+                (assistant_id, json.dumps([event], ensure_ascii=False)),
+            )
+            connection.execute(
+                "UPDATE casual_game_results SET chat_message_id=? WHERE id=?",
+                (assistant_id, result_id),
+            )
+            connection.execute(
+                "UPDATE conversations SET updated_at=? WHERE id=?",
+                (stamp, session.conversation_id),
+            )
+            connection.commit()
+        return {
+            "result_id": result_id,
+            "assistant_id": assistant_id,
+            "conversation_id": session.conversation_id,
+            "persona_id": session.persona_id,
+            "content": reply,
+            "idempotent_replay": False,
+            "prompt_sources": casual_prompt_sources(
+                context,
+                ["instructions", "reaction_instructions"],
+            ),
+        }
+    except HTTPException:
+        raise
+    except Exception as error:
+        raise_casual_game_http(error)
+
+
+def casual_game_memory_text(
+    game_id: str,
+    state: dict[str, Any],
+    outcome: str,
+) -> tuple[str, str]:
+    outcome_text = {
+        "user_win": "用户获胜",
+        "persona_win": "我获胜",
+        "draw": "平局",
+    }.get(outcome)
+    if outcome_text is None:
+        raise HTTPException(500, "休闲游戏 Result 包含未知 outcome")
+    if game_id == "tic_tac_toe":
+        return (
+            "与用户完成一局井字棋",
+            f"我和用户完成了一局井字棋，结果是{outcome_text}。",
+        )
+    if game_id == "rock_paper_scissors":
+        choice_names = {"rock": "石头", "paper": "布", "scissors": "剪刀"}
+        user_choice = choice_names.get(state.get("user_choice"))
+        persona_choice = choice_names.get(state.get("persona_choice"))
+        if user_choice is None or persona_choice is None:
+            raise HTTPException(500, "猜拳完成状态缺少已验证的双方选择")
+        return (
+            "与用户完成一局猜拳",
+            f"我和用户完成了一局猜拳；用户出了{user_choice}，我出了{persona_choice}，结果是{outcome_text}。",
+        )
+    if game_id == "bulls_and_cows":
+        history = state.get("history")
+        if not isinstance(history, list) or not history:
+            raise HTTPException(500, "猜数字完成状态缺少已验证的猜测记录")
+        return (
+            "与用户完成一局猜数字",
+            f"我和用户完成了一局猜数字，共进行了{len(history)}次猜测，结果是{outcome_text}。",
+        )
+    if game_id == "twenty_questions":
+        question_count = state.get("question_count")
+        if not isinstance(question_count, int) or question_count < 1:
+            raise HTTPException(500, "二十问完成状态缺少已验证的问题数量")
+        return (
+            "与用户完成一局二十问",
+            f"我和用户完成了一局二十问，在第{question_count}问结束，结果是{outcome_text}。",
+        )
+    raise HTTPException(500, "休闲游戏记忆摘要不支持当前 game_id")
+
+
+@app.post("/api/casual-games/results/{result_id}/memory-decision")
+def casual_game_result_memory_decision(
+    result_id: str,
+    body: CasualMemoryDecisionIn,
+) -> dict[str, Any]:
+    repository = casual_game_repository()
+    try:
+        result_record = repository.get_result_by_id(result_id)
+        session = repository.get_session(result_record.session_id)
+        if (
+            session.status != "finished"
+            or session.result_id != result_id
+            or session.game_id not in CASUAL_CHAT_GAME_IDS
+        ):
+            raise CasualGameConflict("Result 不是已接通休闲游戏的完成结果")
+        desired = "approved" if body.approved else "declined"
+        if result_record.memory_decision == "approved":
+            with closing(db()) as connection:
+                linked_memory_exists = bool(
+                    result_record.memory_id
+                    and connection.execute(
+                        "SELECT 1 FROM memories WHERE id=? AND deleted_at IS NULL",
+                        (result_record.memory_id,),
+                    ).fetchone()
+                )
+                if not linked_memory_exists:
+                    connection.execute(
+                        """
+                        UPDATE casual_game_results
+                        SET memory_decision=NULL,memory_id=NULL
+                        WHERE id=? AND memory_decision='approved'
+                        """,
+                        (result_id,),
+                    )
+                    connection.commit()
+                    result_record = repository.get_result_by_id(result_id)
+        if result_record.memory_decision is not None:
+            if result_record.memory_decision != desired:
+                raise CasualGameConflict("这条游戏结果已经记录了另一种记忆决定")
+            return {
+                "result_id": result_id,
+                "decision": result_record.memory_decision,
+                "memory_id": result_record.memory_id,
+                "idempotent_replay": True,
+            }
+
+        if not body.approved:
+            with closing(db()) as connection:
+                connection.execute("BEGIN IMMEDIATE")
+                connection.execute(
+                    """
+                    UPDATE casual_game_results
+                    SET memory_decision='declined'
+                    WHERE id=? AND memory_decision IS NULL
+                    """,
+                    (result_id,),
+                )
+                connection.commit()
+            return {
+                "result_id": result_id,
+                "decision": "declined",
+                "memory_id": None,
+                "idempotent_replay": False,
+            }
+
+        behavior = repository.get_behavior_config(session.persona_id, session.game_id)
+        if behavior.memory_mode == "off":
+            raise CasualGameConflict("当前 Persona 已关闭这款游戏的长期记忆写入")
+        if not casual_game_persona_exists(session.persona_id):
+            raise HTTPException(404, "休闲游戏绑定的 Persona 不存在")
+        title, content = casual_game_memory_text(
+            session.game_id,
+            session.state,
+            result_record.result.outcome,
+        )
+        memory = create_memory(
+            MemoryIn(
+                title=title,
+                content=content,
+                kind="event",
+                source_conversation_id=session.conversation_id,
+                source_message_id=None,
+                persona_key=session.persona_id,
+                importance=body.importance if body.importance is not None else 0.4,
+                confidence=1,
+                source_type="manual",
+            )
+        )
+        memory_id = memory["id"]
+        stamp = now_iso()
+        provenance = {
+            "source": "casual_game",
+            "reality_scope": "real_interaction",
+            "game_id": session.game_id,
+            "session_id": session.id,
+            "result_id": result_id,
+            "approved_by": (
+                "user_setting" if behavior.memory_mode == "auto" else "user"
+            ),
+        }
+        with closing(db()) as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            current = connection.execute(
+                "SELECT memory_decision,memory_id FROM casual_game_results WHERE id=?",
+                (result_id,),
+            ).fetchone()
+            if current is None:
+                connection.rollback()
+                raise HTTPException(404, "休闲游戏 Result 不存在")
+            if current["memory_decision"] is not None:
+                connection.rollback()
+                if current["memory_decision"] != "approved":
+                    raise HTTPException(409, "这条游戏结果已经拒绝写入长期记忆")
+                return {
+                    "result_id": result_id,
+                    "decision": "approved",
+                    "memory_id": current["memory_id"],
+                    "idempotent_replay": True,
+                }
+            connection.execute(
+                "INSERT INTO memory_audit VALUES (?,?, 'casual_game_provenance', ?,?)",
+                (
+                    str(uuid.uuid4()),
+                    memory_id,
+                    json.dumps(provenance, ensure_ascii=False),
+                    stamp,
+                ),
+            )
+            connection.execute(
+                """
+                UPDATE casual_game_results
+                SET memory_decision='approved',memory_id=?
+                WHERE id=?
+                """,
+                (memory_id, result_id),
+            )
+            connection.commit()
+        return {
+            "result_id": result_id,
+            "decision": "approved",
+            "memory_id": memory_id,
+            "idempotent_replay": False,
+            "provenance": provenance,
+        }
+    except HTTPException:
+        raise
+    except Exception as error:
+        raise_casual_game_http(error)
 
 
 PARLOR_AI_SYSTEM = """你正在作为一个 Atherloom 人格参加最多四位 AI 的限时圆桌会谈。
@@ -5233,10 +6198,40 @@ def delete_latest_roleplay_turn(story_id: str, turn_number: int) -> dict[str, An
         return {"ok": True, "state": state}
 
 
+LONG_WORLD_BACKUP_TABLES = (
+    "world_game_worlds",
+    "world_game_versions",
+    "world_game_sessions",
+    "world_game_players",
+    "world_game_ai_characters",
+    "world_game_npcs",
+    "world_game_turns",
+    "world_game_turn_outputs",
+    "world_game_events",
+    "world_game_snapshots",
+    "world_game_saves",
+    "world_game_operations",
+)
+
+CASUAL_GAME_BACKUP_TABLES = (
+    "casual_game_sessions",
+    "casual_game_history",
+    "casual_game_results",
+    "casual_game_behavior_configs",
+)
+
+IMPORT_BACKUP_TABLES = (
+    "import_batches",
+    "import_conversation_provenance",
+    "import_message_provenance",
+)
+
+
 BACKUP_PART_TABLES: dict[str, tuple[str, ...]] = {
     "conversations": (
         "conversations", "messages", "message_tool_events", "message_trash", "message_selections",
         "summary_versions", "conversation_continuity", "timeline_archived_messages", "favorites", "favorite_owners",
+        *IMPORT_BACKUP_TABLES,
     ),
     "personas": ("personas", "persona_configs", "worldbooks"),
     "memory": (
@@ -5246,7 +6241,14 @@ BACKUP_PART_TABLES: dict[str, tuple[str, ...]] = {
         "correspondence_parlors", "correspondence_parlor_messages",
     ),
     "settings": ("providers", "app_settings", "mcp_servers", "mcp_audit", "health_daily_summaries", "health_sync_audit"),
-    "games": ("game_saves", "homestead_saves", "roleplay_stories", "roleplay_turns"),
+    "games": (
+        "game_saves",
+        "homestead_saves",
+        "roleplay_stories",
+        "roleplay_turns",
+        *LONG_WORLD_BACKUP_TABLES,
+        *CASUAL_GAME_BACKUP_TABLES,
+    ),
 }
 BACKUP_SECRET_SETTING_KEYS = {"search_api_key"}
 
@@ -5304,6 +6306,7 @@ def export_backup(body: BackupExportIn) -> dict[str, Any]:
     selected = normalize_backup_parts(body.parts)
     tables: dict[str, list[dict[str, Any]]] = {}
     with closing(db()) as connection:
+        connection.execute("BEGIN")
         existing = {row["name"] for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")}
         for part in selected:
             for table in BACKUP_PART_TABLES[part]:
@@ -5315,6 +6318,7 @@ def export_backup(body: BackupExportIn) -> dict[str, Any]:
                     if sanitized is not None:
                         rows.append(sanitized)
                 tables[table] = rows
+        connection.commit()
     return {
         "format": "atherloom-backup",
         "version": 2,
@@ -5337,8 +6341,67 @@ def restore_backup(body: BackupRestoreIn) -> dict[str, Any]:
     if unavailable:
         raise HTTPException(400, f"备份文件不包含：{', '.join(unavailable)}")
 
-    source_tables = bundle["tables"]
+    source_tables = dict(bundle["tables"])
     required_tables = [table for part in selected for table in BACKUP_PART_TABLES[part]]
+    bundled_long_world_tables = {
+        table for table in LONG_WORLD_BACKUP_TABLES if table in source_tables
+    }
+    if (
+        "games" in selected
+        and bundled_long_world_tables
+        and bundled_long_world_tables != set(LONG_WORLD_BACKUP_TABLES)
+    ):
+        missing_long_world = sorted(set(LONG_WORLD_BACKUP_TABLES) - bundled_long_world_tables)
+        raise HTTPException(
+            400,
+            f"长期世界备份表不完整：{', '.join(missing_long_world)}",
+        )
+    # Backups created before LongWorld existed contain none of its tables.  A
+    # legacy games restore must leave current LongWorld data untouched instead
+    # of deleting it or rejecting an otherwise valid v2 backup.
+    legacy_optional_tables = (
+        set(LONG_WORLD_BACKUP_TABLES)
+        if "games" in selected and not bundled_long_world_tables
+        else set()
+    )
+    bundled_casual_game_tables = {
+        table for table in CASUAL_GAME_BACKUP_TABLES if table in source_tables
+    }
+    if (
+        "games" in selected
+        and bundled_casual_game_tables
+        and bundled_casual_game_tables != set(CASUAL_GAME_BACKUP_TABLES)
+    ):
+        missing_casual_game = sorted(
+            set(CASUAL_GAME_BACKUP_TABLES) - bundled_casual_game_tables
+        )
+        raise HTTPException(
+            400,
+            f"休闲游戏备份表不完整：{', '.join(missing_casual_game)}",
+        )
+    if "games" in selected and not bundled_casual_game_tables:
+        legacy_optional_tables.update(CASUAL_GAME_BACKUP_TABLES)
+    bundled_import_tables = {
+        table for table in IMPORT_BACKUP_TABLES if table in source_tables
+    }
+    if (
+        "conversations" in selected
+        and bundled_import_tables
+        and bundled_import_tables != set(IMPORT_BACKUP_TABLES)
+    ):
+        missing_import_tables = sorted(
+            set(IMPORT_BACKUP_TABLES) - bundled_import_tables
+        )
+        raise HTTPException(
+            400,
+            f"外部会话导入备份表不完整：{', '.join(missing_import_tables)}",
+        )
+    if "conversations" in selected and not bundled_import_tables:
+        # A pre-import-feature conversation backup represents no import
+        # metadata.  Clear current provenance rather than retaining records
+        # that would point at conversations replaced by this restore.
+        for table in IMPORT_BACKUP_TABLES:
+            source_tables[table] = []
     invalid_payload = [table for table in required_tables if table in source_tables and not isinstance(source_tables[table], list)]
     if invalid_payload:
         raise HTTPException(400, f"备份表格式错误：{', '.join(invalid_payload)}")
@@ -5346,9 +6409,16 @@ def restore_backup(body: BackupRestoreIn) -> dict[str, Any]:
     snapshot_path = DB_PATH.with_name(f"{DB_PATH.stem}.pre-restore-{datetime.now().strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:6]}.bak")
     restored: dict[str, int] = {}
     with closing(db()) as connection:
+        connection.execute("PRAGMA foreign_keys=ON")
         existing = {row["name"] for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")}
         active_tables = [table for table in required_tables if table in existing and table in source_tables]
-        missing = [table for table in required_tables if table in existing and table not in source_tables]
+        missing = [
+            table
+            for table in required_tables
+            if table in existing
+            and table not in source_tables
+            and table not in legacy_optional_tables
+        ]
         if missing:
             raise HTTPException(400, f"备份文件缺少数据表：{', '.join(missing)}")
         with closing(sqlite3.connect(snapshot_path)) as snapshot:
@@ -5372,7 +6442,48 @@ def restore_backup(body: BackupRestoreIn) -> dict[str, Any]:
                     connection.execute(f'INSERT INTO "{table}" ({quoted}) VALUES ({placeholders})', tuple(row[name] for name in names))
                     count += 1
                 restored[table] = count
+            if (
+                "casual_game_sessions" in existing
+                and (
+                    bool(set(selected) & {"conversations", "personas"})
+                    or ("games" in selected and bool(bundled_casual_game_tables))
+                )
+            ):
+                invalid_active_session = connection.execute(
+                    """
+                    SELECT session.id
+                    FROM casual_game_sessions AS session
+                    LEFT JOIN conversations AS conversation
+                      ON conversation.id=session.conversation_id
+                    LEFT JOIN personas AS persona
+                      ON persona.id=session.persona_id
+                    WHERE session.status='active'
+                      AND (
+                        conversation.id IS NULL
+                        OR NOT (
+                          (
+                            conversation.persona_id IS NULL
+                            AND session.persona_id='__default__'
+                          )
+                          OR (
+                            conversation.persona_id IS NOT NULL
+                            AND persona.id IS NOT NULL
+                            AND conversation.persona_id=session.persona_id
+                          )
+                        )
+                      )
+                    LIMIT 1
+                    """
+                ).fetchone()
+                if invalid_active_session is not None:
+                    raise HTTPException(
+                        400,
+                        "活动中的休闲游戏需要同时恢复其 Conversation 与 Persona",
+                    )
             connection.commit()
+        except sqlite3.IntegrityError as error:
+            connection.rollback()
+            raise HTTPException(400, "备份中的表关系无效") from error
         except Exception:
             connection.rollback()
             raise

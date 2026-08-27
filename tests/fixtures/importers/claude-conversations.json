@@ -1,0 +1,58 @@
+{
+  "export_version": "anonymous-fixture-v1",
+  "future_export_field": {"kept": true},
+  "conversations": [
+    {
+      "uuid": "claude-conversation-anon-1",
+      "name": "匿名 Claude 分支示例",
+      "summary": "仅用于解析测试",
+      "created_at": "2024-01-01T00:00:00Z",
+      "updated_at": "2024-01-01T00:03:00+00:00",
+      "current_leaf_message_uuid": "claude-message-alt",
+      "account": {"uuid": "anonymous-account"},
+      "chat_messages": [
+        {
+          "uuid": "claude-message-user",
+          "sender": "human",
+          "branch_uuid": "main",
+          "created_at": "2024-01-01T00:00:01Z",
+          "updated_at": "2024-01-01T00:00:01Z",
+          "text": "请比较两个匿名方案。",
+          "content": [
+            {"type": "text", "text": "请比较两个匿名方案。", "citations": []}
+          ],
+          "attachments": [
+            {"file_name": "anonymous.txt", "file_type": "text/plain", "file_size": 12}
+          ],
+          "files": []
+        },
+        {
+          "uuid": "claude-message-main",
+          "sender": "assistant",
+          "parent_message_uuid": "claude-message-user",
+          "branch_uuid": "main",
+          "created_at": "2024-01-01T00:01:00Z",
+          "updated_at": "2024-01-01T00:01:00Z",
+          "text": "这是主分支。",
+          "content": [
+            {"type": "thinking", "thinking": "匿名推理占位", "signature": "anonymous"},
+            {"type": "text", "text": "这是主分支。"}
+          ],
+          "future_message_field": {"kept": true}
+        },
+        {
+          "uuid": "claude-message-alt",
+          "sender": "assistant",
+          "parent_message_uuid": "claude-message-user",
+          "branch_uuid": "alternate",
+          "created_at": "2024-01-01T00:02:00Z",
+          "updated_at": "not-a-timestamp",
+          "content": [
+            {"type": "text", "text": "这是当前替代分支。"},
+            {"type": "future_content_block", "arbitrary": {"nested": [true, null, 3]}}
+          ]
+        }
+      ]
+    }
+  ]
+}

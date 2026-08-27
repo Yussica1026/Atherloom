@@ -1,0 +1,60 @@
+{
+  "uuid": "claude-live-conversation-anonymous",
+  "name": "Anonymous live tree variant",
+  "created_at": "2026-07-27T10:00:00",
+  "updated_at": "2026-07-27T10:02:00Z",
+  "current_leaf_message_uuid": "claude-live-assistant-selected",
+  "chat_messages": [
+    {
+      "uuid": "claude-live-user-anonymous",
+      "sender": "human",
+      "text": "Use the presented anonymous file.",
+      "content": [
+        {
+          "type": "tool_use",
+          "id": "tool-live-anonymous",
+          "name": "present_files",
+          "input": {"file_id": "file-live-anonymous"}
+        }
+      ],
+      "files_v2": [
+        {
+          "file_uuid": "file-live-anonymous",
+          "file_kind": "document",
+          "file_name": "anonymous.pdf",
+          "document_asset": {
+            "url": "https://example.invalid/anonymous-document"
+          },
+          "page_count": 2,
+          "future_file_field": ["kept"]
+        }
+      ],
+      "created_at": "2026-07-27T10:00:01Z",
+      "parent_message_uuid": "00000000-0000-4000-8000-000000000000"
+    },
+    {
+      "uuid": "claude-live-assistant-other",
+      "sender": "assistant",
+      "text": "Unselected answer.",
+      "content": [
+        {"type": "text", "text": "Unselected answer."}
+      ],
+      "created_at": "2026-07-27T10:01:00Z",
+      "parent_message_uuid": "claude-live-user-anonymous"
+    },
+    {
+      "uuid": "claude-live-assistant-selected",
+      "sender": "assistant",
+      "text": "Selected final answer.",
+      "content": [
+        {
+          "type": "tool_result",
+          "tool_use_id": "tool-live-anonymous",
+          "content": "Anonymous live result"
+        }
+      ],
+      "created_at": "2026-07-27T10:02:00Z",
+      "parent_message_uuid": "claude-live-user-anonymous"
+    }
+  ]
+}

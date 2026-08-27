@@ -121,9 +121,12 @@ class FrontendRegressionContracts(unittest.TestCase):
         self.assertIn('touch-action:manipulation', CSS)
         self.assertIn('min-height:44px', CSS)
 
-    def test_parlor_uses_two_minute_windows_and_restart_recovery(self):
-        self.assertIn('投票限 120 秒', INDEX)
-        self.assertIn('PARLOR_MODEL_DEADLINE_MS=105000', APP)
+    def test_parlor_uses_phase_specific_windows_and_restart_recovery(self):
+        self.assertIn('提题与投票限 60 秒', INDEX)
+        self.assertIn('主持发言回复限 120 秒', INDEX)
+        self.assertIn('PARLOR_MODEL_DEADLINE_MS=120000', APP)
+        self.assertIn('PARLOR_TOPIC_DEADLINE_MS=60000', APP)
+        self.assertIn('PARLOR_VOTE_DEADLINE_MS=60000', APP)
         self.assertIn('/v1/parlors/active', APP)
         self.assertIn('本轮已过期，迟到正文未发送', APP)
         self.assertIn('parlorSession.model_notice', APP)
