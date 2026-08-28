@@ -2,6 +2,7 @@ import random
 import unittest
 
 from backend.casual_games.games.base import RuleViolation
+from backend.casual_games.games.blackjack import BlackjackEngine, hand_total
 from backend.casual_games.games.bulls_and_cows import BullsAndCowsEngine
 from backend.casual_games.games.rock_paper_scissors import RockPaperScissorsEngine
 from backend.casual_games.games.tic_tac_toe import TicTacToeEngine
@@ -107,6 +108,172 @@ class BullsAndCowsRulesTests(unittest.TestCase):
         state = engine.initial_state({"user_secret": "0123"}, random.Random(1))
         with self.assertRaises(RuleViolation):
             engine.apply_action(state, "user", {"guess": "0012"})
+
+
+class BlackjackRulesTests(unittest.TestCase):
+    @staticmethod
+    def card(rank, suit="spades"):
+        return {"rank": rank, "suit": suit}
+
+    def test_deck_is_private_and_aces_score_as_one_or_eleven(self):
+        engine = BlackjackEngine()
+        state = engine.initial_state({}, random.Random(7))
+
+        self.assertEqual(len(state["deck"]), 48)
+        self.assertEqual(state["deck_remaining"], 48)
+        self.assertEqual(len(state["user_hand"]), 2)
+        self.assertEqual(len(state["persona_hand"]), 2)
+        self.assertEqual(
+            hand_total([self.card("A"), self.card("9")]),
+            20,
+        )
+        self.assertEqual(
+            hand_total([self.card("A"), self.card("A"), self.card("9")]),
+            21,
+        )
+        self.assertEqual(
+            hand_total(
+                [self.card("A"), self.card("A"), self.card("9"), self.card("K")]
+            ),
+            21,
+        )
+
+        state["private_shuffle_marker"] = "must-not-leak"
+        public = engine.public_state(state)
+        self.assertNotIn("deck", public)
+        self.assertNotIn("private_shuffle_marker", public)
+        self.assertEqual(
+            set(public),
+            {
+                "status",
+                "turn",
+                "user_hand",
+                "persona_hand",
+                "user_total",
+                "persona_total",
+                "user_stood",
+                "persona_stood",
+                "deck_remaining",
+            },
+        )
+
+    def test_hit_turns_alternate_and_twenty_one_stands_automatically(self):
+        engine = BlackjackEngine()
+        state = {
+            "status": "active",
+            "turn": "user",
+            "user_hand": [self.card("A"), self.card("9", "hearts")],
+            "persona_hand": [self.card("10", "clubs"), self.card("7", "diamonds")],
+            "user_total": 20,
+            "persona_total": 17,
+            "user_stood": False,
+            "persona_stood": False,
+            "deck": [self.card("4", "clubs"), self.card("A", "diamonds")],
+            "deck_remaining": 2,
+        }
+
+        hit = engine.apply_action(state, "user", {"decision": "hit"})
+        self.assertEqual(hit.state["user_total"], 21)
+        self.assertTrue(hit.state["user_stood"])
+        self.assertEqual(hit.state["turn"], "persona")
+        self.assertEqual(hit.state["deck"], [self.card("4", "clubs")])
+        self.assertEqual(hit.state["deck_remaining"], 1)
+        self.assertEqual(
+            [event["type"] for event in hit.events],
+            ["card_drawn", "automatic_stand"],
+        )
+        self.assertEqual(hit.events[0]["deck_remaining"], 1)
+        self.assertFalse(state["user_stood"])
+        self.assertEqual(state["deck_remaining"], 2)
+
+        finished = engine.apply_action(
+            hit.state, "persona", {"decision": "stand"}
+        )
+        self.assertEqual(finished.state["status"], "finished")
+        self.assertEqual(finished.result["winner"], "user")
+        self.assertEqual(finished.result["score"], {"user": 21, "persona": 17})
+
+    def test_bust_loses_immediately_and_twenty_one_cannot_hit(self):
+        engine = BlackjackEngine()
+        state = {
+            "status": "active",
+            "turn": "user",
+            "user_hand": [self.card("K"), self.card("Q", "hearts")],
+            "persona_hand": [self.card("10", "clubs"), self.card("8", "diamonds")],
+            "user_total": 20,
+            "persona_total": 18,
+            "user_stood": False,
+            "persona_stood": False,
+            "deck": [self.card("5", "clubs")],
+            "deck_remaining": 1,
+        }
+        busted = engine.apply_action(state, "user", {"decision": "hit"})
+        self.assertEqual(busted.state["status"], "finished")
+        self.assertEqual(busted.result["winner"], "persona")
+        self.assertEqual(busted.result["score"], {"user": 25, "persona": 18})
+        self.assertEqual(busted.events[-1]["type"], "game_finished")
+        self.assertEqual(busted.events[-1]["reason"], "user_bust")
+
+        twenty_one = {
+            **state,
+            "user_hand": [self.card("A"), self.card("K", "hearts")],
+            "user_total": 21,
+        }
+        with self.assertRaises(RuleViolation) as caught:
+            engine.apply_action(twenty_one, "user", {"decision": "hit"})
+        self.assertEqual(caught.exception.code, "cannot_hit")
+
+    def test_stood_player_is_skipped_until_the_other_player_stands(self):
+        engine = BlackjackEngine()
+        state = {
+            "status": "active",
+            "turn": "user",
+            "user_hand": [self.card("10"), self.card("5", "hearts")],
+            "persona_hand": [self.card("10", "clubs"), self.card("6", "diamonds")],
+            "user_total": 15,
+            "persona_total": 16,
+            "user_stood": False,
+            "persona_stood": False,
+            "deck": [self.card("2", "clubs"), self.card("2", "diamonds")],
+            "deck_remaining": 2,
+        }
+
+        user_hit = engine.apply_action(state, "user", {"decision": "hit"})
+        self.assertEqual(user_hit.state["user_total"], 17)
+        self.assertEqual(user_hit.state["turn"], "persona")
+        persona_stand = engine.apply_action(
+            user_hit.state, "persona", {"decision": "stand"}
+        )
+        self.assertEqual(persona_stand.events, [
+            {"type": "hand_stood", "actor": "persona"}
+        ])
+        self.assertEqual(persona_stand.state["turn"], "user")
+        user_hit_again = engine.apply_action(
+            persona_stand.state, "user", {"decision": "hit"}
+        )
+        self.assertEqual(user_hit_again.state["user_total"], 19)
+        self.assertEqual(user_hit_again.state["turn"], "user")
+        finished = engine.apply_action(
+            user_hit_again.state, "user", {"decision": "stand"}
+        )
+        self.assertEqual(finished.result["winner"], "user")
+        self.assertEqual(finished.result["score"], {"user": 19, "persona": 16})
+        self.assertEqual(finished.events[-1]["reason"], "both_stood")
+        self.assertEqual(
+            finished.result["notable_events"][:3],
+            ["finish_reason:both_stood", "user_total:19", "persona_total:16"],
+        )
+
+    def test_decision_shape_is_strict(self):
+        engine = BlackjackEngine()
+        state = engine.initial_state({}, random.Random(11))
+        for action in (
+            {"decision": "double"},
+            {"decision": "stand", "comment": "extra"},
+            {},
+        ):
+            with self.subTest(action=action), self.assertRaises(RuleViolation):
+                engine.apply_action(state, "user", action)
 
 
 class TwentyQuestionsRulesTests(unittest.TestCase):

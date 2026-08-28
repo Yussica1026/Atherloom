@@ -13,6 +13,7 @@ import re
 import sqlite3
 import sys
 import uuid
+from copy import deepcopy
 from urllib.parse import parse_qs, unquote, urlparse
 from collections import Counter
 from contextlib import closing
@@ -71,6 +72,7 @@ CASUAL_CHAT_GAME_IDS = (
     "rock_paper_scissors",
     "bulls_and_cows",
     "twenty_questions",
+    "blackjack",
 )
 CASUAL_PERSONA_ACTION_PROTOCOLS = {
     "tic_tac_toe": "Choose exactly one currently empty board position.",
@@ -82,6 +84,11 @@ CASUAL_PERSONA_ACTION_PROTOCOLS = {
     "twenty_questions": (
         "Return one non-empty question or guess. The user answer or verdict is "
         "a later engine-validated action; do not supply it yourself."
+    ),
+    "blackjack": (
+        "Choose exactly one decision: hit or stand. Use only the public hands, "
+        "totals, stood flags, and remaining-card count; the shuffled deck is "
+        "private and program-owned. Never choose hit with a total of 21 or more."
     ),
 }
 DEFAULT_SUMMARY_PROMPT = """请把下面这段较早的对话压缩成连续、忠实、可供后续聊天使用的摘要。\n\n要求：\n1. 保留人物关系、关键事实、决定、承诺、未完成事项和情绪变化。\n2. 不编造双方没有表达过的心意或事实。\n3. 区分用户与助手各自说过的话。\n4. 删除寒暄、重复和已经失效的临时细节。\n5. 使用简洁中文，不评价用户。\n\n会话标题：{{title}}\n已有摘要：{{existing_summary}}\n待总结对话：\n{{conversation}}"""
@@ -2133,7 +2140,7 @@ BUILTIN_TOOL_SPECS = {
     },
     "open_game": {
         "permission": "game_play",
-        "description": "用户邀请当前 Persona 玩井字棋、猜拳、猜数字或二十问时，打开一局真实的 Atherloom 休闲游戏。猜数字只打开本地设置界面，由用户直接输入秘密数字；模型不得索取或传递秘密数字。二十问的答案也由用户自己保留。游戏继续绑定当前聊天、当前 Persona 与当前模型线路；不要在文字里自行模拟游戏。",
+        "description": "用户邀请当前 Persona 玩井字棋、猜拳、猜数字、二十问或双人二十一点时，打开一局真实的 Atherloom 休闲游戏。猜数字只打开本地设置界面，由用户直接输入秘密数字；模型不得索取或传递秘密数字。二十问的答案也由用户自己保留。二十一点的洗牌与牌堆由程序持有，模型只能按公开牌面选择要牌或停牌。游戏继续绑定当前聊天、当前 Persona 与当前模型线路；不要在文字里自行模拟游戏。",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -2339,7 +2346,7 @@ async def invoke_builtin_tool(name: str, arguments: dict[str, Any]) -> dict[str,
     if name == "open_game":
         game_id = str(arguments.get("game_id") or "").strip()
         if game_id not in CASUAL_CHAT_GAME_IDS:
-            raise ValueError("当前只开放井字棋、猜拳、猜数字和二十问")
+            raise ValueError("当前只开放井字棋、猜拳、猜数字、二十问和双人二十一点")
         conversation_id = str(arguments.get("_conversation_id") or "").strip()
         source_message_id = str(arguments.get("_source_message_id") or "").strip()
         if not conversation_id or not source_message_id:
@@ -5278,7 +5285,9 @@ async def casual_game_persona_turn(
             session,
             json.dumps(public_state, ensure_ascii=False),
         )
-        action_schema = dict(registration.persona_action_schema)
+        action_schema = deepcopy(dict(registration.persona_action_schema))
+        if session.game_id == "blackjack" and public_state.get("persona_total", 0) >= 21:
+            action_schema["properties"]["decision"]["enum"] = ["stand"]
         protocol_state = {
             "game_id": session.game_id,
             "actor": "persona",
@@ -5554,6 +5563,22 @@ def casual_game_memory_text(
         return (
             "与用户完成一局二十问",
             f"我和用户完成了一局二十问，在第{question_count}问结束，结果是{outcome_text}。",
+        )
+    if game_id == "blackjack":
+        user_total = state.get("user_total")
+        persona_total = state.get("persona_total")
+        if (
+            isinstance(user_total, bool)
+            or not isinstance(user_total, int)
+            or user_total < 4
+            or isinstance(persona_total, bool)
+            or not isinstance(persona_total, int)
+            or persona_total < 4
+        ):
+            raise HTTPException(500, "二十一点完成状态缺少已验证的双方点数")
+        return (
+            "与用户完成一局 21 点",
+            f"我和用户完成了一局 21 点；用户最终 {user_total} 点，我最终 {persona_total} 点，结果是{outcome_text}。",
         )
     raise HTTPException(500, "休闲游戏记忆摘要不支持当前 game_id")
 

@@ -74,7 +74,7 @@ class CasualGameApiTests(unittest.TestCase):
             },
         )
 
-    def test_catalog_is_only_the_four_registered_casual_games(self):
+    def test_catalog_contains_the_five_registered_casual_games(self):
         response = self.client.get("/api/casual-games")
         self.assertEqual(response.status_code, 200, response.text)
         games = response.json()["games"]
@@ -85,6 +85,7 @@ class CasualGameApiTests(unittest.TestCase):
                 "rock_paper_scissors",
                 "bulls_and_cows",
                 "twenty_questions",
+                "blackjack",
             ],
         )
         self.assertTrue(all(game["rules_version"] == 1 for game in games))
@@ -93,6 +94,15 @@ class CasualGameApiTests(unittest.TestCase):
         secret_pattern = bulls["options_schema"]["properties"]["user_secret"]["pattern"]
         self.assertIsNotNone(re.fullmatch(secret_pattern, "0123"))
         self.assertIsNone(re.fullmatch(secret_pattern, "1123"))
+        blackjack = next(game for game in games if game["id"] == "blackjack")
+        self.assertEqual(blackjack["options_schema"], {
+            "type": "object",
+            "additionalProperties": False,
+        })
+        self.assertEqual(
+            blackjack["persona_action_schema"]["properties"]["decision"]["enum"],
+            ["hit", "stand"],
+        )
 
     def test_schema_v1_migrates_result_delivery_fields_to_v2(self):
         legacy_path = Path(self.tempdir.name) / "casual-v1.db"
@@ -390,6 +400,43 @@ class CasualGameApiTests(unittest.TestCase):
         ).json()
         self.assertNotIn("user_secret", loaded_bulls["state"])
         self.assertNotIn("persona_secret", loaded_bulls["state"])
+
+        blackjack = self.create_session("blackjack")
+        self.assertNotIn("deck", blackjack["state"])
+        with closing(sqlite3.connect(self.db_path)) as connection:
+            private_before = json.loads(
+                connection.execute(
+                    "SELECT state_json FROM casual_game_sessions WHERE id=?",
+                    (blackjack["id"],),
+                ).fetchone()[0]
+            )
+        self.assertEqual(
+            blackjack["state"]["deck_remaining"], len(private_before["deck"])
+        )
+        self.assertLess(private_before["user_total"], 21)
+        hit = self.action(
+            blackjack["id"], "user", {"decision": "hit"}, 0, "blackjack-hit"
+        )
+        self.assertEqual(hit.status_code, 200, hit.text)
+        self.assertNotIn("deck", hit.json()["state"])
+        self.assertEqual(
+            hit.json()["state"]["user_hand"][-1], private_before["deck"][-1]
+        )
+        replay = self.action(
+            blackjack["id"], "user", {"decision": "hit"}, 0, "blackjack-hit"
+        )
+        self.assertEqual(replay.status_code, 200, replay.text)
+        self.assertTrue(replay.json()["idempotent_replay"])
+        self.assertEqual(replay.json()["state"], hit.json()["state"])
+        with closing(sqlite3.connect(self.db_path)) as connection:
+            private_after = json.loads(
+                connection.execute(
+                    "SELECT state_json FROM casual_game_sessions WHERE id=?",
+                    (blackjack["id"],),
+                ).fetchone()[0]
+            )
+        self.assertEqual(private_after["deck"], private_before["deck"][:-1])
+        self.assertEqual(private_after["deck_remaining"], len(private_after["deck"]))
 
     def test_behavior_prompt_fields_are_empty_and_memory_defaults_to_ask(self):
         default = self.client.get(
@@ -690,7 +737,20 @@ class CasualGameMainAppIntegrationTests(unittest.TestCase):
         ).json()
         self.assertEqual(twenty_session["current_actor"], "persona")
 
-        with self.assertRaisesRegex(ValueError, "猜数字和二十问"):
+        blackjack = asyncio.run(
+            app_module.invoke_builtin_tool(
+                "open_game",
+                {**arguments, "game_id": "blackjack"},
+            )
+        )["effect"]
+        self.assertEqual(blackjack["game_id"], "blackjack")
+        blackjack_session = self.client.get(
+            f"/api/casual-games/sessions/{blackjack['session_id']}"
+        ).json()
+        self.assertEqual(blackjack_session["current_actor"], "user")
+        self.assertNotIn("deck", blackjack_session["state"])
+
+        with self.assertRaisesRegex(ValueError, "二十一点"):
             asyncio.run(
                 app_module.invoke_builtin_tool(
                     "open_game",
@@ -1355,6 +1415,108 @@ class CasualGameMainAppIntegrationTests(unittest.TestCase):
                 self.assertIn(content_fragment, stored_memory["content"])
                 self.assertNotIn(user_secret, stored_memory["content"])
                 self.assertNotIn(persona_secret, stored_memory["content"])
+
+    def test_blackjack_persona_sees_only_public_state_and_memory_uses_totals(self):
+        persona, _, session = self.create_bound_session("blackjack")
+        fixed_state = {
+            "status": "active",
+            "turn": "user",
+            "user_hand": [
+                {"rank": "10", "suit": "spades"},
+                {"rank": "7", "suit": "hearts"},
+            ],
+            "persona_hand": [
+                {"rank": "A", "suit": "clubs"},
+                {"rank": "K", "suit": "diamonds"},
+            ],
+            "user_total": 17,
+            "persona_total": 21,
+            "user_stood": False,
+            "persona_stood": False,
+            "deck": [
+                {"rank": "A", "suit": "spades"},
+                {"rank": "K", "suit": "hearts"},
+            ],
+            "deck_remaining": 2,
+        }
+        with app_module.closing(app_module.db()) as connection:
+            connection.execute(
+                "UPDATE casual_game_sessions SET state_json=? WHERE id=?",
+                (json.dumps(fixed_state), session["id"]),
+            )
+            connection.commit()
+
+        user_stand = self.client.post(
+            f"/api/casual-games/sessions/{session['id']}/actions",
+            json={
+                "action": {"decision": "stand"},
+                "expected_revision": 0,
+                "idempotency_key": "blackjack-user-stand",
+            },
+        )
+        self.assertEqual(user_stand.status_code, 200, user_stand.text)
+        self.assertEqual(user_stand.json()["current_actor"], "persona")
+        self.assertNotIn("deck", user_stand.json()["state"])
+        self.assertEqual(
+            user_stand.json()["events"],
+            [{"type": "hand_stood", "actor": "user"}],
+        )
+
+        seen_turn = {}
+
+        async def blackjack_persona_model(provider, system, prompt, **kwargs):
+            seen_turn.update(system=system, prompt=prompt)
+            return json.dumps({"decision": "stand"})
+
+        with patch.object(
+            app_module, "roleplay_model_once", blackjack_persona_model
+        ):
+            persona_stand = self.client.post(
+                f"/api/casual-games/sessions/{session['id']}/persona-turn",
+                json={
+                    "expected_revision": 1,
+                    "idempotency_key": "blackjack-persona-stand",
+                },
+            )
+        self.assertEqual(persona_stand.status_code, 200, persona_stand.text)
+        payload = persona_stand.json()
+        self.assertEqual(payload["status"], "finished")
+        self.assertEqual(payload["result"]["outcome"], "persona_win")
+        self.assertEqual(payload["result"]["score"], {"user": 17, "persona": 21})
+        self.assertEqual(
+            payload["events"],
+            [
+                {"type": "hand_stood", "actor": "persona"},
+                {
+                    "type": "game_finished",
+                    "outcome": "persona_win",
+                    "winner": "persona",
+                    "reason": "both_stood",
+                },
+            ],
+        )
+        self.assertIn('"decision"', seen_turn["system"])
+        self.assertIn('"enum": ["stand"]', seen_turn["system"])
+        self.assertIn('"deck_remaining"', seen_turn["system"])
+        self.assertNotIn('"deck":', seen_turn["system"])
+        self.assertNotIn('"deck":', seen_turn["prompt"])
+
+        approved = self.client.post(
+            f"/api/casual-games/results/{payload['result_id']}/memory-decision",
+            json={"approved": True},
+        )
+        self.assertEqual(approved.status_code, 200, approved.text)
+        with app_module.closing(app_module.db()) as connection:
+            stored_memory = connection.execute(
+                "SELECT persona_key,title,content FROM memories WHERE id=?",
+                (approved.json()["memory_id"],),
+            ).fetchone()
+        self.assertEqual(stored_memory["persona_key"], persona["id"])
+        self.assertEqual(stored_memory["title"], "与用户完成一局 21 点")
+        self.assertEqual(
+            stored_memory["content"],
+            "我和用户完成了一局 21 点；用户最终 17 点，我最终 21 点，结果是我获胜。",
+        )
 
     def test_result_reply_is_assistant_only_and_idempotent(self):
         _, conversation, session = self.create_bound_session()

@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from typing import Any, Mapping
 
 from backend.casual_games.games import (
+    BlackjackEngine,
     BullsAndCowsEngine,
     GameEngine,
     RockPaperScissorsEngine,
@@ -147,6 +148,24 @@ REGISTRATIONS = (
                 "kind": {"enum": ["question", "guess"]},
                 "text": {"type": "string", "minLength": 1},
             },
+            "additionalProperties": False,
+        },
+    ),
+    GameRegistration(
+        game_id="blackjack",
+        name="21 点",
+        engine=BlackjackEngine(),
+        options_schema={"type": "object", "additionalProperties": False},
+        user_action_schema={
+            "type": "object",
+            "required": ["decision"],
+            "properties": {"decision": {"enum": ["hit", "stand"]}},
+            "additionalProperties": False,
+        },
+        persona_action_schema={
+            "type": "object",
+            "required": ["decision"],
+            "properties": {"decision": {"enum": ["hit", "stand"]}},
             "additionalProperties": False,
         },
     ),
