@@ -1,0 +1,35 @@
+{
+  "version": 1,
+  "conversations": [
+    {
+      "id": "kelivo-malformed-anon",
+      "title": "Anonymous malformed Kelivo backup",
+      "messageIds": ["kelivo-valid-anon", "kelivo-malformed-message-anon"],
+      "versionSelections": {"malformed-group-anon": 1e999}
+    },
+    "anonymous-non-object-conversation"
+  ],
+  "messages": [
+    {
+      "id": "kelivo-valid-anon",
+      "role": "user",
+      "content": "Anonymous valid message",
+      "conversationId": "kelivo-malformed-anon",
+      "groupId": "valid-group-anon",
+      "version": 0
+    },
+    {
+      "id": "kelivo-malformed-message-anon",
+      "role": "assistant",
+      "content": {"future_content_shape": [1, 2]},
+      "parts": {"future_parts_shape": true},
+      "conversationId": "kelivo-malformed-anon",
+      "groupId": "malformed-group-anon",
+      "version": 1e999
+    },
+    "anonymous-non-object-message"
+  ],
+  "toolEvents": [{"future_tool_event_shape": true}],
+  "geminiThoughtSigs": "anonymous-invalid-signature-map",
+  "attachments": {"future_attachment_shape": true}
+}

@@ -2,7 +2,7 @@ name: Build Android APK
 
 on:
   push:
-    branches: [main]
+    branches: [main, agent/android-v0.5.68]
     tags: ["v*"]
     paths: ["android/**", "frontend/**", ".github/workflows/android-apk.yml"]
   workflow_dispatch:

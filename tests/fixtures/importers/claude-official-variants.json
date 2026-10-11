@@ -1,0 +1,98 @@
+[
+  {
+    "uuid": "claude-official-conversation-anonymous",
+    "name": "Anonymous official export",
+    "summary": "Anonymous summary",
+    "created_at": "2026-02-25T19:14:43.123456Z",
+    "updated_at": "2026-02-25T22:30:51+02:00",
+    "account": {
+      "uuid": "claude-account-anonymous"
+    },
+    "chat_messages": [
+      {
+        "uuid": "claude-official-user-anonymous",
+        "text": "Review the anonymous attachment.",
+        "content": [
+          {
+            "type": "text",
+            "text": "Review the anonymous attachment.",
+            "citations": []
+          }
+        ],
+        "sender": "human",
+        "created_at": "2026-02-25T19:14:44.000001Z",
+        "updated_at": "2026-02-25T19:14:44.000001Z",
+        "attachments": [
+          {
+            "id": "attachment-anonymous",
+            "file_name": "anonymous.md",
+            "file_size": 35,
+            "file_type": "text/markdown",
+            "extracted_content": "# Anonymous extracted attachment",
+            "created_at": "2026-02-25T19:14:43Z"
+          }
+        ],
+        "files": [
+          {
+            "file_uuid": "file-anonymous-image",
+            "file_kind": "image",
+            "file_name": "anonymous.png",
+            "preview_url": "https://example.invalid/anonymous-preview",
+            "preview_asset": {
+              "url": "https://example.invalid/anonymous-asset"
+            }
+          }
+        ],
+        "parent_message_uuid": null
+      },
+      {
+        "uuid": "claude-official-assistant-anonymous",
+        "text": "The anonymous attachment was reviewed.",
+        "content": [
+          {
+            "type": "thinking",
+            "thinking": "Anonymous exported thinking",
+            "summaries": [
+              {"summary": "Anonymous summary"}
+            ],
+            "cut_off": false
+          },
+          {
+            "type": "tool_use",
+            "id": "tool-use-anonymous",
+            "name": "anonymous_tool",
+            "input": {"document": "anonymous.md"}
+          },
+          {
+            "type": "tool_result",
+            "tool_use_id": "tool-use-anonymous",
+            "content": [
+              {"type": "text", "text": "Anonymous tool result"},
+              {
+                "type": "knowledge",
+                "title": "Anonymous reference",
+                "url": "https://example.invalid/reference"
+              }
+            ],
+            "is_error": false
+          },
+          {
+            "type": "text",
+            "text": "The anonymous attachment was reviewed."
+          },
+          {
+            "type": "token_budget",
+            "budget": 1024,
+            "future_budget_field": {"kept": true}
+          }
+        ],
+        "sender": "assistant",
+        "created_at": "2026-02-25T19:15:00Z",
+        "updated_at": null,
+        "attachments": [],
+        "files": [],
+        "parent_message_uuid": "claude-official-user-anonymous"
+      }
+    ]
+  }
+]

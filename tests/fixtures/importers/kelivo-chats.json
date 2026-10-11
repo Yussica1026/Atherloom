@@ -1,0 +1,83 @@
+{
+  "version": 1,
+  "conversations": [
+    {
+      "id": "kelivo-conversation-anon-1",
+      "title": "匿名 Kelivo 对话",
+      "createdAt": "2024-02-01T00:00:00.000Z",
+      "updatedAt": "2024-02-01T00:04:00.000Z",
+      "messageIds": ["kelivo-user-1", "kelivo-assistant-v0", "kelivo-assistant-v1", "kelivo-user-2"],
+      "isPinned": false,
+      "mcpServerIds": [],
+      "assistantId": "kelivo-assistant-anon",
+      "truncateIndex": -1,
+      "versionSelections": {"assistant-slot": 1},
+      "summary": "匿名摘要",
+      "future_conversation_field": {"kept": true}
+    }
+  ],
+  "messages": [
+    {
+      "id": "kelivo-user-1",
+      "role": "user",
+      "content": "请读取附件。",
+      "parts": [
+        {"kind": "text", "payload": "请读取附件。"},
+        {"kind": "image", "payload": "{\"uri\":\"kelivo-file://images/anonymous.png\",\"mime\":\"image/png\",\"assetId\":\"asset-anon\"}"},
+        {"kind": "future_part", "payload": "opaque-anonymous-payload"}
+      ],
+      "timestamp": "2024-02-01T00:00:01.000Z",
+      "conversationId": "kelivo-conversation-anon-1",
+      "groupId": "user-slot",
+      "version": 0
+    },
+    {
+      "id": "kelivo-assistant-v0",
+      "role": "assistant",
+      "content": "旧版本回复。",
+      "timestamp": "2024-02-01T00:01:00.000Z",
+      "modelId": "anonymous-model",
+      "providerId": "anonymous-provider",
+      "conversationId": "kelivo-conversation-anon-1",
+      "reasoningText": "旧版本匿名思考",
+      "groupId": "assistant-slot",
+      "version": 0
+    },
+    {
+      "id": "kelivo-assistant-v1",
+      "role": "assistant",
+      "content": "当前版本回复。",
+      "parts": [
+        {"kind": "reasoning", "payload": "当前版本匿名思考"},
+        {"kind": "text", "payload": "当前版本回复。"},
+        {"kind": "file", "payload": "{\"uri\":\"kelivo-file://upload/anonymous.txt\",\"name\":\"anonymous.txt\",\"mime\":\"text/plain\"}"},
+        {"kind": "tool_call", "payload": "{\"name\":\"anonymous_tool\",\"arguments\":{\"value\":1}}"}
+      ],
+      "timestamp": "2024-02-01T00:02:00.000Z",
+      "conversationId": "kelivo-conversation-anon-1",
+      "groupId": "assistant-slot",
+      "version": 1,
+      "future_message_field": ["kept"]
+    },
+    {
+      "id": "kelivo-user-2",
+      "role": "user",
+      "content": "后续文字\n[file:kelivo-file://upload/second.txt|second.txt|text/plain]",
+      "timestamp": "2024-02-01T00:03:00.000Z",
+      "conversationId": "kelivo-conversation-anon-1",
+      "groupId": "user-slot-2",
+      "version": 0
+    }
+  ],
+  "toolEvents": {
+    "kelivo-assistant-v1": [
+      {"type": "tool_call", "name": "anonymous_tool", "status": "success", "future_event_field": true}
+    ],
+    "missing-message": [{"type": "future_tool_event"}]
+  },
+  "geminiThoughtSigs": {
+    "kelivo-assistant-v1": "anonymous-thought-signature",
+    "missing-message": "unmatched-signature"
+  },
+  "future_backup_field": {"kept": true}
+}
